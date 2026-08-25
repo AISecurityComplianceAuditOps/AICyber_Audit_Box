@@ -1,0 +1,33 @@
+# Build-context trimming for `docker build`. This only affects what gets sent
+# to the Docker daemon before a build starts -- Dockerfile.app/.llm/Dockerfile
+# each COPY only the specific paths they need, so nothing here changes what
+# ends up inside any image.
+#
+# NOTE: do NOT blanket-exclude *.gguf -- Dockerfile.llm needs
+# google_gemma-4-E4B-it-Q4_K_M.gguf and nomic-embed-text-v1.5.f16.gguf present
+# in the build context by exact name. Only the unused demo model is excluded
+# below, by exact filename.
+
+.git
+__pycache__/
+*.pyc
+.venv/
+backups/
+logs/
+data/
+VAPT/
+samples/
+documents/
+"aa audit evidence samples/"
+node_modules/
+test-results/
+playwright-report/
+qa/
+scratch/
+.claude/
+.vscode/
+*.exe
+*.pem
+gemma-2-2b-it-Q4_K_M.gguf
+*.tar
+*.zip

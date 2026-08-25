@@ -1,0 +1,9 @@
+# Trivy vulnerability ignore list for this project's own Docker images
+# (Dockerfile.app, Dockerfile.llm). Starts empty — add CVE IDs here only after
+# a human has reviewed the finding and confirmed it's a false positive or
+# accepted risk for this offline-first deployment, with a comment explaining why.
+#
+# Example:
+# - id: CVE-2023-XXXXX
+#   paths: ["*"]
+#   statement: "Not exploitable — feature X is never enabled in our config."

@@ -1,0 +1,22 @@
+## Local-native-run override for docker-compose.yml
+## ──────────────────────────────────────────────────────────────────────────────
+## Purpose: when running the app NATIVELY (run_all.bat) instead of fully
+## containerised, the `app` container is absent -- only ShaktiDB (PostgreSQL)
+## is needed from Docker.  The base docker-compose.yml defines
+##   ports: ["15234:15234", "8000:8000"]
+## on the shakthidb service because the `app` container (which shares
+## shakthidb's network namespace) can't declare its own port mappings.
+## That 8000 binding is CORRECT for the full Docker stack, but it collides
+## with the native uvicorn process when only the DB container is started.
+##
+## This override strips the 8000 mapping so the DB container can stay up
+## for PostgreSQL access (port 15234) without blocking the native app.
+##
+## Usage (called automatically by run_all.bat):
+##   docker-compose -f docker-compose.yml -f docker-compose.local-db.yml up -d shakthidb
+
+services:
+  shakthidb:
+    ports:
+      - "15234:15234"
+      # 8000 intentionally NOT listed here -- native uvicorn owns that port.

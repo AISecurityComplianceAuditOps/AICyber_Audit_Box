@@ -1,0 +1,41 @@
+# Custom Semgrep rules for AICyberAuditBox, run alongside the registry rulesets
+# p/python and p/security-audit (see .github/workflows/security-scan.yml for the
+# exact invocation — registry rulesets aren't embeddable in a local config file).
+rules:
+  - id: subprocess-shell-true
+    languages: [python]
+    severity: WARNING
+    message: >-
+      subprocess call with shell=True can allow command injection if any part of
+      the command is built from user/evidence-file input. Prefer a list of args
+      with shell=False.
+    patterns:
+      - pattern: subprocess.$FUNC(..., shell=True, ...)
+
+  - id: hardcoded-secret-assignment
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Possible hardcoded secret/credential. Secrets in this project should come
+      from os.environ.get(...) (see JWT_SECRET, ADMIN_DEFAULT_PASSWORD in CLAUDE.md),
+      never a literal string.
+    patterns:
+      - pattern-either:
+          - pattern: $VAR = "..."
+          - pattern: $VAR: str = "..."
+      - metavariable-regex:
+          metavariable: $VAR
+          regex: (?i)^(.*_)?(secret|password|token|api_key)$
+      - pattern-not: $VAR = ""
+
+  - id: sql-string-formatting
+    languages: [python]
+    severity: ERROR
+    message: >-
+      SQL built via string formatting/concatenation risks SQL injection. Use
+      SQLAlchemy's parameterized queries/ORM instead.
+    patterns:
+      - pattern-either:
+          - pattern: $DB.execute(f"...")
+          - pattern: $DB.execute("..." + $X)
+          - pattern: $DB.execute("...".format(...))

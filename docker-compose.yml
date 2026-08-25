@@ -1,0 +1,116 @@
+﻿services:
+  shakthidb:
+    build: .
+    image: aicyberauditbox-shakthidb:3.10
+    container_name: shakthidb_service
+    environment:
+      - POSTGRES_PASSWORD=ShakthiDB@2026
+      - POSTGRES_DB=shakthidb
+    ports:
+      - "15234:15234"
+      # 8000 is the APP's port, exposed here (not on the app service) because
+      # the app container uses network_mode: "service:shakthidb" below -- a
+      # container sharing another's network namespace can't declare its own
+      # port mappings; whichever service "owns" the shared namespace must
+      # expose them instead. Previously missing here (only present in
+      # docker-compose.customer.yml) -- recreating shakthidb via this file
+      # alone silently dropped external access to the app on port 8000.
+      - "8000:8000"
+
+    # Listens on 15234 *inside* the container too (not just the external host
+    # mapping), because the app container shares this container's network
+    # namespace (see the `app` service's network_mode below) so it can reach
+    # Postgres at the exact "localhost:15234" the application code already
+    # has hardcoded, with zero changes to src/db/database.py.
+    command: postgres -p 15234 -c shared_buffers=512MB -c work_mem=32MB -c max_connections=200
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -p 15234 -U postgres"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: always
+
+  redis:
+    image: redis:7-alpine
+    container_name: vaptiso_redis
+    ports:
+      - "6379:6379"
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru --save ""
+    restart: always
+
+  llm:
+    build:
+      context: .
+      dockerfile: Dockerfile.llm
+    image: aicyberauditbox-llm:3.10
+    container_name: aicyberauditbox_llm
+    environment:
+      - LLM_MODE=completion
+      # LLM_THREADS intentionally NOT set here -- docker/llm-entrypoint.sh
+      # auto-detects the container's actual CPU allowance (cgroup quota, or
+      # the host's full core count if uncapped) and uses all of it by
+      # default. Uncomment only to pin a specific thread count instead
+      # (e.g. to reserve cores for something else on the same VM):
+      # - LLM_THREADS=8
+      # Uncomment to override the auto-sized slot count instead of letting
+      # docker/llm-entrypoint.sh detect it from this container's RAM:
+      # - LLM_SLOTS_OVERRIDE=2
+    restart: always
+
+  llm-embed:
+    build:
+      context: .
+      dockerfile: Dockerfile.llm
+    image: aicyberauditbox-llm-embed:3.10
+    container_name: aicyberauditbox_llm_embed
+    environment:
+      - LLM_MODE=embedding
+      # EMBED_THREADS intentionally NOT set here -- same auto-detection as
+      # LLM_THREADS above. Uncomment to pin a specific count instead:
+      # - EMBED_THREADS=8
+    restart: always
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.app
+    image: aicyberauditbox-app:3.16
+    container_name: aicyberauditbox_app
+    # Shares shakthidb's network namespace so "localhost:15234" inside this
+    # container genuinely reaches Postgres, matching database.py's hardcoded
+    # connection string exactly -- no code changes to the app needed. Other
+    # services (redis, llm, llm-embed) are still reachable by their compose
+    # service name since this container inherits shakthidb's network
+    # attachments.
+    network_mode: "service:shakthidb"
+    depends_on:
+      shakthidb:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      llm:
+        condition: service_started
+      llm-embed:
+        condition: service_started
+    environment:
+      - LLM_BACKEND=llama.cpp
+      - LLM_HOSTS=llm:11434
+      - EMBEDDING_HOST=http://llm-embed:11435
+      - REDIS_URL=redis://redis:6379/0
+      # Every containerized deployment must use ShaktiDB -- never silently fall
+      # back to the container-local SQLite file (see database.py's except branch).
+      - REQUIRE_POSTGRES=1
+      # JWT_SECRET intentionally NOT set here -- docker/generate_secrets.sh
+      # auto-generates and persists a unique one to the app-data volume on
+      # first boot if this isn't provided. Set it explicitly here (or via a
+      # .env file) if you want to pin it yourself instead.
+    volumes:
+      - app_data:/app/data
+    restart: always
+
+volumes:
+  pgdata:
+  app_data:

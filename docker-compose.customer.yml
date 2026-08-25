@@ -1,0 +1,110 @@
+﻿# Customer deployment compose file.
+#
+# Unlike docker-compose.yml (the dev version, which builds images from
+# source), this one only references pre-built images -- no `build:` section
+# anywhere. Pair this file with the exported image bundle
+# (aicyberauditbox_bundle_v3.9.tar): the customer loads that bundle first
+# (`docker load -i aicyberauditbox_bundle_v3.9.tar`), then runs this file.
+
+# No internet access, no separate installs, nothing to build.
+
+services:
+  shakthidb:
+    image: aicyberauditbox-shakthidb:3.10
+    container_name: shakthidb_service
+    environment:
+      - POSTGRES_PASSWORD=ShakthiDB@2026
+      - POSTGRES_DB=shakthidb
+    ports:
+      - "15234:15234"
+      # 8000 is the APP's port, exposed here (not on the app service) because
+      # the app container uses network_mode: "service:shakthidb" below -- a
+      # container sharing another's network namespace can't declare its own
+      # port mappings; whichever service "owns" the shared namespace must
+      # expose them instead.
+      - "8000:8000"
+    command: postgres -p 15234 -c shared_buffers=2GB -c work_mem=64MB -c max_connections=200
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -p 15234 -U postgres" ]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: always
+
+  redis:
+    image: redis:7-alpine
+    container_name: vaptiso_redis
+    ports:
+      - "6379:6379"
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru --save ""
+    restart: always
+
+  llm:
+    image: aicyberauditbox-llm:3.10
+    container_name: aicyberauditbox_llm
+    environment:
+      - LLM_MODE=completion
+      # LLM_THREADS intentionally NOT set here -- the container auto-detects
+      # its actual CPU allowance (cgroup quota, or the host's full core
+      # count if uncapped) and uses all of it by default, so this is correct
+      # out of the box on any customer VM size. Uncomment only to pin a
+      # specific thread count instead (e.g. to reserve cores for something
+      # else on the same machine):
+      # - LLM_THREADS=8
+      # Uncomment to override the auto-sized slot count instead of letting
+      # the container detect it from its own available RAM:
+      # - LLM_SLOTS_OVERRIDE=2
+    restart: always
+
+  llm-embed:
+    image: aicyberauditbox-llm-embed:3.10
+    container_name: aicyberauditbox_llm_embed
+    environment:
+      - LLM_MODE=embedding
+      # EMBED_THREADS intentionally NOT set here -- same auto-detection as
+      # LLM_THREADS above. Uncomment to pin a specific count instead:
+      # - EMBED_THREADS=8
+    restart: always
+
+  app:
+    image: aicyberauditbox-app:3.16
+    container_name: aicyberauditbox_app
+
+    network_mode: "service:shakthidb"
+    depends_on:
+      shakthidb:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      llm:
+        condition: service_started
+      llm-embed:
+        condition: service_started
+    environment:
+      - LLM_BACKEND=llama.cpp
+      - LLM_HOSTS=llm:11434
+      - EMBEDDING_HOST=http://llm-embed:11435
+      - REDIS_URL=redis://redis:6379/0
+      # This deployment must use ShaktiDB -- never silently fall back to the
+      # container-local SQLite file (see database.py's except branch).
+      - REQUIRE_POSTGRES=1
+      # JWT_SECRET auto-generates and persists to the app-data volume on
+      # first boot if not set here. Uncomment to pin one yourself instead:
+      # - JWT_SECRET=your-unique-secret-here
+      #
+      # DO NOT set SENTRY_DSN here. This file is the air-gapped customer
+      # deliverable ("no internet access" above) -- Sentry phones home to an
+      # external server on every error, which both breaks the air-gap
+      # guarantee and risks leaking customer audit data off their network.
+      # SENTRY_DSN is for docker-compose.yml (your own internal/dev/staging
+      # use) only. See qa/monitoring/README.md.
+    volumes:
+      - app_data:/app/data
+    restart: always
+
+volumes:
+  pgdata:
+  app_data:

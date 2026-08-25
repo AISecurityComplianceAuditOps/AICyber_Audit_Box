@@ -1,0 +1,107 @@
+{
+  "DPDP-1": {
+    "sub_questions": [
+      "Is consent captured in a way that shows it is freely given, specific, informed, and unambiguous?",
+      "Are consent records retrievable per data subject (who consented, when, to what)?",
+      "For processing not based on consent, is the alternate lawful basis documented?"
+    ],
+    "remediation_guidance": "Implement a consent management mechanism recording specific, informed, unambiguous consent, retrievable per data subject."
+  },
+  "DPDP-2": {
+    "sub_questions": [
+      "Is a privacy notice published and accessible to data subjects before/at collection?",
+      "Does the notice cover data collected, purpose, retention, and rights, in plain language?"
+    ],
+    "remediation_guidance": "Publish and communicate a privacy notice covering data collected, purposes, retention, and data subject rights in clear language."
+  },
+  "DPDP-3": {
+    "sub_questions": [
+      "Is personal data used only for the purpose it was originally collected/consented for?",
+      "Is fresh notice/consent obtained before using data for a new, incompatible purpose?"
+    ],
+    "remediation_guidance": "Establish controls ensuring personal data is not reused for incompatible purposes without fresh notice/consent."
+  },
+  "DPDP-4": {
+    "sub_questions": [
+      "Do data collection forms/systems request only fields necessary for the stated purpose?",
+      "Is there a periodic review removing unnecessary data fields from collection?"
+    ],
+    "remediation_guidance": "Review data collection points and remove fields not necessary for the stated processing purpose."
+  },
+  "DPDP-5": {
+    "sub_questions": [
+      "Is there a documented process for data subjects to request access to their data?",
+      "Are access requests fulfilled within the statutory timeframe, with evidence of actual requests handled?"
+    ],
+    "remediation_guidance": "Implement and evidence a data subject access request process meeting statutory response timeframes."
+  },
+  "DPDP-6": {
+    "sub_questions": [
+      "Is there a documented process for correction and erasure requests?",
+      "Is there evidence of actual correction/erasure requests being actioned?"
+    ],
+    "remediation_guidance": "Implement and evidence a process for handling data correction and erasure ('right to be forgotten') requests."
+  },
+  "DPDP-7": {
+    "sub_questions": [
+      "Can a data subject withdraw consent as easily as it was given?",
+      "Is there evidence processing stops or adjusts once consent is withdrawn?"
+    ],
+    "remediation_guidance": "Provide a consent withdrawal mechanism no more difficult than giving consent, and honor withdrawals in processing."
+  },
+  "DPDP-8": {
+    "sub_questions": [
+      "Is there a documented data retention schedule by data category?",
+      "Is there evidence of deletion/anonymization once the retention period or purpose expires?"
+    ],
+    "remediation_guidance": "Document a retention schedule per data category and evidence deletion/anonymization once retention expires."
+  },
+  "DPDP-9": {
+    "sub_questions": [
+      "Is a DPO (or equivalent) appointed where required by applicable law?",
+      "Are the DPO's contact details published for data subjects/regulators?"
+    ],
+    "remediation_guidance": "Appoint a Data Protection Officer or equivalent accountable individual where required, with published contact details."
+  },
+  "DPDP-10": {
+    "sub_questions": [
+      "Are DPAs signed with all third-party processors handling personal data?",
+      "Do the DPAs define processing scope, security obligations, and sub-processor rules?"
+    ],
+    "remediation_guidance": "Execute Data Processing Agreements with processors covering scope, security obligations, and sub-processing terms."
+  },
+  "DPDP-11": {
+    "sub_questions": [
+      "Are cross-border transfers of personal data governed by documented safeguards (SCCs, adequacy, or equivalent)?"
+    ],
+    "remediation_guidance": "Document and apply cross-border transfer safeguards (standard contractual clauses, adequacy basis, or equivalent)."
+  },
+  "DPDP-12": {
+    "sub_questions": [
+      "Is there a documented breach notification procedure with defined timelines?",
+      "Does the procedure cover notifying both the regulator and affected individuals?"
+    ],
+    "remediation_guidance": "Document a personal data breach notification procedure meeting statutory timelines for regulator and data-subject notification."
+  },
+  "DPDP-13": {
+    "sub_questions": [
+      "Is a Record of Processing Activities (RoPA) or equivalent register maintained?",
+      "Does it cover categories of data, purposes, recipients, and retention per activity?"
+    ],
+    "remediation_guidance": "Maintain a Record of Processing Activities covering data categories, purposes, recipients, and retention."
+  },
+  "DPDP-14": {
+    "sub_questions": [
+      "Is a DPIA performed for processing activities likely to result in high risk to individuals?",
+      "Does the DPIA identify risks and mitigations?"
+    ],
+    "remediation_guidance": "Perform Data Protection Impact Assessments for high-risk processing activities, documenting risks and mitigations."
+  },
+  "DPDP-15": {
+    "sub_questions": [
+      "Are additional safeguards applied when processing children's or other vulnerable individuals' data?",
+      "Is verifiable parental/guardian consent obtained where required?"
+    ],
+    "remediation_guidance": "Implement additional safeguards, including verifiable consent mechanisms, for processing children's or vulnerable individuals' data."
+  }
+}

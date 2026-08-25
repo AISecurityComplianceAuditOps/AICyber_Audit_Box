@@ -1,0 +1,172 @@
+{
+  "GV.OC": {
+    "sub_questions": [
+      "Is the organization's mission and how cybersecurity supports it documented?",
+      "Are external stakeholders (customers, regulators, suppliers) and their cybersecurity-relevant expectations identified?",
+      "Are applicable legal, regulatory, and contractual cybersecurity requirements documented?",
+      "Is there a register of critical objectives, capabilities, and services whose loss would affect the mission?"
+    ],
+    "remediation_guidance": "Document organizational mission, stakeholders, applicable legal/regulatory/contractual cybersecurity obligations, and a register of critical services -- reviewed and updated at least annually."
+  },
+  "GV.RM": {
+    "sub_questions": [
+      "Is there a documented cybersecurity risk management strategy?",
+      "Are risk appetite and risk tolerance statements defined and approved by management?",
+      "Is there evidence the risk strategy is actually used to prioritize resourcing/investment decisions?"
+    ],
+    "remediation_guidance": "Formalize a risk management strategy with explicit appetite/tolerance thresholds, approved by leadership, and demonstrate its use in budget/resourcing decisions."
+  },
+  "GV.RR": {
+    "sub_questions": [
+      "Are cybersecurity roles, responsibilities, and authorities documented (e.g. RACI matrix)?",
+      "Is senior leadership named as accountable for cybersecurity risk outcomes?",
+      "Is the cybersecurity function adequately staffed/resourced relative to its documented responsibilities?"
+    ],
+    "remediation_guidance": "Document and communicate a RACI (or equivalent) for cybersecurity roles, name an accountable executive, and evidence adequate staffing/budget."
+  },
+  "GV.PO": {
+    "sub_questions": [
+      "Is there an approved, organization-wide cybersecurity policy?",
+      "Has the policy been communicated to relevant personnel?",
+      "Is there a defined review/update cadence for the policy, with evidence it has been followed?"
+    ],
+    "remediation_guidance": "Establish an approved cybersecurity policy, communicate it organization-wide, and review/update it on a defined periodic cycle."
+  },
+  "GV.OV": {
+    "sub_questions": [
+      "Are cybersecurity risk management results reviewed by senior management or the board periodically?",
+      "Is there evidence the strategy is adjusted based on these reviews?"
+    ],
+    "remediation_guidance": "Institute periodic (e.g. quarterly) management/board reviews of cybersecurity risk posture, with minutes/records showing strategy adjustments where needed."
+  },
+  "GV.SC": {
+    "sub_questions": [
+      "Is there a documented supply chain risk management strategy/program?",
+      "Are suppliers/third parties risk-assessed before onboarding and periodically thereafter?",
+      "Do supplier contracts include cybersecurity requirements/obligations?"
+    ],
+    "remediation_guidance": "Establish a supply chain risk management program covering supplier risk assessment (pre- and post-onboarding) and contractual cybersecurity clauses."
+  },
+  "ID.AM": {
+    "sub_questions": [
+      "Is there a current inventory of hardware, software, and data assets?",
+      "Is an owner assigned to each asset or asset category?",
+      "Are assets classified by criticality or sensitivity?"
+    ],
+    "remediation_guidance": "Maintain an asset inventory (hardware/software/data) with assigned ownership and criticality classification, kept current via a defined update process."
+  },
+  "ID.RA": {
+    "sub_questions": [
+      "Has a cybersecurity risk assessment been performed covering the organization's assets/systems?",
+      "Does the assessment address threats, vulnerabilities, likelihood, and impact?",
+      "Is the risk assessment updated on a periodic basis or after significant changes?"
+    ],
+    "remediation_guidance": "Perform and document a formal risk assessment (threats, vulnerabilities, likelihood, impact) and refresh it periodically or after major changes."
+  },
+  "ID.IM": {
+    "sub_questions": [
+      "Are lessons learned from incidents, audits, and tests documented?",
+      "Is there a tracked improvement plan derived from those lessons learned?",
+      "Is there evidence improvements were actually implemented, not just identified?"
+    ],
+    "remediation_guidance": "Formalize a lessons-learned/improvement-tracking process feeding from incidents, audits, and exercises through to implemented changes."
+  },
+  "PR.AA": {
+    "sub_questions": [
+      "Is there a documented access control / identity management policy?",
+      "Are credentials provisioned, reviewed, and deprovisioned through a defined lifecycle process?",
+      "Is access granted on a least-privilege / role-based basis?",
+      "Is multi-factor authentication enforced for privileged or remote access?"
+    ],
+    "remediation_guidance": "Document and enforce an access control policy covering identity lifecycle management, least-privilege/role-based access, and MFA for privileged/remote access."
+  },
+  "PR.AT": {
+    "sub_questions": [
+      "Do personnel receive cybersecurity awareness training, and are completion records maintained?",
+      "Do privileged users, administrators, or incident responders receive role-specific security training?"
+    ],
+    "remediation_guidance": "Deliver and log organization-wide security awareness training plus role-specific training for privileged/security-critical roles."
+  },
+  "PR.DS": {
+    "sub_questions": [
+      "Is sensitive data protected via encryption at rest and in transit where required?",
+      "Are data handling rules defined based on data classification?",
+      "Is there a documented, followed process for secure data disposal/sanitization?"
+    ],
+    "remediation_guidance": "Implement encryption for sensitive data at rest/in transit, define classification-based handling rules, and document a data disposal/sanitization process."
+  },
+  "PR.PS": {
+    "sub_questions": [
+      "Are secure configuration baselines/hardening standards defined for systems and platforms?",
+      "Is there a patch/vulnerability management process with tracked remediation timelines?",
+      "Is configuration drift from the baseline monitored or periodically checked?"
+    ],
+    "remediation_guidance": "Define secure configuration baselines, operate a patch/vulnerability management process with SLA-tracked remediation, and periodically audit for configuration drift."
+  },
+  "PR.IR": {
+    "sub_questions": [
+      "Is network architecture documented, including segmentation controls?",
+      "Are resilience mechanisms (redundancy, capacity planning) in place for critical infrastructure?"
+    ],
+    "remediation_guidance": "Document network architecture/segmentation and implement redundancy/capacity planning for infrastructure supporting critical services."
+  },
+  "DE.CM": {
+    "sub_questions": [
+      "Is logging/monitoring enabled across networks, systems, and endpoints?",
+      "Is there a monitoring capability (e.g. SIEM) that flags anomalous activity?",
+      "Are logs retained for a defined period sufficient for investigation?"
+    ],
+    "remediation_guidance": "Enable centralized logging/monitoring (SIEM or equivalent) across networks/systems/endpoints with a defined log retention period."
+  },
+  "DE.AE": {
+    "sub_questions": [
+      "Are detected anomalies/events analyzed and correlated to assess scope and impact?",
+      "Is there a defined process/criteria for escalating an event to a formal incident?"
+    ],
+    "remediation_guidance": "Establish an event triage/analysis process that correlates anomalies and applies defined criteria for escalation to a formal incident."
+  },
+  "RS.MA": {
+    "sub_questions": [
+      "Is there a documented incident response plan?",
+      "Has the plan been tested or exercised (tabletop, simulation)?",
+      "Does the plan define roles, escalation paths, and incident severity/classification criteria?"
+    ],
+    "remediation_guidance": "Document, approve, and periodically exercise an incident response plan with clear roles, escalation paths, and severity classification."
+  },
+  "RS.AN": {
+    "sub_questions": [
+      "Are incidents analyzed to determine root cause, scope, and impact?",
+      "Is analysis documented (timeline, forensic notes, affected systems)?"
+    ],
+    "remediation_guidance": "Perform and document root-cause/impact analysis for reported incidents, retaining forensic notes and incident timelines."
+  },
+  "RS.CO": {
+    "sub_questions": [
+      "Are incidents reported to internal stakeholders per a defined process?",
+      "Where legally/contractually required, are regulators and affected parties notified within required timelines?"
+    ],
+    "remediation_guidance": "Define and evidence an incident communication/notification process meeting internal, regulatory, and contractual timelines."
+  },
+  "RS.MI": {
+    "sub_questions": [
+      "Are containment/mitigation actions performed and logged during incident response (e.g. isolation, credential resets)?",
+      "Is there evidence mitigation actions were verified effective?"
+    ],
+    "remediation_guidance": "Log containment/mitigation actions taken during incidents and verify/document their effectiveness."
+  },
+  "RC.RP": {
+    "sub_questions": [
+      "Is there a documented recovery/disaster-recovery plan?",
+      "Has the recovery plan been tested or exercised?",
+      "Are restoration activities from actual incidents or drills recorded?"
+    ],
+    "remediation_guidance": "Document and periodically test a recovery/disaster-recovery plan, recording restoration activities from both drills and real incidents."
+  },
+  "RC.CO": {
+    "sub_questions": [
+      "Are recovery status and restoration progress communicated to internal stakeholders?",
+      "Where applicable, are affected external parties/regulators/the public updated on recovery progress?"
+    ],
+    "remediation_guidance": "Define and evidence a recovery-communication process keeping internal stakeholders, and external parties where applicable, informed of restoration progress."
+  }
+}

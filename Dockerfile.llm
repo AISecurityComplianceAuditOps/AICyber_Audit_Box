@@ -1,0 +1,31 @@
+# LLM server image -- extends llama.cpp's official pre-built server image
+# (no build-from-source, per the earlier decision) and bakes in both model
+# weights this app uses (completion + embedding), so this single image needs
+# nothing mounted or downloaded separately. One image, two docker-compose
+# services (LLM_MODE=completion / LLM_MODE=embedding) -- see
+# docker/llm-entrypoint.sh.
+#
+# NOTE: verify the base image tag against the current llama.cpp GHCR release
+# before first build (ghcr.io/ggml-org/llama.cpp:server) -- tags occasionally
+# change upstream and this wasn't verified against a live registry pull.
+
+FROM ghcr.io/ggml-org/llama.cpp:server
+
+COPY google_gemma-4-E4B-it-Q4_K_M.gguf /models/google_gemma-4-E4B-it-Q4_K_M.gguf
+COPY nomic-embed-text-v1.5.f16.gguf /models/nomic-embed-text-v1.5.f16.gguf
+COPY docker/llm-entrypoint.sh /llm-entrypoint.sh
+RUN chmod +x /llm-entrypoint.sh
+
+EXPOSE 11434 11435
+
+# The base image's own HEALTHCHECK hardcodes port 8080, which doesn't match
+# either port this app actually uses (11434 completion / 11435 embedding) --
+# overriding with a check that picks the right port for whichever LLM_MODE
+# this container instance is running. start_period is generous (10 min)
+# because loading the ~5GB completion model on CPU-only hardware can
+# genuinely take several minutes; premature "unhealthy" flapping during that
+# window would be a false alarm, not a real problem.
+HEALTHCHECK --interval=5s --timeout=3s --start-period=600s --retries=30 \
+    CMD sh -c 'if [ "$LLM_MODE" = "embedding" ]; then curl -f http://localhost:11435/health; else curl -f http://localhost:11434/health; fi'
+
+ENTRYPOINT ["/llm-entrypoint.sh"]

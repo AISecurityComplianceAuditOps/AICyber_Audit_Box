@@ -1,0 +1,134 @@
+{
+  "CC1.1": {
+    "sub_questions": ["Is a code of conduct/ethics policy published and communicated to personnel?", "Is there a process to identify and address deviations from the standards of conduct?"],
+    "remediation_guidance": "Publish and communicate a code of conduct, with a process to identify and remediate deviations."
+  },
+  "CC1.2": {
+    "sub_questions": ["Does the board (or equivalent) exercise independent oversight of internal control?", "Are board reviews of risk/control matters documented (minutes, reports)?"],
+    "remediation_guidance": "Formalize board-level (or equivalent independent body) oversight of internal control, with documented review cadence."
+  },
+  "CC1.3": {
+    "sub_questions": ["Is the organizational structure documented with clear reporting lines?", "Are authorities and responsibilities for control objectives assigned?"],
+    "remediation_guidance": "Document organizational structure, reporting lines, and assigned authorities/responsibilities for control objectives."
+  },
+  "CC1.4": {
+    "sub_questions": ["Are competency requirements defined for control-relevant roles?", "Is there a hiring/training process ensuring personnel meet those requirements?"],
+    "remediation_guidance": "Define competency requirements for key roles and evidence hiring/training processes that meet them."
+  },
+  "CC1.5": {
+    "sub_questions": ["Are individuals evaluated on their internal control responsibilities (performance reviews)?", "Is there a disciplinary process for control-related failures?"],
+    "remediation_guidance": "Incorporate internal control responsibilities into performance evaluation and disciplinary processes."
+  },
+  "CC2.1": {
+    "sub_questions": ["Is information used to support internal control (logs, reports) accurate, complete, and timely?", "Is there a process ensuring data quality of this information?"],
+    "remediation_guidance": "Establish data-quality controls over information used to support internal control functioning."
+  },
+  "CC2.2": {
+    "sub_questions": ["Are control objectives and responsibilities communicated to personnel (training, policy, onboarding)?"],
+    "remediation_guidance": "Communicate internal control objectives and individual responsibilities through training/policy/onboarding."
+  },
+  "CC2.3": {
+    "sub_questions": ["Is there a defined process for communicating control-relevant matters to external parties (customers, regulators, auditors)?"],
+    "remediation_guidance": "Establish a process for external communication of matters affecting internal control."
+  },
+  "CC3.1": {
+    "sub_questions": ["Are business/compliance objectives specified with enough clarity to identify related risks?"],
+    "remediation_guidance": "Document objectives with sufficient specificity to support risk identification against them."
+  },
+  "CC3.2": {
+    "sub_questions": ["Is there a documented, periodically-updated risk register?", "Does it analyze likelihood and significance of identified risks?"],
+    "remediation_guidance": "Maintain a risk register documenting identified risks, their likelihood, and significance, refreshed periodically."
+  },
+  "CC3.3": {
+    "sub_questions": ["Does the risk assessment explicitly consider fraud risk (incentive, opportunity, rationalization)?"],
+    "remediation_guidance": "Explicitly incorporate fraud risk factors into the organization's risk assessment process."
+  },
+  "CC3.4": {
+    "sub_questions": ["Is there a process to identify changes (org, technology, personnel) that could impact controls?"],
+    "remediation_guidance": "Establish a process to identify and assess changes that could significantly impact internal control."
+  },
+  "CC4.1": {
+    "sub_questions": ["Are ongoing monitoring activities or periodic separate evaluations (internal audit, CSA) performed on controls?"],
+    "remediation_guidance": "Perform ongoing monitoring and/or periodic separate evaluations of control effectiveness."
+  },
+  "CC4.2": {
+    "sub_questions": ["Are identified control deficiencies communicated to those responsible for remediation?", "Are deficiencies tracked to closure?"],
+    "remediation_guidance": "Establish a process to communicate and track control deficiencies to remediation."
+  },
+  "CC5.1": {
+    "sub_questions": ["Are control activities selected/developed specifically to mitigate identified risks?"],
+    "remediation_guidance": "Select and develop control activities that directly mitigate risks identified in the risk assessment."
+  },
+  "CC5.2": {
+    "sub_questions": ["Are general IT controls (access, change management, operations) selected/developed to support objectives?"],
+    "remediation_guidance": "Establish general IT controls (access management, change management, operations) supporting control objectives."
+  },
+  "CC5.3": {
+    "sub_questions": ["Are control activities deployed through approved policies and operational procedures?", "Is accountability for execution assigned?"],
+    "remediation_guidance": "Deploy control activities via approved policies and procedures with assigned execution accountability."
+  },
+  "CC6.1": {
+    "sub_questions": ["Are logical access security measures (firewalls, IAM, encryption) implemented to protect information assets?"],
+    "remediation_guidance": "Implement logical access security software/infrastructure protecting information assets from unauthorized access."
+  },
+  "CC6.2": {
+    "sub_questions": ["Is new user access provisioned only after documented authorization?", "Are approval records retained?"],
+    "remediation_guidance": "Require and record documented authorization prior to provisioning new user access."
+  },
+  "CC6.3": {
+    "sub_questions": ["Is access granted based on role/least privilege?", "Are access rights periodically reviewed?"],
+    "remediation_guidance": "Implement role-based, least-privilege access with periodic access reviews."
+  },
+  "CC6.4": {
+    "sub_questions": ["Is physical access to facilities/protected assets restricted to authorized personnel?", "Are visitor logs/CCTV/badge records maintained?"],
+    "remediation_guidance": "Restrict physical access to authorized personnel and maintain visitor/access logging evidence."
+  },
+  "CC6.5": {
+    "sub_questions": ["Is access removed/adjusted promptly upon termination or role transfer?"],
+    "remediation_guidance": "Implement a timely deprovisioning process for terminated or transferred personnel."
+  },
+  "CC6.6": {
+    "sub_questions": ["Are measures (firewalls, IDS/IPS, endpoint protection) in place against external threats?"],
+    "remediation_guidance": "Implement perimeter/endpoint security controls protecting against external threat sources."
+  },
+  "CC6.7": {
+    "sub_questions": ["Are controls (encryption, DLP) in place restricting transmission/movement/removal of information?"],
+    "remediation_guidance": "Implement encryption/DLP controls restricting unauthorized transmission or removal of information."
+  },
+  "CC6.8": {
+    "sub_questions": ["Are controls (antimalware, allow-listing) in place to prevent/detect unauthorized or malicious software?"],
+    "remediation_guidance": "Implement antimalware/application allow-listing controls to prevent or detect unauthorized software."
+  },
+  "CC7.1": {
+    "sub_questions": ["Is vulnerability scanning performed?", "Is configuration/change monitoring in place to detect susceptibility to security events?"],
+    "remediation_guidance": "Implement vulnerability scanning and configuration-change monitoring to detect security susceptibilities."
+  },
+  "CC7.2": {
+    "sub_questions": ["Are system components monitored (SIEM/logging) for anomalies indicative of security events?"],
+    "remediation_guidance": "Implement monitoring/logging of system components for anomalous activity."
+  },
+  "CC7.3": {
+    "sub_questions": ["Is there a documented process to evaluate detected events and determine if they constitute an incident?"],
+    "remediation_guidance": "Document and follow a process to evaluate security events for potential incident classification."
+  },
+  "CC7.4": {
+    "sub_questions": ["Is there a documented, exercised incident response plan?", "Does it define containment, eradication, and recovery roles?"],
+    "remediation_guidance": "Document, approve, and periodically exercise an incident response program."
+  },
+  "CC7.5": {
+    "sub_questions": ["Is there evidence of recovery activities and root-cause analysis after security incidents?"],
+    "remediation_guidance": "Document recovery activities and root-cause analysis following security incidents, including preventive changes."
+  },
+  "CC8.1": {
+    "sub_questions": ["Is there a documented change management process (request, approval, testing, deployment)?", "Does it cover infrastructure, data, software, and procedures?"],
+    "remediation_guidance": "Establish a formal change management process covering request, approval, testing, and deployment."
+  },
+  "CC9.1": {
+    "sub_questions": ["Are risk mitigation activities documented for potential business disruptions?", "Is insurance or equivalent risk transfer considered where applicable?"],
+    "remediation_guidance": "Document risk mitigation activities for business disruption risks, including risk transfer where applicable."
+  },
+  "CC9.2": {
+    "sub_questions": ["Is there a documented vendor risk management process (due diligence, contractual security requirements)?", "Are vendors monitored on an ongoing basis?"],
+    "remediation_guidance": "Implement vendor risk management covering due diligence, contractual security requirements, and ongoing monitoring."
+  }
+}
