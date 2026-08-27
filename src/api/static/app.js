@@ -7892,3 +7892,156 @@ async function undoDeleteEvidenceFile(sessionId, fileId, filename) {
         console.error("Error undoing evidence deletion:", err);
     }
 }
+
+// ==========================================
+// MCP INTEGRATION UI LOGIC
+// ==========================================
+
+let currentMcpServers = [];
+
+function openMcpImportModal() {
+    document.getElementById('mcp-import-modal').style.display = 'flex';
+    loadMcpServers();
+}
+
+function closeMcpImportModal() {
+    document.getElementById('mcp-import-modal').style.display = 'none';
+    hideAddMcpServerForm();
+    document.getElementById('mcp-import-workspace').style.display = 'none';
+    document.getElementById('mcp-import-btn').style.display = 'none';
+    document.getElementById('mcp-repo-path').value = '';
+    document.getElementById('mcp-file-path').value = '';
+}
+
+async function loadMcpServers() {
+    try {
+        const res = await authFetch(`${API_BASE}/mcp/servers`);
+        const servers = await res.json();
+        currentMcpServers = servers;
+        const select = document.getElementById('mcp-server-select');
+        select.innerHTML = '<option value="">-- Select a Server --</option>';
+        servers.forEach(s => {
+            const opt = document.createElement('option');
+            opt.value = s.id;
+            opt.textContent = `${s.name} (${s.server_type})`;
+            select.appendChild(opt);
+        });
+    } catch (e) {
+        console.error('Error loading MCP servers:', e);
+        showToast('Failed to load MCP servers', 'error');
+    }
+}
+
+function showAddMcpServerForm() {
+    document.getElementById('mcp-add-server-form').style.display = 'block';
+}
+
+function hideAddMcpServerForm() {
+    document.getElementById('mcp-add-server-form').style.display = 'none';
+    document.getElementById('mcp-new-name').value = '';
+    document.getElementById('mcp-new-cred').value = '';
+}
+
+async function saveNewMcpServer() {
+    const name = document.getElementById('mcp-new-name').value.trim();
+    const type = document.getElementById('mcp-new-type').value;
+    const cred = document.getElementById('mcp-new-cred').value.trim();
+    
+    if (!name) return showToast('Please enter a server name', 'error');
+    
+    let command = '';
+    let args = '[]';
+    
+    if (type === 'github') {
+        command = 'npx';
+        args = JSON.stringify(['-y', '@modelcontextprotocol/server-github']);
+    } else if (type === 'jira') {
+        command = 'npx';
+        // Add default jira MCP command if available or just mockup for MVP
+        args = JSON.stringify(['-y', 'jira-mcp-server']);
+    }
+
+    try {
+        const res = await authFetch(`${API_BASE}/mcp/servers`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                name,
+                server_type: type,
+                command,
+                args,
+                env: '{}',
+                credentials: cred || null
+            })
+        });
+        
+        if (!res.ok) {
+            const data = await res.json();
+            throw new Error(data.detail || 'Failed to create server');
+        }
+        
+        showToast('MCP Server configured successfully', 'success');
+        hideAddMcpServerForm();
+        await loadMcpServers();
+    } catch (e) {
+        showToast(e.message, 'error');
+    }
+}
+
+function onMcpServerSelect() {
+    const val = document.getElementById('mcp-server-select').value;
+    if (val) {
+        document.getElementById('mcp-import-workspace').style.display = 'block';
+        document.getElementById('mcp-import-btn').style.display = 'block';
+    } else {
+        document.getElementById('mcp-import-workspace').style.display = 'none';
+        document.getElementById('mcp-import-btn').style.display = 'none';
+    }
+}
+
+async function executeMcpImport() {
+    const serverId = document.getElementById('mcp-server-select').value;
+    const repoPath = document.getElementById('mcp-repo-path').value.trim();
+    const filePath = document.getElementById('mcp-file-path').value.trim();
+    
+    if (!serverId || !repoPath || !filePath) {
+        return showToast('Please fill all fields', 'error');
+    }
+    if (!activeSessionId) {
+        return showToast('Please create or select an audit session first', 'error');
+    }
+
+    const btn = document.getElementById('mcp-import-btn');
+    const originalText = btn.innerText;
+    btn.innerText = 'Importing...';
+    btn.disabled = true;
+
+    try {
+        const res = await authFetch(`${API_BASE}/mcp/${serverId}/import`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                session_id: activeSessionId,
+                repo_or_path: repoPath,
+                file_path: filePath
+            })
+        });
+        
+        if (!res.ok) {
+            const data = await res.json();
+            throw new Error(data.detail || 'Import failed');
+        }
+        
+        const data = await res.json();
+        showToast(`File ${data.filename} imported successfully`, 'success');
+        
+        // Refresh evidence list
+        loadEvidenceFileList();
+        closeMcpImportModal();
+    } catch (e) {
+        showToast(e.message, 'error');
+    } finally {
+        btn.innerText = originalText;
+        btn.disabled = false;
+    }
+}

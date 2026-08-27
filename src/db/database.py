@@ -248,6 +248,17 @@ class AuditRecord(Base):
     status      = Column(String(50)) # Approved, Rejected, Reviewed
     comments    = Column(Text)
     reviewed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+class MCPServerConfig(Base):
+    __tablename__ = "mcp_server_configs"
+    id            = Column(Integer, primary_key=True, autoincrement=True)
+    name          = Column(String(100), unique=True, nullable=False)
+    server_type   = Column(String(50), nullable=False)
+    command       = Column(String(300), nullable=True)
+    args          = Column(Text, nullable=True)
+    env           = Column(Text, nullable=True)
+    encrypted_credentials = Column(Text, nullable=True)
+    is_active     = Column(Boolean, default=True)
+    created_at    = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
 class ComplianceScore(Base):
     __tablename__ = "compliance_scores"

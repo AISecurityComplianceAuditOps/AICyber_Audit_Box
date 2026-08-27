@@ -48,6 +48,7 @@ from src.api.endpoints.controls import router as controls_router
 from src.api.endpoints.logs import router as logs_router
 from src.api.endpoints.audit import router as audit_router
 from src.api.endpoints.license import router as license_router
+from src.api.endpoints.mcp import router as mcp_router
 
 # Sentry error tracking — no-op until SENTRY_DSN is set (see qa/monitoring/README.md)
 _sentry_dsn = os.environ.get("SENTRY_DSN")
@@ -122,6 +123,7 @@ app.include_router(controls_router, prefix="/api")
 app.include_router(logs_router, prefix="/api")
 app.include_router(audit_router, prefix="/api")
 app.include_router(license_router)
+app.include_router(mcp_router, prefix="/api")
 
 # Mount static files folder
 app.mount("/static", StaticFiles(directory="src/api/static"), name="static")
