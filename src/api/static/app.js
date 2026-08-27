@@ -8033,7 +8033,11 @@ async function executeMcpImport() {
         }
         
         const data = await res.json();
-        showToast(`File ${data.filename} imported successfully`, 'success');
+        if (data.count && data.count > 1) {
+            showToast(`Successfully imported ${data.count} files from folder`, 'success');
+        } else {
+            showToast(`File ${data.filename || 'imported'} successfully`, 'success');
+        }
         
         // Refresh evidence list
         loadEvidenceFileList();

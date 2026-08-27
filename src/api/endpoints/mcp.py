@@ -113,13 +113,24 @@ async def import_file(server_id: int, req: ImportRequest, request: Request, db: 
         raise HTTPException(status_code=404, detail="Server config not found")
         
     mcp = get_mcp_manager_for_config(config)
-    file_bytes = None
+    
+    from src.db.database import EvidenceFile, force_master
+    from src.api.endpoints.audit import get_or_create_audit_report
+    from src.core.crypto_utils import decrypt_credential
+    from src.api.endpoints.audit import _bg_extract_and_chunk
+    import urllib.parse
+    import json, base64, requests
+    import os, time, random, threading
+    
+    pat = decrypt_credential(config.encrypted_credentials) if config.encrypted_credentials else None
+    headers = {"Authorization": f"token {pat}"} if pat else {}
+    
+    fetched_files = []
+    
     try:
         await mcp.connect()
         if config.server_type.lower() == 'github':
-            import urllib.parse
-            
-            # Sanitize Repo Path (Handle full URLs)
+            # Sanitize Repo Path
             repo_input = req.repo_or_path.strip()
             if repo_input.endswith('.git'):
                 repo_input = repo_input[:-4]
@@ -129,80 +140,59 @@ async def import_file(server_id: int, req: ImportRequest, request: Request, db: 
             owner = r_parts[0]
             repo = r_parts[1] if len(r_parts) > 1 else ""
             
-            # Sanitize File Path (Handle full URLs and URL encoding)
+            # Sanitize File Path
             f_path = req.file_path.strip()
             f_path = urllib.parse.unquote(f_path)
             if "blob/main/" in f_path:
                 f_path = f_path.split("blob/main/")[-1]
             elif "blob/master/" in f_path:
                 f_path = f_path.split("blob/master/")[-1]
+            elif "tree/main/" in f_path:
+                f_path = f_path.split("tree/main/")[-1]
+            elif "tree/master/" in f_path:
+                f_path = f_path.split("tree/master/")[-1]
                 
-            args = {
-                "owner": owner,
-                "repo": repo,
-                "path": f_path
-            }
+            MAX_FILES = 50
+            items_to_fetch = [f_path]
             
-            result = await mcp.call_tool("get_file_contents", args)
-            
-            # Check if MCP tool explicitly returned an error
-            if hasattr(result, 'isError') and result.isError:
-                err_msg = str(result.content) if hasattr(result, 'content') else "Unknown tool error"
-                raise HTTPException(status_code=400, detail=f"GitHub API Error: {err_msg}")
+            while items_to_fetch and len(fetched_files) < MAX_FILES:
+                current_path = items_to_fetch.pop(0)
+                args = {"owner": owner, "repo": repo, "path": current_path}
                 
-            import json, base64, requests
-            
-            if hasattr(result, 'content') and len(result.content) > 0 and hasattr(result.content[0], 'text'):
-                try:
-                    data = json.loads(result.content[0].text)
+                result = await mcp.call_tool("get_file_contents", args)
+                if hasattr(result, 'isError') and result.isError:
+                    err_msg = str(result.content) if hasattr(result, 'content') else "Unknown tool error"
+                    raise HTTPException(status_code=400, detail=f"GitHub API Error: {err_msg}")
                     
-                    # 1. Best case for binary files: Download directly from GitHub URL
-                    if data.get('download_url'):
-                        from src.core.crypto_utils import decrypt_credential
-                        pat = decrypt_credential(config.encrypted_credentials) if config.encrypted_credentials else None
-                        headers = {"Authorization": f"token {pat}"} if pat else {}
-                        
-                        dl_res = requests.get(data['download_url'], headers=headers, timeout=30)
-                        if dl_res.status_code == 200:
-                            file_bytes = dl_res.content
+                if hasattr(result, 'content') and len(result.content) > 0 and hasattr(result.content[0], 'text'):
+                    try:
+                        data = json.loads(result.content[0].text)
+                        if isinstance(data, list):
+                            # It's a directory
+                            for item in data:
+                                if item.get("type") == "file":
+                                    if len(fetched_files) + len([p for p in items_to_fetch if p]) < MAX_FILES:
+                                        fetched_files.append(item)
+                                elif item.get("type") == "dir":
+                                    items_to_fetch.append(item.get("path"))
                         else:
-                            raise HTTPException(status_code=400, detail=f"GitHub download failed: {dl_res.status_code}")
-                            
-                    # 2. Fallback: Parse MCP base64 string
-                    elif data.get('encoding') == 'base64' and 'content' in data:
-                        b64_str = data['content'].replace('\n', '')
-                        b64_str += "=" * ((4 - len(b64_str) % 4) % 4)
-                        file_bytes = base64.b64decode(b64_str)
-                        
-                    # 3. Fallback: Corrupted UTF-8 text representation (e.g. text files)
-                    else:
-                        file_bytes = str(data.get('content', '')).encode('utf-8')
-                        
-                except json.JSONDecodeError:
-                    file_bytes = result.content[0].text.encode('utf-8')
-            else:
-                file_bytes = str(result).encode('utf-8')
+                            # Single file
+                            fetched_files.append(data)
+                    except json.JSONDecodeError:
+                        raise HTTPException(status_code=500, detail="Failed to parse GitHub MCP response.")
         else:
             raise HTTPException(status_code=400, detail="Server type not supported for automatic import MVP")
-            
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"MCP Error: {str(e)}")
     finally:
         await mcp.close()
+
+    if not fetched_files:
+        raise HTTPException(status_code=404, detail="No files found to import.")
         
-    if not file_bytes:
-        raise HTTPException(status_code=500, detail="Failed to retrieve file content")
-        
-    # Get actual filename from the parsed file path
-    filename = f_path.split("/")[-1]
-    
-    from src.db.database import EvidenceFile, force_master
-    from src.api.endpoints.audit import get_or_create_audit_report
-    import os
-    import time
-    import random
+    saved_files = []
     
     try:
         with force_master():
@@ -210,27 +200,48 @@ async def import_file(server_id: int, req: ImportRequest, request: Request, db: 
             session_dir = os.path.normpath(os.path.join(os.getcwd(), "data", "evidence", str(report.id)))
             os.makedirs(session_dir, exist_ok=True)
             
-            safe_name = f"{int(time.time())}_{random.randint(1000,9999)}_{filename}"
-            save_path = os.path.join(session_dir, safe_name)
-            
-            with open(save_path, "wb") as f:
-                f.write(file_bytes)
+            for file_data in fetched_files:
+                filename = file_data.get("name", file_data.get("path", "unknown").split("/")[-1])
+                file_bytes = None
                 
-            evidence = EvidenceFile(
-                report_id=report.id,
-                filename=filename,
-                file_path=save_path,
-                is_auditor_uploaded=True,
-                assigned_auditor_username=auth_user.get("username")
-            )
-            db.add(evidence)
-            db.commit()
-            db.refresh(evidence)
-            
-            from src.api.endpoints.audit import _bg_extract_and_chunk
-            import threading
-            threading.Thread(target=_bg_extract_and_chunk, args=(filename, file_bytes, report.id)).start()
-            
-            return {"status": "success", "file_id": evidence.id, "filename": filename}
+                # Fetch actual content bytes
+                if file_data.get("download_url"):
+                    dl_res = requests.get(file_data["download_url"], headers=headers, timeout=30)
+                    if dl_res.status_code == 200:
+                        file_bytes = dl_res.content
+                    else:
+                        continue
+                elif file_data.get("encoding") == "base64" and "content" in file_data:
+                    b64_str = file_data["content"].replace("\\n", "")
+                    b64_str += "=" * ((4 - len(b64_str) % 4) % 4)
+                    file_bytes = base64.b64decode(b64_str)
+                else:
+                    file_bytes = str(file_data.get("content", "")).encode("utf-8")
+                    
+                if not file_bytes:
+                    continue
+                    
+                safe_name = f"{int(time.time())}_{random.randint(1000,9999)}_{filename}"
+                save_path = os.path.join(session_dir, safe_name)
+                
+                with open(save_path, "wb") as f:
+                    f.write(file_bytes)
+                    
+                evidence = EvidenceFile(
+                    report_id=report.id,
+                    filename=filename,
+                    file_path=save_path,
+                    is_auditor_uploaded=True,
+                    assigned_auditor_username=auth_user.get("username")
+                )
+                db.add(evidence)
+                db.commit()
+                db.refresh(evidence)
+                
+                saved_files.append({"id": evidence.id, "filename": filename})
+                
+                threading.Thread(target=_bg_extract_and_chunk, args=(filename, file_bytes, report.id)).start()
+                
+            return {"status": "success", "count": len(saved_files), "files": saved_files}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database Error: {str(e)}")
