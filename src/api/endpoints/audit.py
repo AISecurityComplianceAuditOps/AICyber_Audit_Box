@@ -856,6 +856,35 @@ def api_get_session_evidence(session_id: str, request: Request):
     finally:
         db.close()
 
+@router.get("/evidence/{evidence_id}/content")
+def api_get_evidence_content(evidence_id: int, request: Request):
+    """Returns the raw text content of an evidence file if it's text-based (e.g. .md, .txt)."""
+    auth_user = _require_auth(request)
+    db = SessionLocal()
+    try:
+        with force_master():
+            file_rec = db.query(EvidenceFile).filter(EvidenceFile.id == evidence_id).first()
+            if not file_rec or file_rec.is_deleted:
+                raise HTTPException(status_code=404, detail="File not found")
+                
+            report = db.query(AuditReport).filter(AuditReport.id == file_rec.report_id).first()
+            if not report:
+                raise HTTPException(status_code=404, detail="Session not found")
+                
+            _assert_session_access(db, report, auth_user)
+            
+            if not file_rec.file_path or not os.path.exists(file_rec.file_path):
+                raise HTTPException(status_code=404, detail="File physical content not found")
+                
+            try:
+                with open(file_rec.file_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                return {"success": True, "filename": file_rec.filename, "content": content}
+            except UnicodeDecodeError:
+                raise HTTPException(status_code=400, detail="File is binary and cannot be viewed as text.")
+    finally:
+        db.close()
+
 @router.post("/evidence/delete")
 def api_delete_evidence_file(req: DeleteEvidenceRequest, request: Request):
     """Soft deletes an evidence file for 1-click Undo capability."""

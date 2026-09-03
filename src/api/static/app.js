@@ -2387,7 +2387,10 @@ async function loadEvidenceFileList() {
                                 </div>
                             </div>
                         </div>
-                        <button type="button" onclick="deleteServerEvidenceFile('${requestSessionId}', ${f.id}, '${safeFnEsc}')" style="background: transparent; border: none; color: #94a3b8; cursor: pointer; padding: 4px; border-radius: 4px; display: flex; align-items: center; justify-content: center; transition: color 0.15s;" title="Remove file" onmouseover="this.style.color='#ef4444'" onmouseout="this.style.color='#94a3b8'" aria-label="Remove ${escapeHtml(fn)}"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg></button>
+                        <div style="display: flex; gap: 4px;">
+                            ${['md', 'txt', 'html', 'htm', 'json', 'csv'].includes(ext) ? `<button type="button" onclick="viewEvidence(${f.id}, '${safeFnEsc}')" style="background: transparent; border: none; color: #94a3b8; cursor: pointer; padding: 4px; border-radius: 4px; display: flex; align-items: center; justify-content: center; transition: color 0.15s;" title="View file" onmouseover="this.style.color='#3b82f6'" onmouseout="this.style.color='#94a3b8'"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></button>` : ''}
+                            <button type="button" onclick="deleteServerEvidenceFile('${requestSessionId}', ${f.id}, '${safeFnEsc}')" style="background: transparent; border: none; color: #94a3b8; cursor: pointer; padding: 4px; border-radius: 4px; display: flex; align-items: center; justify-content: center; transition: color 0.15s;" title="Remove file" onmouseover="this.style.color='#ef4444'" onmouseout="this.style.color='#94a3b8'" aria-label="Remove ${escapeHtml(fn)}"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg></button>
+                        </div>
                     `;
                     registry.appendChild(card);
                 });
@@ -2396,6 +2399,30 @@ async function loadEvidenceFileList() {
     } catch (err) {
         console.error("Error loading evidence file list:", err);
     }
+}
+
+async function viewEvidence(evidenceId, filename) {
+    document.getElementById("evidence-viewer-modal").style.display = "flex";
+    document.getElementById("evidence-viewer-title").innerText = `Viewing: ${filename}`;
+    const contentDiv = document.getElementById("evidence-viewer-content");
+    contentDiv.innerText = "Loading content...";
+    
+    try {
+        const response = await authFetch(`${API_BASE}/audit/evidence/${evidenceId}/content`);
+        if (!response.ok) throw new Error(await response.text());
+        const data = await response.json();
+        if (data.success && data.content) {
+            contentDiv.innerText = data.content;
+        } else {
+            contentDiv.innerText = "Failed to load content or file is binary.";
+        }
+    } catch (e) {
+        contentDiv.innerText = "Error loading content: " + e.message;
+    }
+}
+
+function closeEvidenceViewer() {
+    document.getElementById("evidence-viewer-modal").style.display = "none";
 }
 
 // ── RUN LOCAL AUDIT ANALYSIS ──
@@ -7940,25 +7967,79 @@ function hideAddMcpServerForm() {
     document.getElementById('mcp-add-server-form').style.display = 'none';
     document.getElementById('mcp-new-name').value = '';
     document.getElementById('mcp-new-cred').value = '';
+    document.getElementById('mcp-new-jira-email').value = '';
+    document.getElementById('mcp-new-jira-url').value = '';
+}
+
+function onMcpNewTypeChange() {
+    const type = document.getElementById('mcp-new-type').value;
+    if (type === 'jira') {
+        document.getElementById('mcp-jira-fields').style.display = 'block';
+        document.getElementById('mcp-postgres-fields').style.display = 'none';
+        document.getElementById('mcp-azure-fields').style.display = 'none';
+        document.getElementById('mcp-new-cred').style.display = 'block';
+    } else if (type === 'postgres') {
+        document.getElementById('mcp-jira-fields').style.display = 'none';
+        document.getElementById('mcp-postgres-fields').style.display = 'block';
+        document.getElementById('mcp-azure-fields').style.display = 'none';
+        document.getElementById('mcp-new-cred').style.display = 'none';
+    } else if (type === 'azure') {
+        document.getElementById('mcp-jira-fields').style.display = 'none';
+        document.getElementById('mcp-postgres-fields').style.display = 'none';
+        document.getElementById('mcp-azure-fields').style.display = 'block';
+        document.getElementById('mcp-new-cred').style.display = 'none';
+    } else {
+        document.getElementById('mcp-jira-fields').style.display = 'none';
+        document.getElementById('mcp-postgres-fields').style.display = 'none';
+        document.getElementById('mcp-azure-fields').style.display = 'none';
+        document.getElementById('mcp-new-cred').style.display = 'block';
+    }
 }
 
 async function saveNewMcpServer() {
     const name = document.getElementById('mcp-new-name').value.trim();
     const type = document.getElementById('mcp-new-type').value;
-    const cred = document.getElementById('mcp-new-cred').value.trim();
+    let cred = document.getElementById('mcp-new-cred').value.trim();
     
     if (!name) return showToast('Please enter a server name', 'error');
     
     let command = '';
     let args = '[]';
+    let envObj = {};
     
     if (type === 'github') {
         command = 'npx';
         args = JSON.stringify(['-y', '@modelcontextprotocol/server-github']);
     } else if (type === 'jira') {
         command = 'npx';
-        // Add default jira MCP command if available or just mockup for MVP
-        args = JSON.stringify(['-y', 'jira-mcp-server']);
+        args = JSON.stringify(['-y', '@nexus2520/jira-mcp-server']);
+        const jiraEmail = document.getElementById('mcp-new-jira-email').value.trim();
+        const jiraUrl = document.getElementById('mcp-new-jira-url').value.trim();
+        if (!jiraEmail || !jiraUrl) return showToast('Jira Email and Base URL are required', 'error');
+        envObj = { JIRA_EMAIL: jiraEmail, JIRA_BASE_URL: jiraUrl };
+    } else if (type === 'postgres') {
+        command = 'npx';
+        args = JSON.stringify(['-y', '@modelcontextprotocol/server-postgres']);
+        cred = document.getElementById('mcp-new-pg-url').value.trim();
+        if (!cred) return showToast('Database URL is required', 'error');
+    } else if (type === 'azure') {
+        command = 'npx';
+        args = JSON.stringify(['-y', '@azure/mcp', 'server', 'start']);
+        const tenant = document.getElementById('mcp-azure-tenant').value.trim();
+        const client = document.getElementById('mcp-azure-client').value.trim();
+        const secret = document.getElementById('mcp-azure-secret').value.trim();
+        const sub = document.getElementById('mcp-azure-sub').value.trim();
+        
+        if (!tenant || !client || !secret || !sub) {
+            return showToast('All Azure credentials (Tenant, Client ID, Secret, Subscription) are required', 'error');
+        }
+        
+        cred = JSON.stringify({
+            AZURE_TENANT_ID: tenant,
+            AZURE_CLIENT_ID: client,
+            AZURE_CLIENT_SECRET: secret,
+            AZURE_SUBSCRIPTION_ID: sub
+        });
     }
 
     try {
@@ -7970,7 +8051,7 @@ async function saveNewMcpServer() {
                 server_type: type,
                 command,
                 args,
-                env: '{}',
+                env: JSON.stringify(envObj),
                 credentials: cred || null
             })
         });
@@ -7988,14 +8069,89 @@ async function saveNewMcpServer() {
     }
 }
 
+async function deleteMcpServer() {
+    const serverId = document.getElementById('mcp-server-select').value;
+    if (!serverId) return;
+    
+    if (!confirm('Are you sure you want to delete this MCP server?')) return;
+    
+    try {
+        const res = await authFetch(`${API_BASE}/mcp/servers/${serverId}`, {
+            method: 'DELETE'
+        });
+        if (!res.ok) throw new Error(await res.text());
+        
+        showToastBanner('Server deleted successfully', 'success');
+        await loadMcpServers();
+    } catch (err) {
+        showToastBanner(`Delete failed: ${err.message}`, 'error');
+    }
+}
+
 function onMcpServerSelect() {
     const val = document.getElementById('mcp-server-select').value;
+    const deleteBtn = document.getElementById('mcp-delete-btn');
+    
     if (val) {
+        if (deleteBtn) deleteBtn.style.display = 'block';
         document.getElementById('mcp-import-workspace').style.display = 'block';
         document.getElementById('mcp-import-btn').style.display = 'block';
+        
+        const server = currentMcpServers.find(s => s.id == val);
+        if (server && server.server_type.toLowerCase() === 'github') {
+            document.getElementById('mcp-import-mode-container').style.display = 'block';
+            document.getElementById('mcp-repo-path').style.display = 'block';
+            document.getElementById('mcp-file-path').style.display = 'block';
+            onMcpModeChange();
+        } else if (server && server.server_type.toLowerCase() === 'jira') {
+            document.getElementById('mcp-import-mode-container').style.display = 'none';
+            document.getElementById('mcp-repo-path').style.display = 'none';
+            document.getElementById('mcp-file-path').style.display = 'block';
+            document.getElementById('mcp-file-path').placeholder = 'Issue Key (e.g. PROJ-123)';
+        } else if (server && server.server_type.toLowerCase() === 'postgres') {
+            document.getElementById('mcp-import-mode-container').style.display = 'block';
+            document.getElementById('mcp-repo-path').style.display = 'none';
+            document.getElementById('mcp-file-path').style.display = 'block';
+            onMcpModeChange();
+        } else if (server && server.server_type.toLowerCase() === 'azure') {
+            document.getElementById('mcp-import-mode-container').style.display = 'block';
+            document.getElementById('mcp-repo-path').style.display = 'none';
+            document.getElementById('mcp-file-path').style.display = 'block';
+            onMcpModeChange();
+        } else {
+            document.getElementById('mcp-import-mode-container').style.display = 'none';
+            document.getElementById('mcp-repo-path').style.display = 'block';
+            document.getElementById('mcp-file-path').style.display = 'block';
+            document.getElementById('mcp-file-path').placeholder = 'File or Folder Path (e.g. README.md, docs/)';
+        }
     } else {
+        if (deleteBtn) deleteBtn.style.display = 'none';
         document.getElementById('mcp-import-workspace').style.display = 'none';
         document.getElementById('mcp-import-btn').style.display = 'none';
+    }
+}
+
+function onMcpModeChange() {
+    const mode = document.querySelector('input[name="mcp-import-mode"]:checked')?.value || 'general';
+    const serverId = document.getElementById('mcp-server-select').value;
+    const server = currentMcpServers.find(s => s.id == serverId);
+    const isPostgres = server && server.server_type.toLowerCase() === 'postgres';
+    const isAzure = server && server.server_type.toLowerCase() === 'azure';
+
+    if (isPostgres) {
+        if (mode === 'pqc') {
+            document.getElementById('mcp-file-path').placeholder = 'Optional: Custom PQC Query (leave empty for automated scan)';
+        } else {
+            document.getElementById('mcp-file-path').placeholder = 'Optional: Custom SQL Query (leave empty for automated report)';
+        }
+    } else if (isAzure) {
+        document.getElementById('mcp-file-path').placeholder = 'Optional: Key Vault Name (to extract Cryptographic Keys)';
+    } else {
+        if (mode === 'pqc') {
+            document.getElementById('mcp-file-path').placeholder = 'Optional: Subfolder to scan (leave empty for root)';
+        } else {
+            document.getElementById('mcp-file-path').placeholder = 'File or Folder Path (e.g. README.md, docs/)';
+        }
     }
 }
 
@@ -8004,8 +8160,20 @@ async function executeMcpImport() {
     const repoPath = document.getElementById('mcp-repo-path').value.trim();
     const filePath = document.getElementById('mcp-file-path').value.trim();
     
-    if (!serverId || !repoPath || !filePath) {
-        return showToast('Please fill all fields', 'error');
+    const server = currentMcpServers.find(s => s.id == serverId);
+    const isJira = server && server.server_type.toLowerCase() === 'jira';
+    const isGithub = server && server.server_type.toLowerCase() === 'github';
+    const isPostgres = server && server.server_type.toLowerCase() === 'postgres';
+    const isAzure = server && server.server_type.toLowerCase() === 'azure';
+    
+    const modeEl = document.querySelector('input[name="mcp-import-mode"]:checked');
+    const mode = ((isGithub || isPostgres || isAzure) && modeEl) ? modeEl.value : 'general';
+    
+    if (!serverId || (!isJira && !isPostgres && !isAzure && !repoPath)) {
+        return showToast('Please fill all required fields', 'error');
+    }
+    if ((isJira || (isGithub && mode === 'general')) && !filePath) {
+        return showToast('Please specify a file or folder path', 'error');
     }
     if (!activeSessionId) {
         return showToast('Please create or select an audit session first', 'error');
@@ -8023,7 +8191,8 @@ async function executeMcpImport() {
             body: JSON.stringify({
                 session_id: activeSessionId,
                 repo_or_path: repoPath,
-                file_path: filePath
+                file_path: filePath,
+                import_mode: mode
             })
         });
         

@@ -74,5 +74,14 @@ def get_mcp_manager_for_config(config) -> MCPManager:
             env['GITHUB_PERSONAL_ACCESS_TOKEN'] = decrypted
         elif config.server_type.lower() == 'jira':
             env['JIRA_API_TOKEN'] = decrypted
+        elif config.server_type.lower() == 'postgres':
+            args.append(decrypted)
+        elif config.server_type.lower() == 'azure':
+            try:
+                azure_creds = json.loads(decrypted)
+                if isinstance(azure_creds, dict):
+                    env.update(azure_creds)
+            except Exception:
+                pass
             
     return MCPManager(command=config.command, args=args, env=env)

@@ -1706,6 +1706,27 @@
     </div>
 
 
+    <!-- Evidence Viewer Modal -->
+    <div id="evidence-viewer-modal" class="modal-overlay" style="display: none; position: fixed; inset: 0; background: rgba(15, 23, 42, 0.85); backdrop-filter: blur(10px); z-index: 10000; align-items: center; justify-content: center; padding: 16px;">
+        <div class="modal-card" style="background: #0f172a; border: 1px solid rgba(59, 130, 246, 0.4); border-radius: 16px; width: 100%; max-width: 800px; max-height: 85vh; display: flex; flex-direction: column; padding: 26px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.8); color: #f8fafc;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid rgba(59, 130, 246, 0.25); padding-bottom: 14px;">
+                <div>
+                    <h3 id="evidence-viewer-title" style="margin: 0; font-size: 1.2rem; font-weight: 800; color: #3b82f6;">Document Viewer</h3>
+                    <p style="margin: 4px 0 0 0; font-size: 0.80rem; color: #94a3b8; font-weight: 500;">Verify imported content</p>
+                </div>
+                <button type="button" onclick="closeEvidenceViewer()" style="background: transparent; border: none; color: #94a3b8; font-size: 1.5rem; cursor: pointer; line-height: 1;">&times;</button>
+            </div>
+            
+            <div id="evidence-viewer-content" style="flex: 1; overflow-y: auto; background: #1e293b; border-radius: 8px; padding: 16px; font-family: monospace; white-space: pre-wrap; font-size: 0.85rem; color: #e2e8f0; border: 1px solid rgba(148, 163, 184, 0.2);">
+                Loading content...
+            </div>
+            
+            <div style="display: flex; justify-content: flex-end; margin-top: 20px;">
+                <button type="button" onclick="closeEvidenceViewer()" style="padding: 10px 22px; border-radius: 8px; border: none; background: #3b82f6; color: white; font-weight: 800; cursor: pointer;">Close</button>
+            </div>
+        </div>
+    </div>
+
     <!-- MCP Import Modal -->
     <div id="mcp-import-modal" class="modal-overlay" style="display: none; position: fixed; inset: 0; background: rgba(15, 23, 42, 0.85); backdrop-filter: blur(10px); z-index: 10000; align-items: center; justify-content: center; padding: 16px;">
         <div class="modal-card" style="background: #0f172a; border: 1px solid rgba(16, 185, 129, 0.4); border-radius: 16px; width: 100%; max-width: 600px; padding: 26px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.8); color: #f8fafc;">
@@ -1722,17 +1743,50 @@
                     <select id="mcp-server-select" onchange="onMcpServerSelect()" style="flex: 1; padding: 8px 12px; font-size: 0.86rem; border-radius: 8px; border: 1px solid rgba(148, 163, 184, 0.3); background: rgba(30, 41, 59, 0.8); color: white;">
                         <option value="">-- Loading servers --</option>
                     </select>
+                    <button type="button" onclick="deleteMcpServer()" style="padding: 8px 12px; border-radius: 8px; border: 1px solid rgba(239, 68, 68, 0.5); background: rgba(239, 68, 68, 0.15); color: #ef4444; font-weight: 700; cursor: pointer; display: none;" id="mcp-delete-btn">Delete</button>
                     <button type="button" onclick="showAddMcpServerForm()" style="padding: 8px 12px; border-radius: 8px; border: 1px solid rgba(16, 185, 129, 0.5); background: rgba(16, 185, 129, 0.15); color: #10b981; font-weight: 700; cursor: pointer;">+ Add New</button>
                 </div>
             </div>
 
+<div id="mcp-import-mode-container" style="display: none; margin-bottom: 16px; background: rgba(15, 23, 42, 0.4); padding: 12px; border-radius: 8px; border: 1px dashed rgba(59, 130, 246, 0.4);">
+    <label style="display: block; font-size: 0.76rem; font-weight: 700; color: var(--text-main); margin-bottom: 8px;">Import Mode</label>
+    <div style="display: flex; gap: 16px;">
+        <label style="display: flex; align-items: center; gap: 6px; font-size: 0.82rem; color: #e2e8f0; cursor: pointer;">
+            <input type="radio" name="mcp-import-mode" value="general" checked onchange="onMcpModeChange()" style="accent-color: #3b82f6;"> General (Specific File/Folder)
+        </label>
+        <label style="display: flex; align-items: center; gap: 6px; font-size: 0.82rem; color: #e2e8f0; cursor: pointer;">
+            <input type="radio" name="mcp-import-mode" value="pqc" onchange="onMcpModeChange()" style="accent-color: #10b981;"> PQC (Scan Repo for Crypto Files)
+        </label>
+    </div>
+</div>
+
             <div id="mcp-add-server-form" style="display: none; background: #1e293b; border: 1px solid rgba(59, 130, 246, 0.35); border-radius: 12px; padding: 18px; margin-bottom: 20px;">
                 <h4 style="margin: 0 0 12px 0; font-size: 0.9rem; color: #60a5fa;">Configure New Server</h4>
                 <input type="text" id="mcp-new-name" placeholder="Name (e.g. My GitHub)" style="width: 100%; margin-bottom: 8px; padding: 8px; border-radius: 6px; border: 1px solid rgba(148,163,184,0.3); background: #0f172a; color: white;">
-                <select id="mcp-new-type" style="width: 100%; margin-bottom: 8px; padding: 8px; border-radius: 6px; border: 1px solid rgba(148,163,184,0.3); background: #0f172a; color: white;">
+                <select id="mcp-new-type" onchange="onMcpNewTypeChange()" style="width: 100%; margin-bottom: 8px; padding: 8px; border-radius: 6px; border: 1px solid rgba(148,163,184,0.3); background: #0f172a; color: white;">
                     <option value="github">GitHub</option>
                     <option value="jira">Jira</option>
+                    <option value="postgres">PostgreSQL</option>
+                    <option value="azure">Azure Cloud Server</option>
                 </select>
+                
+                <div id="mcp-jira-fields" style="display: none;">
+                    <input type="email" id="mcp-new-jira-email" placeholder="Jira Email (e.g. user@company.com)" style="width: 100%; margin-bottom: 8px; padding: 8px; border-radius: 6px; border: 1px solid rgba(148,163,184,0.3); background: #0f172a; color: white;">
+                    <input type="url" id="mcp-new-jira-url" placeholder="Jira Base URL (e.g. https://domain.atlassian.net)" style="width: 100%; margin-bottom: 8px; padding: 8px; border-radius: 6px; border: 1px solid rgba(148,163,184,0.3); background: #0f172a; color: white;">
+                </div>
+                
+                <div id="mcp-postgres-fields" style="display: none;">
+                    <input type="url" id="mcp-new-pg-url" placeholder="Database URL (e.g. postgresql://user:pass@host:5432/db)" style="width: 100%; margin-bottom: 8px; padding: 8px; border-radius: 6px; border: 1px solid rgba(148,163,184,0.3); background: #0f172a; color: white;">
+                </div>
+                
+                <div id="mcp-azure-fields" style="display: none;">
+                    <input type="text" id="mcp-azure-tenant" placeholder="Azure Tenant ID" style="width: 100%; margin-bottom: 8px; padding: 8px; border-radius: 6px; border: 1px solid rgba(148,163,184,0.3); background: #0f172a; color: white;">
+                    <input type="text" id="mcp-azure-client" placeholder="Azure Client ID" style="width: 100%; margin-bottom: 8px; padding: 8px; border-radius: 6px; border: 1px solid rgba(148,163,184,0.3); background: #0f172a; color: white;">
+                    <input type="password" id="mcp-azure-secret" placeholder="Azure Client Secret" style="width: 100%; margin-bottom: 8px; padding: 8px; border-radius: 6px; border: 1px solid rgba(148,163,184,0.3); background: #0f172a; color: white;">
+                    <input type="text" id="mcp-azure-sub" placeholder="Azure Subscription ID" style="width: 100%; margin-bottom: 8px; padding: 8px; border-radius: 6px; border: 1px solid rgba(148,163,184,0.3); background: #0f172a; color: white;">
+                </div>
+
+                
                 <input type="password" id="mcp-new-cred" placeholder="Personal Access Token (PAT) / API Key" style="width: 100%; margin-bottom: 8px; padding: 8px; border-radius: 6px; border: 1px solid rgba(148,163,184,0.3); background: #0f172a; color: white;">
                 <div style="display: flex; gap: 8px; justify-content: flex-end;">
                     <button type="button" onclick="hideAddMcpServerForm()" style="padding: 6px 12px; border-radius: 6px; background: transparent; color: #cbd5e1; border: 1px solid rgba(148,163,184,0.3); cursor: pointer;">Cancel</button>

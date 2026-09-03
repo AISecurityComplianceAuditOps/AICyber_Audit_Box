@@ -110,7 +110,7 @@ if "%LLM_SLOTS%"=="" set LLM_SLOTS=4
 
 echo.
 echo [3/6] Starting llama.cpp LLM Server (%PHYSICAL_CORES% Physical Cores -> %LLM_SLOTS% Parallel Slots / 128k Fluid Shared Pool / 8-bit KV Cache)...
-start "Llama LLM Server" /d "%LLAMA_DIR%" /min "%LLAMA_SERVER_EXE%" --port 11434 -m "%~dp0google_gemma-4-E4B-it-Q4_K_M.gguf" -c 131072 -np %LLM_SLOTS% -t %LLM_THREADS% -b 2048 -ub 512 --flash-attn on --cont-batching -ctk q8_0 -ctv q8_0
+start "Llama LLM Server" /d "%LLAMA_DIR%" /min "%LLAMA_SERVER_EXE%" --port 11434 -m "%~dp0gemma-4-E4B-it-qat-Q4_0.gguf" -c 131072 -np %LLM_SLOTS% -t %LLM_THREADS% -b 2048 -ub 512 --flash-attn on --cont-batching -ctk q8_0 -ctv q8_0
 
 echo.
 echo [4/6] Starting llama.cpp Embedding Server (Port 11435 with %EMBED_THREADS% threads)...
