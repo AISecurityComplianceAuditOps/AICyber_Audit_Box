@@ -1,0 +1,10 @@
+{
+    "_comment": "Enterprise TOP_K dual-pool matrix. Optimized for 100% policy + operational evidence coverage: pdf/docx set to 40 chunks (160 candidate pool), xlsx/csv set to 45 chunks (180 candidate pool for multi-tab AD dumps), image OCR set to 30 chunks, txt/pptx set to 30 chunks. Fits comfortably inside the 128k token context window.",
+    "pdf": 40,
+    "docx": 40,
+    "txt": 30,
+    "xlsx": 45,
+    "csv": 45,
+    "pptx": 30,
+    "image": 30
+}

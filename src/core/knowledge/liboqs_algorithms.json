@@ -1,0 +1,443 @@
+{
+  "ml-kem": {
+    "name": "ML-KEM (CRYSTALS-Kyber)",
+    "type": "KEM",
+    "nist_round": "Final",
+    "security_levels": "1, 3, 5",
+    "standard": "FIPS 203",
+    "quantum_status": "SAFE",
+    "note": "NIST primary KEM selection. Use ML-KEM-768 (level 3) for TLS 1.3."
+  },
+  "ml-kem-512": {
+    "name": "ML-KEM-512 (Kyber512)",
+    "type": "KEM",
+    "nist_round": "Final",
+    "security_levels": "1",
+    "standard": "FIPS 203",
+    "quantum_status": "SAFE",
+    "note": "AES-128 equivalent. Use for constrained devices."
+  },
+  "ml-kem-768": {
+    "name": "ML-KEM-768 (Kyber768)",
+    "type": "KEM",
+    "nist_round": "Final",
+    "security_levels": "3",
+    "standard": "FIPS 203",
+    "quantum_status": "SAFE",
+    "note": "AES-192 equivalent. RECOMMENDED for general use."
+  },
+  "ml-kem-1024": {
+    "name": "ML-KEM-1024 (Kyber1024)",
+    "type": "KEM",
+    "nist_round": "Final",
+    "security_levels": "5",
+    "standard": "FIPS 203",
+    "quantum_status": "SAFE",
+    "note": "AES-256 equivalent. Use for top-secret / classified data."
+  },
+  "kyber": {
+    "name": "CRYSTALS-Kyber (generic)",
+    "type": "KEM",
+    "nist_round": "Final",
+    "security_levels": "1, 3, 5",
+    "standard": "FIPS 203",
+    "quantum_status": "SAFE",
+    "note": "Pre-standardization name; now ML-KEM per FIPS 203."
+  },
+  "kyber512": {
+    "name": "CRYSTALS-Kyber-512",
+    "type": "KEM",
+    "nist_round": "Final",
+    "security_levels": "1",
+    "standard": "FIPS 203",
+    "quantum_status": "SAFE",
+    "note": "Level 1 KEM."
+  },
+  "kyber768": {
+    "name": "CRYSTALS-Kyber-768",
+    "type": "KEM",
+    "nist_round": "Final",
+    "security_levels": "3",
+    "standard": "FIPS 203",
+    "quantum_status": "SAFE",
+    "note": "Level 3 KEM. Recommended."
+  },
+  "kyber1024": {
+    "name": "CRYSTALS-Kyber-1024",
+    "type": "KEM",
+    "nist_round": "Final",
+    "security_levels": "5",
+    "standard": "FIPS 203",
+    "quantum_status": "SAFE",
+    "note": "Level 5 KEM."
+  },
+  "ml-dsa": {
+    "name": "ML-DSA (CRYSTALS-Dilithium)",
+    "type": "SIG",
+    "nist_round": "Final",
+    "security_levels": "2, 3, 5",
+    "standard": "FIPS 204",
+    "quantum_status": "SAFE",
+    "note": "NIST primary signature selection. Replaces ECDSA."
+  },
+  "ml-dsa-44": {
+    "name": "ML-DSA-44 (Dilithium2)",
+    "type": "SIG",
+    "nist_round": "Final",
+    "security_levels": "2",
+    "standard": "FIPS 204",
+    "quantum_status": "SAFE",
+    "note": "Level 2 signature."
+  },
+  "ml-dsa-65": {
+    "name": "ML-DSA-65 (Dilithium3)",
+    "type": "SIG",
+    "nist_round": "Final",
+    "security_levels": "3",
+    "standard": "FIPS 204",
+    "quantum_status": "SAFE",
+    "note": "Level 3 signature. RECOMMENDED."
+  },
+  "ml-dsa-87": {
+    "name": "ML-DSA-87 (Dilithium5)",
+    "type": "SIG",
+    "nist_round": "Final",
+    "security_levels": "5",
+    "standard": "FIPS 204",
+    "quantum_status": "SAFE",
+    "note": "Level 5 signature."
+  },
+  "dilithium": {
+    "name": "CRYSTALS-Dilithium (generic)",
+    "type": "SIG",
+    "nist_round": "Final",
+    "security_levels": "2, 3, 5",
+    "standard": "FIPS 204",
+    "quantum_status": "SAFE",
+    "note": "Pre-standardization name; now ML-DSA per FIPS 204."
+  },
+  "dilithium2": {
+    "name": "CRYSTALS-Dilithium-2",
+    "type": "SIG",
+    "nist_round": "Final",
+    "security_levels": "2",
+    "standard": "FIPS 204",
+    "quantum_status": "SAFE",
+    "note": "Level 2 signature."
+  },
+  "dilithium3": {
+    "name": "CRYSTALS-Dilithium-3",
+    "type": "SIG",
+    "nist_round": "Final",
+    "security_levels": "3",
+    "standard": "FIPS 204",
+    "quantum_status": "SAFE",
+    "note": "Level 3 signature. Recommended."
+  },
+  "dilithium5": {
+    "name": "CRYSTALS-Dilithium-5",
+    "type": "SIG",
+    "nist_round": "Final",
+    "security_levels": "5",
+    "standard": "FIPS 204",
+    "quantum_status": "SAFE",
+    "note": "Level 5 signature."
+  },
+  "slh-dsa": {
+    "name": "SLH-DSA (SPHINCS+)",
+    "type": "SIG",
+    "nist_round": "Final",
+    "security_levels": "1, 3, 5",
+    "standard": "FIPS 205",
+    "quantum_status": "SAFE",
+    "note": "Stateless hash-based signatures. Conservative option."
+  },
+  "sphincs": {
+    "name": "SPHINCS+",
+    "type": "SIG",
+    "nist_round": "Final",
+    "security_levels": "1, 3, 5",
+    "standard": "FIPS 205",
+    "quantum_status": "SAFE",
+    "note": "Pre-standardization name; now SLH-DSA per FIPS 205."
+  },
+  "sphincs-sha2-128s": {
+    "name": "SPHINCS+-SHA2-128s",
+    "type": "SIG",
+    "nist_round": "Final",
+    "security_levels": "1",
+    "standard": "FIPS 205",
+    "quantum_status": "SAFE",
+    "note": "Small signature variant, level 1."
+  },
+  "sphincs-sha2-128f": {
+    "name": "SPHINCS+-SHA2-128f",
+    "type": "SIG",
+    "nist_round": "Final",
+    "security_levels": "1",
+    "standard": "FIPS 205",
+    "quantum_status": "SAFE",
+    "note": "Fast signature variant, level 1."
+  },
+  "sphincs-sha2-192s": {
+    "name": "SPHINCS+-SHA2-192s",
+    "type": "SIG",
+    "nist_round": "Final",
+    "security_levels": "3",
+    "standard": "FIPS 205",
+    "quantum_status": "SAFE",
+    "note": "Small signature variant, level 3."
+  },
+  "sphincs-sha2-256s": {
+    "name": "SPHINCS+-SHA2-256s",
+    "type": "SIG",
+    "nist_round": "Final",
+    "security_levels": "5",
+    "standard": "FIPS 205",
+    "quantum_status": "SAFE",
+    "note": "Small signature variant, level 5."
+  },
+  "falcon": {
+    "name": "Falcon / FN-DSA",
+    "type": "SIG",
+    "nist_round": "Final",
+    "security_levels": "1, 5",
+    "standard": "NIST IR 8413",
+    "quantum_status": "SAFE",
+    "note": "NTRU lattice-based; compact signatures."
+  },
+  "falcon-512": {
+    "name": "Falcon-512 / FN-DSA-512",
+    "type": "SIG",
+    "nist_round": "Final",
+    "security_levels": "1",
+    "standard": "NIST IR 8413",
+    "quantum_status": "SAFE",
+    "note": "Level 1 Falcon signature."
+  },
+  "falcon-1024": {
+    "name": "Falcon-1024 / FN-DSA-1024",
+    "type": "SIG",
+    "nist_round": "Final",
+    "security_levels": "5",
+    "standard": "NIST IR 8413",
+    "quantum_status": "SAFE",
+    "note": "Level 5 Falcon signature."
+  },
+  "fn-dsa": {
+    "name": "FN-DSA (Falcon standardized name)",
+    "type": "SIG",
+    "nist_round": "Final",
+    "security_levels": "1, 5",
+    "standard": "NIST IR 8413",
+    "quantum_status": "SAFE",
+    "note": "FIPS name for Falcon."
+  },
+  "frodokem": {
+    "name": "FrodoKEM",
+    "type": "KEM",
+    "nist_round": "Round 4",
+    "security_levels": "1, 3, 5",
+    "standard": "NIST Round 4",
+    "quantum_status": "SAFE",
+    "note": "Conservative KEM based on LWE (no ring structure). Used in defense/gov."
+  },
+  "frodo640aes": {
+    "name": "FrodoKEM-640-AES",
+    "type": "KEM",
+    "nist_round": "Round 4",
+    "security_levels": "1",
+    "standard": "NIST Round 4",
+    "quantum_status": "SAFE",
+    "note": "Level 1 FrodoKEM (AES variant)."
+  },
+  "frodo640shake": {
+    "name": "FrodoKEM-640-SHAKE",
+    "type": "KEM",
+    "nist_round": "Round 4",
+    "security_levels": "1",
+    "standard": "NIST Round 4",
+    "quantum_status": "SAFE",
+    "note": "Level 1 FrodoKEM (SHAKE variant)."
+  },
+  "frodo976aes": {
+    "name": "FrodoKEM-976-AES",
+    "type": "KEM",
+    "nist_round": "Round 4",
+    "security_levels": "3",
+    "standard": "NIST Round 4",
+    "quantum_status": "SAFE",
+    "note": "Level 3 FrodoKEM (AES variant)."
+  },
+  "frodo976shake": {
+    "name": "FrodoKEM-976-SHAKE",
+    "type": "KEM",
+    "nist_round": "Round 4",
+    "security_levels": "3",
+    "standard": "NIST Round 4",
+    "quantum_status": "SAFE",
+    "note": "Level 3 FrodoKEM (SHAKE variant)."
+  },
+  "frodo1344aes": {
+    "name": "FrodoKEM-1344-AES",
+    "type": "KEM",
+    "nist_round": "Round 4",
+    "security_levels": "5",
+    "standard": "NIST Round 4",
+    "quantum_status": "SAFE",
+    "note": "Level 5 FrodoKEM (AES variant)."
+  },
+  "hqc": {
+    "name": "HQC (Hamming Quasi-Cyclic)",
+    "type": "KEM",
+    "nist_round": "Round 4",
+    "security_levels": "1, 3, 5",
+    "standard": "NIST Round 4",
+    "quantum_status": "SAFE",
+    "note": "Code-based KEM. NIST selected for Round 4."
+  },
+  "hqc-128": {
+    "name": "HQC-128",
+    "type": "KEM",
+    "nist_round": "Round 4",
+    "security_levels": "1",
+    "standard": "NIST Round 4",
+    "quantum_status": "SAFE",
+    "note": "Level 1 HQC."
+  },
+  "hqc-192": {
+    "name": "HQC-192",
+    "type": "KEM",
+    "nist_round": "Round 4",
+    "security_levels": "3",
+    "standard": "NIST Round 4",
+    "quantum_status": "SAFE",
+    "note": "Level 3 HQC."
+  },
+  "hqc-256": {
+    "name": "HQC-256",
+    "type": "KEM",
+    "nist_round": "Round 4",
+    "security_levels": "5",
+    "standard": "NIST Round 4",
+    "quantum_status": "SAFE",
+    "note": "Level 5 HQC."
+  },
+  "bike": {
+    "name": "BIKE (Bit Flipping KEM)",
+    "type": "KEM",
+    "nist_round": "Round 4",
+    "security_levels": "1, 3",
+    "standard": "NIST Round 4",
+    "quantum_status": "SAFE",
+    "note": "Code-based KEM. NIST Round 4 candidate."
+  },
+  "bike-l1": {
+    "name": "BIKE Level 1",
+    "type": "KEM",
+    "nist_round": "Round 4",
+    "security_levels": "1",
+    "standard": "NIST Round 4",
+    "quantum_status": "SAFE",
+    "note": "Level 1 BIKE."
+  },
+  "bike-l3": {
+    "name": "BIKE Level 3",
+    "type": "KEM",
+    "nist_round": "Round 4",
+    "security_levels": "3",
+    "standard": "NIST Round 4",
+    "quantum_status": "SAFE",
+    "note": "Level 3 BIKE."
+  },
+  "classic-mceliece": {
+    "name": "Classic McEliece",
+    "type": "KEM",
+    "nist_round": "Round 4",
+    "security_levels": "1, 3, 5",
+    "standard": "NIST Round 4",
+    "quantum_status": "SAFE",
+    "note": "Very large public keys (~1MB). Conservative; used in classified systems."
+  },
+  "mceliece": {
+    "name": "Classic McEliece (alias)",
+    "type": "KEM",
+    "nist_round": "Round 4",
+    "security_levels": "1, 3, 5",
+    "standard": "NIST Round 4",
+    "quantum_status": "SAFE",
+    "note": "Same as Classic McEliece."
+  },
+  "ntruprime": {
+    "name": "NTRU Prime",
+    "type": "KEM",
+    "nist_round": "Round 3",
+    "security_levels": "1, 3, 5",
+    "standard": "OQS liboqs",
+    "quantum_status": "SAFE",
+    "note": "NTRU-based KEM; not selected for Round 4."
+  },
+  "saber": {
+    "name": "SABER",
+    "type": "KEM",
+    "nist_round": "Round 3",
+    "security_levels": "1, 3, 5",
+    "standard": "OQS liboqs",
+    "quantum_status": "SAFE",
+    "note": "LWR-based KEM; not selected for Round 4. Use ML-KEM instead."
+  },
+  "lightsaber": {
+    "name": "LightSaber",
+    "type": "KEM",
+    "nist_round": "Round 3",
+    "security_levels": "1",
+    "standard": "OQS liboqs",
+    "quantum_status": "SAFE",
+    "note": "SABER variant, level 1."
+  },
+  "firesaber": {
+    "name": "FireSaber",
+    "type": "KEM",
+    "nist_round": "Round 3",
+    "security_levels": "5",
+    "standard": "OQS liboqs",
+    "quantum_status": "SAFE",
+    "note": "SABER variant, level 5."
+  },
+  "picnic": {
+    "name": "Picnic",
+    "type": "SIG",
+    "nist_round": "Round 3",
+    "security_levels": "1, 3, 5",
+    "standard": "OQS liboqs",
+    "quantum_status": "SAFE",
+    "note": "Zero-knowledge proof based signatures; not NIST-selected."
+  },
+  "rainbow": {
+    "name": "Rainbow (WITHDRAWN)",
+    "type": "SIG",
+    "nist_round": "Withdrawn",
+    "security_levels": "N/A",
+    "standard": "Withdrawn",
+    "quantum_status": "WEAK",
+    "note": "WITHDRAWN by NIST -- classical attack by Ward Beullens (2022). Do not use."
+  },
+  "gemss": {
+    "name": "GeMSS (WITHDRAWN)",
+    "type": "SIG",
+    "nist_round": "Withdrawn",
+    "security_levels": "N/A",
+    "standard": "Withdrawn",
+    "quantum_status": "WEAK",
+    "note": "WITHDRAWN -- classical attacks found. Do not use."
+  },
+  "luov": {
+    "name": "LUOV (WITHDRAWN)",
+    "type": "SIG",
+    "nist_round": "Withdrawn",
+    "security_levels": "N/A",
+    "standard": "Withdrawn",
+    "quantum_status": "WEAK",
+    "note": "WITHDRAWN -- rank attacks. Do not use."
+  }
+}

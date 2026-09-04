@@ -1,0 +1,94 @@
+{
+  "XBOM-1": {
+    "sub_questions": ["Does the SBOM record the author (person/organization) who created the SBOM data?"],
+    "remediation_guidance": "Configure the SBOM generation process/tool to record the SBOM author."
+  },
+  "XBOM-2": {
+    "sub_questions": ["Is a cryptographic signature attributable to the SBOM author applied to attest authenticity?"],
+    "remediation_guidance": "Sign SBOMs with a cryptographic signature attributable to the author to attest authenticity."
+  },
+  "XBOM-3": {
+    "sub_questions": ["Does the SBOM identify the data format standard used (CycloneDX, SPDX)?"],
+    "remediation_guidance": "Ensure SBOMs explicitly identify the format standard they are expressed in."
+  },
+  "XBOM-4": {
+    "sub_questions": ["Does the SBOM record the specific format version, and is it a current/non-deprecated version?"],
+    "remediation_guidance": "Record the format version used and keep it on a current, non-deprecated version of CycloneDX/SPDX."
+  },
+  "XBOM-5": {
+    "sub_questions": ["Does the SBOM record the lifecycle phase (design, build, post-build) at which it was generated?"],
+    "remediation_guidance": "Configure SBOM generation to record the lifecycle phase of production."
+  },
+  "XBOM-6": {
+    "sub_questions": ["Does the SBOM record a timestamp of its most recent update?"],
+    "remediation_guidance": "Ensure SBOM generation stamps each document with the update timestamp."
+  },
+  "XBOM-7": {
+    "sub_questions": ["Does the SBOM carry a unique version identifier distinguishing it from prior revisions?"],
+    "remediation_guidance": "Assign a unique version identifier to each SBOM revision."
+  },
+  "XBOM-8": {
+    "sub_questions": ["Does the SBOM record the name of the tool used to generate it?"],
+    "remediation_guidance": "Ensure the SBOM generation tool records its own name in the output."
+  },
+  "XBOM-9": {
+    "sub_questions": ["Does the SBOM record the version of the generation tool used?"],
+    "remediation_guidance": "Ensure the SBOM generation tool records its own version in the output."
+  },
+  "XBOM-10": {
+    "sub_questions": ["Does every component entry record a producer-assigned, human-readable name?"],
+    "remediation_guidance": "Verify every component in the SBOM has its producer-assigned name recorded."
+  },
+  "XBOM-11": {
+    "sub_questions": ["Does every component entry record its release/build version?"],
+    "remediation_guidance": "Verify every component in the SBOM has its version recorded."
+  },
+  "XBOM-12": {
+    "sub_questions": ["Does every component entry record its producer/supplier organization?"],
+    "remediation_guidance": "Verify every component in the SBOM has its producer/supplier recorded."
+  },
+  "XBOM-13": {
+    "sub_questions": ["Does every component carry a standard identifier (PURL, CPE, or equivalent) for automated lookups?"],
+    "remediation_guidance": "Ensure components carry a standard identifier (PURL/CPE) enabling automated vulnerability correlation."
+  },
+  "XBOM-14": {
+    "sub_questions": ["Does the SBOM document dependency relationships, including transitive/nested dependencies?"],
+    "remediation_guidance": "Configure SBOM generation to capture full dependency trees, not only direct dependencies."
+  },
+  "XBOM-15": {
+    "sub_questions": ["Does every component entry include a cryptographic hash of the actual artifact contents?"],
+    "remediation_guidance": "Ensure components include a cryptographic hash value for integrity verification."
+  },
+  "XBOM-16": {
+    "sub_questions": ["Does the SBOM record which hash algorithm was used for each component's hash value?"],
+    "remediation_guidance": "Record the hash algorithm (e.g. SHA-256) used alongside each component's hash value."
+  },
+  "XBOM-17": {
+    "sub_questions": ["Does every component entry record applicable license information?"],
+    "remediation_guidance": "Ensure license information (SPDX license ID, URL, or descriptor) is recorded per component."
+  },
+  "XBOM-18": {
+    "sub_questions": ["Does the SBOM generation process inventory the full dependency tree, not just direct dependencies?"],
+    "remediation_guidance": "Adopt tooling/process ensuring full (including transitive) dependency coverage in SBOM generation."
+  },
+  "XBOM-19": {
+    "sub_questions": ["Does the process mark unknown/withheld fields explicitly rather than leaving them blank?"],
+    "remediation_guidance": "Configure SBOM generation to explicitly mark unknown, redacted, or not-applicable fields."
+  },
+  "XBOM-20": {
+    "sub_questions": ["Are SBOMs produced/delivered in a standardized, machine-parsable format (SPDX/CycloneDX)?"],
+    "remediation_guidance": "Standardize SBOM production and delivery on a machine-processable format (SPDX or CycloneDX)."
+  },
+  "XBOM-21": {
+    "sub_questions": ["Is there a documented process to issue corrected SBOMs promptly when errors are found?"],
+    "remediation_guidance": "Establish a process for issuing corrected SBOMs with updated version/timestamp when errors are identified."
+  },
+  "XBOM-22": {
+    "sub_questions": ["Is a new SBOM generated for each product/software release?"],
+    "remediation_guidance": "Regenerate SBOMs for every product release rather than relying on a stale, one-time SBOM."
+  },
+  "XBOM-23": {
+    "sub_questions": ["Are SBOMs distributed promptly to authorized parties without unnecessary access barriers?"],
+    "remediation_guidance": "Establish a timely SBOM distribution process to authorized internal/external parties."
+  }
+}

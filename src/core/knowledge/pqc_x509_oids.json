@@ -1,0 +1,479 @@
+{
+  "1.2.840.113549.1.1.1": {
+    "name": "RSA",
+    "category": "Asymmetric Encryption (RSA)",
+    "quantum_status": "VULNERABLE",
+    "severity": "CRITICAL",
+    "standard": "RFC 3447",
+    "nist_ref": "NIST SP 800-131A Rev 2 -- RSA deprecated for key transport",
+    "cwe": "CWE-1240"
+  },
+  "1.2.840.113549.1.1.4": {
+    "name": "MD5withRSA",
+    "category": "Asymmetric Encryption (RSA)",
+    "quantum_status": "VULNERABLE",
+    "severity": "CRITICAL",
+    "standard": "RFC 3279",
+    "nist_ref": "MD5 broken (classical) + RSA broken (quantum)",
+    "cwe": "CWE-327"
+  },
+  "1.2.840.113549.1.1.5": {
+    "name": "SHA1withRSA",
+    "category": "Asymmetric Encryption (RSA)",
+    "quantum_status": "VULNERABLE",
+    "severity": "CRITICAL",
+    "standard": "RFC 3279",
+    "nist_ref": "SHA-1 broken classically; RSA broken quantum",
+    "cwe": "CWE-327"
+  },
+  "1.2.840.113549.1.1.11": {
+    "name": "SHA256withRSA",
+    "category": "Asymmetric Encryption (RSA)",
+    "quantum_status": "VULNERABLE",
+    "severity": "HIGH",
+    "standard": "RFC 4055",
+    "nist_ref": "NIST SP 800-131A Rev 2",
+    "cwe": "CWE-1240"
+  },
+  "1.2.840.113549.1.1.12": {
+    "name": "SHA384withRSA",
+    "category": "Asymmetric Encryption (RSA)",
+    "quantum_status": "VULNERABLE",
+    "severity": "HIGH",
+    "standard": "RFC 4055",
+    "nist_ref": "NIST SP 800-131A Rev 2",
+    "cwe": "CWE-1240"
+  },
+  "1.2.840.113549.1.1.13": {
+    "name": "SHA512withRSA",
+    "category": "Asymmetric Encryption (RSA)",
+    "quantum_status": "VULNERABLE",
+    "severity": "HIGH",
+    "standard": "RFC 4055",
+    "nist_ref": "NIST SP 800-131A Rev 2",
+    "cwe": "CWE-1240"
+  },
+  "1.2.840.113549.1.1.10": {
+    "name": "RSASSA-PSS",
+    "category": "Asymmetric Encryption (RSA)",
+    "quantum_status": "VULNERABLE",
+    "severity": "HIGH",
+    "standard": "RFC 4055",
+    "nist_ref": "RSA-PSS quantum-vulnerable via Shor",
+    "cwe": "CWE-1240"
+  },
+  "1.2.840.10040.4.1": {
+    "name": "DSA",
+    "category": "Asymmetric Digital Signature (DSA)",
+    "quantum_status": "VULNERABLE",
+    "severity": "CRITICAL",
+    "standard": "FIPS 186-4",
+    "nist_ref": "NIST SP 800-131A Rev 2 -- DSA disallowed",
+    "cwe": "CWE-1240"
+  },
+  "1.2.840.10040.4.3": {
+    "name": "SHA1withDSA",
+    "category": "Asymmetric Digital Signature (DSA)",
+    "quantum_status": "VULNERABLE",
+    "severity": "CRITICAL",
+    "standard": "RFC 3279",
+    "nist_ref": "SHA-1 broken + DSA quantum-vulnerable",
+    "cwe": "CWE-327"
+  },
+  "1.2.840.10040.4.2": {
+    "name": "SHA224withDSA",
+    "category": "Asymmetric Digital Signature (DSA)",
+    "quantum_status": "VULNERABLE",
+    "severity": "CRITICAL",
+    "standard": "RFC 5758",
+    "nist_ref": "DSA disallowed (NIST SP 800-131A Rev 2)",
+    "cwe": "CWE-1240"
+  },
+  "2.16.840.1.101.3.4.3.1": {
+    "name": "SHA224withDSA (NIST)",
+    "category": "Asymmetric Digital Signature (DSA)",
+    "quantum_status": "VULNERABLE",
+    "severity": "CRITICAL",
+    "standard": "RFC 5758",
+    "nist_ref": "NIST SP 800-131A Rev 2",
+    "cwe": "CWE-1240"
+  },
+  "1.2.840.113549.1.3.1": {
+    "name": "Diffie-Hellman",
+    "category": "Key Exchange (Diffie-Hellman)",
+    "quantum_status": "VULNERABLE",
+    "severity": "HIGH",
+    "standard": "RFC 2459",
+    "nist_ref": "NIST SP 800-56A Rev 3 -- DH deprecated",
+    "cwe": "CWE-1240"
+  },
+  "1.2.840.10045.2.1": {
+    "name": "EC Public Key",
+    "category": "Elliptic Curve Cryptography (ECC)",
+    "quantum_status": "VULNERABLE",
+    "severity": "HIGH",
+    "standard": "RFC 5480",
+    "nist_ref": "NIST SP 800-186",
+    "cwe": "CWE-1240"
+  },
+  "1.2.840.10045.4.3.1": {
+    "name": "ECDSA-SHA224",
+    "category": "Elliptic Curve Cryptography (ECC)",
+    "quantum_status": "VULNERABLE",
+    "severity": "HIGH",
+    "standard": "RFC 5758",
+    "nist_ref": "FIPS 204 -- migrate to ML-DSA",
+    "cwe": "CWE-1240"
+  },
+  "1.2.840.10045.4.3.2": {
+    "name": "ECDSA-SHA256",
+    "category": "Elliptic Curve Cryptography (ECC)",
+    "quantum_status": "VULNERABLE",
+    "severity": "HIGH",
+    "standard": "RFC 5758",
+    "nist_ref": "FIPS 204 -- migrate to ML-DSA",
+    "cwe": "CWE-1240"
+  },
+  "1.2.840.10045.4.3.3": {
+    "name": "ECDSA-SHA384",
+    "category": "Elliptic Curve Cryptography (ECC)",
+    "quantum_status": "VULNERABLE",
+    "severity": "HIGH",
+    "standard": "RFC 5758",
+    "nist_ref": "FIPS 204 -- migrate to ML-DSA",
+    "cwe": "CWE-1240"
+  },
+  "1.2.840.10045.4.3.4": {
+    "name": "ECDSA-SHA512",
+    "category": "Elliptic Curve Cryptography (ECC)",
+    "quantum_status": "VULNERABLE",
+    "severity": "HIGH",
+    "standard": "RFC 5758",
+    "nist_ref": "FIPS 204 -- migrate to ML-DSA",
+    "cwe": "CWE-1240"
+  },
+  "1.2.840.10045.3.1.7": {
+    "name": "P-256 / secp256r1",
+    "category": "Elliptic Curve Cryptography (ECC)",
+    "quantum_status": "VULNERABLE",
+    "severity": "HIGH",
+    "standard": "NIST SP 800-186",
+    "nist_ref": "Migrate to X25519MLKEM768 hybrid",
+    "cwe": "CWE-1240"
+  },
+  "1.3.132.0.34": {
+    "name": "P-384 / secp384r1",
+    "category": "Elliptic Curve Cryptography (ECC)",
+    "quantum_status": "VULNERABLE",
+    "severity": "HIGH",
+    "standard": "NIST SP 800-186",
+    "nist_ref": "Migrate to X25519MLKEM768 hybrid",
+    "cwe": "CWE-1240"
+  },
+  "1.3.132.0.35": {
+    "name": "P-521 / secp521r1",
+    "category": "Elliptic Curve Cryptography (ECC)",
+    "quantum_status": "VULNERABLE",
+    "severity": "HIGH",
+    "standard": "NIST SP 800-186",
+    "nist_ref": "Migrate to X25519MLKEM768 hybrid",
+    "cwe": "CWE-1240"
+  },
+  "1.3.132.0.33": {
+    "name": "P-224 / secp224r1",
+    "category": "Elliptic Curve Cryptography (ECC)",
+    "quantum_status": "VULNERABLE",
+    "severity": "CRITICAL",
+    "standard": "NIST SP 800-131A Rev 2",
+    "nist_ref": "P-224 deprecated -- disallowed after 2023",
+    "cwe": "CWE-1240"
+  },
+  "1.3.132.0.10": {
+    "name": "secp256k1",
+    "category": "Elliptic Curve Cryptography (ECC)",
+    "quantum_status": "VULNERABLE",
+    "severity": "HIGH",
+    "standard": "SEC2",
+    "nist_ref": "Migrate to ML-KEM / ML-DSA",
+    "cwe": "CWE-1240"
+  },
+  "1.3.132.0.1": {
+    "name": "sect163k1",
+    "category": "Elliptic Curve Cryptography (ECC)",
+    "quantum_status": "VULNERABLE",
+    "severity": "CRITICAL",
+    "standard": "SEC2",
+    "nist_ref": "Binary curve, deprecated (NIST SP 800-131A Rev 2)",
+    "cwe": "CWE-1240"
+  },
+  "1.3.132.0.15": {
+    "name": "sect163r2",
+    "category": "Elliptic Curve Cryptography (ECC)",
+    "quantum_status": "VULNERABLE",
+    "severity": "CRITICAL",
+    "standard": "SEC2",
+    "nist_ref": "Binary curve, deprecated (NIST SP 800-131A Rev 2)",
+    "cwe": "CWE-1240"
+  },
+  "1.3.101.110": {
+    "name": "X25519",
+    "category": "Elliptic Curve Cryptography (ECC)",
+    "quantum_status": "VULNERABLE",
+    "severity": "HIGH",
+    "standard": "RFC 8422",
+    "nist_ref": "Upgrade to X25519MLKEM768 hybrid (FIPS 203)",
+    "cwe": "CWE-1240"
+  },
+  "1.3.101.111": {
+    "name": "X448",
+    "category": "Elliptic Curve Cryptography (ECC)",
+    "quantum_status": "VULNERABLE",
+    "severity": "HIGH",
+    "standard": "RFC 8422",
+    "nist_ref": "Migrate to ML-KEM (FIPS 203)",
+    "cwe": "CWE-1240"
+  },
+  "1.3.101.112": {
+    "name": "Ed25519",
+    "category": "Elliptic Curve Cryptography (ECC)",
+    "quantum_status": "VULNERABLE",
+    "severity": "HIGH",
+    "standard": "RFC 8032",
+    "nist_ref": "Migrate to ML-DSA-44 or ML-DSA-65 (FIPS 204)",
+    "cwe": "CWE-1240"
+  },
+  "1.3.101.113": {
+    "name": "Ed448",
+    "category": "Elliptic Curve Cryptography (ECC)",
+    "quantum_status": "VULNERABLE",
+    "severity": "HIGH",
+    "standard": "RFC 8032",
+    "nist_ref": "Migrate to ML-DSA (FIPS 204)",
+    "cwe": "CWE-1240"
+  },
+  "2.16.840.1.101.3.4.4.1": {
+    "name": "ML-KEM-512 (Kyber512)",
+    "category": "PQC Key Encapsulation (NIST FIPS 203)",
+    "quantum_status": "SAFE",
+    "severity": "INFO",
+    "standard": "FIPS 203",
+    "nist_ref": "FIPS 203 -- ML-KEM-512, security level 1 (AES-128 equivalent)",
+    "cwe": null
+  },
+  "2.16.840.1.101.3.4.4.2": {
+    "name": "ML-KEM-768 (Kyber768)",
+    "category": "PQC Key Encapsulation (NIST FIPS 203)",
+    "quantum_status": "SAFE",
+    "severity": "INFO",
+    "standard": "FIPS 203",
+    "nist_ref": "FIPS 203 -- ML-KEM-768, security level 3 (AES-192 equivalent), RECOMMENDED",
+    "cwe": null
+  },
+  "2.16.840.1.101.3.4.4.3": {
+    "name": "ML-KEM-1024 (Kyber1024)",
+    "category": "PQC Key Encapsulation (NIST FIPS 203)",
+    "quantum_status": "SAFE",
+    "severity": "INFO",
+    "standard": "FIPS 203",
+    "nist_ref": "FIPS 203 -- ML-KEM-1024, security level 5 (AES-256 equivalent)",
+    "cwe": null
+  },
+  "2.16.840.1.101.3.4.3.17": {
+    "name": "ML-DSA-44 (Dilithium2)",
+    "category": "PQC Digital Signature (NIST FIPS 204)",
+    "quantum_status": "SAFE",
+    "severity": "INFO",
+    "standard": "FIPS 204",
+    "nist_ref": "FIPS 204 -- ML-DSA-44, security level 2",
+    "cwe": null
+  },
+  "2.16.840.1.101.3.4.3.18": {
+    "name": "ML-DSA-65 (Dilithium3)",
+    "category": "PQC Digital Signature (NIST FIPS 204)",
+    "quantum_status": "SAFE",
+    "severity": "INFO",
+    "standard": "FIPS 204",
+    "nist_ref": "FIPS 204 -- ML-DSA-65, security level 3 (RECOMMENDED)",
+    "cwe": null
+  },
+  "2.16.840.1.101.3.4.3.19": {
+    "name": "ML-DSA-87 (Dilithium5)",
+    "category": "PQC Digital Signature (NIST FIPS 204)",
+    "quantum_status": "SAFE",
+    "severity": "INFO",
+    "standard": "FIPS 204",
+    "nist_ref": "FIPS 204 -- ML-DSA-87, security level 5",
+    "cwe": null
+  },
+  "2.16.840.1.101.3.4.3.20": {
+    "name": "SLH-DSA-SHA2-128s",
+    "category": "PQC Digital Signature (NIST FIPS 205)",
+    "quantum_status": "SAFE",
+    "severity": "INFO",
+    "standard": "FIPS 205",
+    "nist_ref": "FIPS 205 -- SLH-DSA (SPHINCS+), security level 1",
+    "cwe": null
+  },
+  "2.16.840.1.101.3.4.3.21": {
+    "name": "SLH-DSA-SHA2-128f",
+    "category": "PQC Digital Signature (NIST FIPS 205)",
+    "quantum_status": "SAFE",
+    "severity": "INFO",
+    "standard": "FIPS 205",
+    "nist_ref": "FIPS 205",
+    "cwe": null
+  },
+  "2.16.840.1.101.3.4.3.22": {
+    "name": "SLH-DSA-SHA2-192s",
+    "category": "PQC Digital Signature (NIST FIPS 205)",
+    "quantum_status": "SAFE",
+    "severity": "INFO",
+    "standard": "FIPS 205",
+    "nist_ref": "FIPS 205 -- SLH-DSA, security level 3",
+    "cwe": null
+  },
+  "2.16.840.1.101.3.4.3.23": {
+    "name": "SLH-DSA-SHA2-192f",
+    "category": "PQC Digital Signature (NIST FIPS 205)",
+    "quantum_status": "SAFE",
+    "severity": "INFO",
+    "standard": "FIPS 205",
+    "nist_ref": "FIPS 205",
+    "cwe": null
+  },
+  "2.16.840.1.101.3.4.3.24": {
+    "name": "SLH-DSA-SHA2-256s",
+    "category": "PQC Digital Signature (NIST FIPS 205)",
+    "quantum_status": "SAFE",
+    "severity": "INFO",
+    "standard": "FIPS 205",
+    "nist_ref": "FIPS 205 -- SLH-DSA, security level 5",
+    "cwe": null
+  },
+  "2.16.840.1.101.3.4.3.25": {
+    "name": "SLH-DSA-SHA2-256f",
+    "category": "PQC Digital Signature (NIST FIPS 205)",
+    "quantum_status": "SAFE",
+    "severity": "INFO",
+    "standard": "FIPS 205",
+    "nist_ref": "FIPS 205",
+    "cwe": null
+  },
+  "2.16.840.1.101.3.4.3.27": {
+    "name": "SLH-DSA-SHAKE-128s",
+    "category": "PQC Digital Signature (NIST FIPS 205)",
+    "quantum_status": "SAFE",
+    "severity": "INFO",
+    "standard": "FIPS 205",
+    "nist_ref": "FIPS 205 -- SHAKE variant",
+    "cwe": null
+  },
+  "2.16.840.1.101.3.4.3.28": {
+    "name": "SLH-DSA-SHAKE-128f",
+    "category": "PQC Digital Signature (NIST FIPS 205)",
+    "quantum_status": "SAFE",
+    "severity": "INFO",
+    "standard": "FIPS 205",
+    "nist_ref": "FIPS 205",
+    "cwe": null
+  },
+  "2.16.840.1.101.3.4.3.29": {
+    "name": "SLH-DSA-SHAKE-192s",
+    "category": "PQC Digital Signature (NIST FIPS 205)",
+    "quantum_status": "SAFE",
+    "severity": "INFO",
+    "standard": "FIPS 205",
+    "nist_ref": "FIPS 205",
+    "cwe": null
+  },
+  "2.16.840.1.101.3.4.3.30": {
+    "name": "SLH-DSA-SHAKE-192f",
+    "category": "PQC Digital Signature (NIST FIPS 205)",
+    "quantum_status": "SAFE",
+    "severity": "INFO",
+    "standard": "FIPS 205",
+    "nist_ref": "FIPS 205",
+    "cwe": null
+  },
+  "2.16.840.1.101.3.4.3.31": {
+    "name": "SLH-DSA-SHAKE-256s",
+    "category": "PQC Digital Signature (NIST FIPS 205)",
+    "quantum_status": "SAFE",
+    "severity": "INFO",
+    "standard": "FIPS 205",
+    "nist_ref": "FIPS 205 -- security level 5",
+    "cwe": null
+  },
+  "2.16.840.1.101.3.4.3.32": {
+    "name": "SLH-DSA-SHAKE-256f",
+    "category": "PQC Digital Signature (NIST FIPS 205)",
+    "quantum_status": "SAFE",
+    "severity": "INFO",
+    "standard": "FIPS 205",
+    "nist_ref": "FIPS 205",
+    "cwe": null
+  },
+  "1.3.9999.3.6": {
+    "name": "Falcon-512 / FN-DSA-512",
+    "category": "PQC Digital Signature (NIST IR 8413)",
+    "quantum_status": "SAFE",
+    "severity": "INFO",
+    "standard": "NIST IR 8413",
+    "nist_ref": "Falcon-512, security level 1",
+    "cwe": null
+  },
+  "1.3.9999.3.9": {
+    "name": "Falcon-1024 / FN-DSA-1024",
+    "category": "PQC Digital Signature (NIST IR 8413)",
+    "quantum_status": "SAFE",
+    "severity": "INFO",
+    "standard": "NIST IR 8413",
+    "nist_ref": "Falcon-1024, security level 5",
+    "cwe": null
+  },
+  "1.3.6.1.4.1.2.267.7.4.4": {
+    "name": "Kyber768 (pre-FIPS liboqs OID)",
+    "category": "PQC Key Encapsulation (NIST FIPS 203)",
+    "quantum_status": "SAFE",
+    "severity": "INFO",
+    "standard": "liboqs pre-FIPS",
+    "nist_ref": "Use official FIPS OID 2.16.840.1.101.3.4.4.2 in production",
+    "cwe": null
+  },
+  "1.3.6.1.4.1.2.267.7.6.5": {
+    "name": "Dilithium3 (pre-FIPS liboqs OID)",
+    "category": "PQC Digital Signature (NIST FIPS 204)",
+    "quantum_status": "SAFE",
+    "severity": "INFO",
+    "standard": "liboqs pre-FIPS",
+    "nist_ref": "Use official FIPS OID 2.16.840.1.101.3.4.3.18 in production",
+    "cwe": null
+  },
+  "1.3.6.1.4.1.2.267.7.4.4.1": {
+    "name": "Kyber512 (pre-FIPS liboqs OID)",
+    "category": "PQC Key Encapsulation (NIST FIPS 203)",
+    "quantum_status": "SAFE",
+    "severity": "INFO",
+    "standard": "liboqs pre-FIPS",
+    "nist_ref": "Use official FIPS OID 2.16.840.1.101.3.4.4.1 in production",
+    "cwe": null
+  },
+  "1.3.6.1.4.1.2.267.7.4.4.2": {
+    "name": "Kyber1024 (pre-FIPS liboqs OID)",
+    "category": "PQC Key Encapsulation (NIST FIPS 203)",
+    "quantum_status": "SAFE",
+    "severity": "INFO",
+    "standard": "liboqs pre-FIPS",
+    "nist_ref": "Use official FIPS OID 2.16.840.1.101.3.4.4.3 in production",
+    "cwe": null
+  },
+  "X25519MLKEM768": {
+    "name": "X25519MLKEM768 (PQC Hybrid KEM)",
+    "category": "PQC Key Encapsulation (NIST FIPS 203 Hybrid)",
+    "quantum_status": "SAFE",
+    "severity": "INFO",
+    "standard": "IETF draft-ietf-tls-hybrid-design",
+    "nist_ref": "FIPS 203 + RFC 8422 hybrid -- recommended for TLS 1.3 migration",
+    "cwe": null
+  }
+}

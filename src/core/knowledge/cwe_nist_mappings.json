@@ -1,0 +1,90 @@
+{
+  "CWE-1240": {
+    "title": "Use of a Risk-Prone Cryptographic Algorithm in Quantum Computing Context",
+    "url": "https://cwe.mitre.org/data/definitions/1240.html",
+    "description": "The algorithm is vulnerable to cryptanalysis by a sufficiently powerful quantum computer using Shor's algorithm (asymmetric) or Grover's algorithm (symmetric with insufficient key size).",
+    "applies_to": [
+      "RSA",
+      "DSA",
+      "ECDSA",
+      "ECDH",
+      "DHE",
+      "DH",
+      "X25519",
+      "Ed25519"
+    ],
+    "nist_sp_800_131a": "Disallowed or deprecated for new use after 2030 (CNSA 2.0 mandates migration by 2030-2033)",
+    "iso27001_ref": "ISO 27001:2022 Annex A 8.24 (Use of Cryptography)",
+    "cnsa20_ref": "CNSA 2.0 (NSA, 2022) -- mandates ML-KEM, ML-DSA, SLH-DSA",
+    "remediation": "Migrate to NIST-selected PQC: ML-KEM (FIPS 203) for key exchange, ML-DSA (FIPS 204) or SLH-DSA (FIPS 205) for signatures."
+  },
+  "CWE-327": {
+    "title": "Use of a Broken or Risky Cryptographic Algorithm",
+    "url": "https://cwe.mitre.org/data/definitions/327.html",
+    "description": "The algorithm is already broken or deprecated by classical computing attacks, independent of quantum threats.",
+    "applies_to": [
+      "MD5",
+      "SHA-1",
+      "DES",
+      "3DES",
+      "RC4",
+      "RC2",
+      "SSLv2",
+      "SSLv3",
+      "TLS1.0",
+      "TLS1.1",
+      "NULL cipher"
+    ],
+    "nist_sp_800_131a": "Disallowed (MD5, SHA-1, DES, 3DES, RC4) -- NIST SP 800-131A Rev 2",
+    "iso27001_ref": "ISO 27001:2022 Annex A 8.24 (Use of Cryptography)",
+    "remediation": "Immediately disable and replace with AES-256-GCM, SHA-256+, TLS 1.2+ with strong cipher suites."
+  },
+  "NIST_SP_800_131A": {
+    "title": "NIST SP 800-131A Rev 2 -- Transitioning the Use of Cryptographic Algorithms and Key Lengths",
+    "url": "https://doi.org/10.6028/NIST.SP.800-131Ar2",
+    "disallowed": {
+      "RSA_key_transport": "Disallowed for key transport (still allowed for signatures with 2048+ bit keys through 2030)",
+      "DSA": "Disallowed for digital signature generation",
+      "DH_1024": "Disallowed (key sizes below 2048 bits)",
+      "SHA_1": "Disallowed for digital signatures",
+      "MD5": "Disallowed",
+      "DES": "Disallowed",
+      "2TDEA": "Disallowed (2-key 3DES)",
+      "RC4": "Disallowed",
+      "SSLv2": "Disallowed",
+      "SSLv3": "Disallowed",
+      "TLS1.0": "Disallowed",
+      "TLS1.1": "Disallowed"
+    },
+    "acceptable": {
+      "AES_128": "Acceptable (Grover's reduces to 64-bit security -- use AES-256 for PQC)",
+      "AES_256": "Acceptable and recommended for PQC migration",
+      "SHA_256": "Acceptable minimum",
+      "SHA_384": "Recommended",
+      "SHA_512": "Acceptable",
+      "RSA_2048_SIG": "Acceptable for signatures through 2030 (migrate to ML-DSA)",
+      "ECDSA_P256": "Acceptable through 2030 (migrate to ML-DSA)"
+    }
+  },
+  "CNSA_2_0": {
+    "title": "CNSA 2.0 -- Commercial National Security Algorithm Suite 2.0 (NSA, 2022)",
+    "url": "https://media.defense.gov/2022/Sep/07/2003071834/-1/-1/0/CSA_CNSA_2.0_ALGORITHMS_.PDF",
+    "mandatory_pqc": {
+      "KEM": "ML-KEM-1024 (FIPS 203) -- mandatory for NSS key exchange by 2033",
+      "SIG": "ML-DSA-87 (FIPS 204) -- mandatory for NSS signatures by 2033",
+      "SIG_BACKUP": "SLH-DSA (FIPS 205) -- alternative signature scheme",
+      "FIRMWARE": "ML-DSA-87 mandatory for firmware/software signing by 2025"
+    },
+    "transition_timeline": {
+      "2025": "Prefer PQC; legacy classical still allowed",
+      "2030": "PQC required for all new software/systems",
+      "2033": "Legacy classical algorithms disallowed for NSS"
+    }
+  },
+  "ISO_27001_8_24": {
+    "title": "ISO 27001:2022 Annex A 8.24 -- Use of Cryptography",
+    "description": "Organizations shall implement and document cryptographic controls aligned with current cryptographic strength recommendations, with a process for key management and algorithm agility.",
+    "pqc_relevance": "Cryptographic agility planning for post-quantum migration is a direct requirement of maintaining compliance with A.8.24 as NIST PQC standards take effect.",
+    "remediation": "Define a crypto-agility policy; maintain a cryptographic asset inventory (CBOM); establish a PQC migration roadmap with timelines."
+  }
+}

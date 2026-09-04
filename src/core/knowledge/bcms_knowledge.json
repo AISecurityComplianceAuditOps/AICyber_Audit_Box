@@ -1,0 +1,33 @@
+{
+  "BCMS-1": {
+    "sub_questions": [
+      "Have critical business processes been identified and ranked by impact of disruption?",
+      "Are RTO (Recovery Time Objective) and RPO (Recovery Point Objective) defined for each critical process?",
+      "Is the BIA reviewed/updated periodically or after significant organizational change?"
+    ],
+    "remediation_guidance": "Perform and document a Business Impact Analysis identifying critical processes with defined RTO/RPO, refreshed periodically or after major change."
+  },
+  "BCMS-2": {
+    "sub_questions": [
+      "Is the BCP approved by management and communicated to relevant personnel?",
+      "Does the plan define activation criteria, roles/responsibilities, and a communication plan?",
+      "Does the plan cover the critical processes identified in the BIA?"
+    ],
+    "remediation_guidance": "Document and obtain management approval for a Business Continuity Plan covering activation criteria, roles, and communication, aligned to the BIA's critical processes."
+  },
+  "BCMS-3": {
+    "sub_questions": [
+      "Is there a documented DR architecture (alternate site, backup infrastructure, or cloud failover)?",
+      "Does the DR capability meet the RTO/RPO defined in the BIA?"
+    ],
+    "remediation_guidance": "Establish and document a disaster recovery capability (alternate site, redundant infrastructure, or cloud failover) meeting the BIA's RTO/RPO targets."
+  },
+  "BCMS-4": {
+    "sub_questions": [
+      "Has the BCP/DR plan been tested (tabletop, simulation, or full failover) within the last review cycle?",
+      "Are test results documented, including gaps found?",
+      "Are follow-up corrective actions from tests tracked to closure?"
+    ],
+    "remediation_guidance": "Conduct and document periodic BCP/DR test exercises, tracking identified gaps through to remediation."
+  }
+}
