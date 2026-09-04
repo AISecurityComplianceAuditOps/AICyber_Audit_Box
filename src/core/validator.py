@@ -2119,6 +2119,95 @@ def _trim_literal_evidence_quote(text, quote_sources):
     return " ".join(out)
 
 
+# The justification opens with the answer word -- "Yes," / "No," / "Partially,"
+# -- and the UI reads THAT word to pick the finding's icon, not the compliance
+# verdict (renderFindingDescriptionHtml in app.js). A 12B model sometimes emits
+# an opener that contradicts the very sentence it opens: "No, NTP is enabled and
+# synchronized on the host." rendered a red X on a COMPLIANT finding whose
+# evidence read "NTP Clock Synchronized: YES". The sentence answers itself, so
+# the contradiction is detectable without asking the model again.
+_ANSWER_OPENER_RE = re.compile(r"^(\s*)(Yes|No)\b([\s,;:.—–-]*)", re.I)
+
+_ANSWER_NEGATION_RE = re.compile(
+    r"\b(?:not|no|never|without|none|absent|missing|lack|lacks|lacking|fail|fails|"
+    r"failed|unable|disabled|inactive|unconfigured|undocumented|neither|nor)\b"
+    r"|n't", re.I)
+
+_ANSWER_CONTRAST_RE = re.compile(
+    r"\b(?:but|however|although|though|whereas|while|except|yet)\b", re.I)
+
+_ANSWER_AFFIRM_RE = re.compile(
+    r"\b(?:is|are|was|were|has|have|had|remains|remain|been)\s+"
+    r"(?:(?!not\b|never\b|no\b|nor\b)\w+\s+){0,2}"
+    r"(?:enabled|synchronized|synchronised|configured|enforced|implemented|active|"
+    r"present|established|documented|deployed|applied|maintained|defined|restricted|"
+    r"encrypted|reviewed|approved|operational|running|in\s+place|met|satisfied)\b",
+    re.I)
+
+
+def _fix_contradicted_answer_opener(text):
+    """Flip a leading Yes/No that contradicts the sentence it introduces.
+
+    Only the FIRST sentence is read, and only when its polarity is unambiguous:
+    affirmative wording with no negation, or negation with no affirmative state.
+    A sentence carrying both ("Yes, the policy exists but is not reviewed") is
+    left exactly as the model wrote it -- a mixed answer is a real answer, and
+    guessing at it would be worse than the occasional wrong icon.
+
+    "Partially" is never touched: a partial answer is meant to carry both.
+    """
+    if not text:
+        return text
+    raw = str(text)
+    m = _ANSWER_OPENER_RE.match(raw)
+    if not m:
+        return raw
+    opener = m.group(2).lower()
+    rest = raw[m.end():]
+    first_sentence = rest.split(".", 1)[0]
+    if not first_sentence.strip():
+        return raw
+    if _ANSWER_CONTRAST_RE.search(first_sentence):
+        return raw                       # "documented but never approved" -- mixed on purpose
+    neg = bool(_ANSWER_NEGATION_RE.search(first_sentence))
+    pos = bool(_ANSWER_AFFIRM_RE.search(first_sentence))
+    if neg == pos:                       # both, or neither -- not decidable
+        return raw
+    if opener == "no" and pos:
+        corrected = "Yes"
+    elif opener == "yes" and neg:
+        corrected = "No"
+    else:
+        return raw
+    print(f"[VALIDATOR] Answer opener contradicted its own sentence "
+          f"('{m.group(2)}' -> '{corrected}'): {first_sentence.strip()[:90]}",
+          flush=True)
+    return f"{m.group(1)}{corrected}{m.group(3)}{rest}"
+
+
+_REC_DEMANDS_MISSING_RE = re.compile(
+    r"\b(?:should|shall|must|needs?\s+to|ought\s+to|is\s+required\s+to)\s+be\s+"
+    r"(?:established|developed|created|implemented|formali[sz]ed|documented|"
+    r"defined|drafted|introduced|put\s+in\s+place)\b"
+    r"|\bshould\s+(?:establish|develop|create|implement|formali[sz]e|document|define)\b",
+    re.I)
+
+
+def _recommendation_contradicts_compliance(rec):
+    """True when a recommendation asserts something is MISSING.
+
+    A COMPLIANT verdict says nothing is missing, so "a formal policy ... should
+    be established to satisfy the policy component of the control" printed on a
+    compliant finding contradicts the badge directly above it -- which is what
+    the auditor sees, and what they then have to explain to the client.
+
+    Improvement advice on a compliant control ("consider extending retention to
+    12 months") does not match: it asks for MORE of something that exists, not
+    for something absent to be created.
+    """
+    return bool(rec) and bool(_REC_DEMANDS_MISSING_RE.search(str(rec)))
+
+
 def _clean_finding_narrative_fields(finding):
     """Applied once, right after validate_only() has computed the VERIFIED
     evidence/policy quotes, so every downstream copy (the compliant-path
@@ -2146,7 +2235,9 @@ def _clean_finding_narrative_fields(finding):
         val = str(val)
         if quote_sources:
             val = _trim_literal_evidence_quote(val, quote_sources)
-        finding[_field] = _dedupe_repeated_facts(val)
+        # Opener last: trimming a quote clause or a duplicate sentence can
+        # change which sentence the answer word is actually introducing.
+        finding[_field] = _fix_contradicted_answer_opener(_dedupe_repeated_facts(val))
 
 
 def post_process(finding, document_text, expected_evidence_map=None, db_chunks=None):
@@ -2342,6 +2433,24 @@ def post_process(finding, document_text, expected_evidence_map=None, db_chunks=N
         else:
             raw_pol = str(finding.get("policy_quote") or finding.get("policy_excerpt") or "").strip()
             finding["policy_snippet"] = raw_pol if raw_pol.upper() not in ("NOT_FOUND", "N/A", "NONE") else ""
+
+        # An item carrying no extracted text is an empty shell: there is nothing to
+        # show the auditor and nothing that can be grounded against the source. It
+        # still counted as FOUND for the state machine below, which is how a finding
+        # ended up badged "Policy Found: Compliant" directly above a panel reading
+        # "NO DOCUMENTED POLICY IDENTIFIED" -- the badge counts items, the panel
+        # renders the snippet, and a text-less item satisfies one but not the other.
+        # Dropped here, after the snippets have taken whatever text did exist and
+        # before both the *_items_json fields and the FOUND/NOT_FOUND decision.
+        _shell = lambda it: not str(getattr(it, "extracted_text", "") or "").strip()
+        _pol_shells = [it for it in policy_items if _shell(it)]
+        _ev_shells = [it for it in evidence_items if _shell(it)]
+        if _pol_shells or _ev_shells:
+            print(f"[VALIDATOR] Dropping text-less items: "
+                  f"{len(_pol_shells)} policy, {len(_ev_shells)} evidence "
+                  f"(control {finding.get('control_id') or '?'})", flush=True)
+        policy_items = [it for it in policy_items if not _shell(it)]
+        evidence_items = [it for it in evidence_items if not _shell(it)]
 
         # Populate operational_evidence_snippet from evidence_items, evidence_snippet, or evidence_quote
         if evidence_items and any(it.extracted_text for it in evidence_items if it.extracted_text):
@@ -2793,7 +2902,14 @@ def post_process(finding, document_text, expected_evidence_map=None, db_chunks=N
             _basis = str(finding.get("justification") or finding.get("reasoning") or "").strip()
             if _basis:
                 finding["description"] = _basis
-            finding["recommendation"] = finding.get("recommendation") or "No action required. Continue to maintain current procedures and ensure periodic review of compliance evidence."
+            _MAINTAIN = ("No action required. Continue to maintain current procedures "
+                         "and ensure periodic review of compliance evidence.")
+            _rec = str(finding.get("recommendation") or "").strip()
+            if _recommendation_contradicts_compliance(_rec):
+                print(f"[VALIDATOR] Compliant finding carried a recommendation "
+                      f"demanding a missing element; replaced: {_rec[:110]}", flush=True)
+                _rec = ""
+            finding["recommendation"] = _rec or _MAINTAIN
         else:
             cid = finding.get("control_id") or ""
             cname = finding.get("control_name") or "Control"
