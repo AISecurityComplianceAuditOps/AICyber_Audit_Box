@@ -3134,4 +3134,19 @@ def apply_excel_scoping_safety_gate(
         )
         finding["source_file"] = primary_locked
 
+    # evidence_source_file is a SEPARATE field and was left uncorrected. The
+    # finding card renders "Evidence Source Location" from it whenever the
+    # primary source list is empty or generic (app.js: _pick(f.evidence_source_file)),
+    # so a locked-scope finding could still show the auditor a filename the
+    # checklist never scoped -- the exact discrepancy this gate exists to make
+    # structurally impossible.
+    ev_source = (finding.get("evidence_source_file") or "").strip()
+    if ev_source and ev_source not in locked_filenames:
+        print(
+            f"[SAFETY GATE] Overrode wrong evidence_source_file '{ev_source}' "
+            f"(not in locked scope {locked_filenames}) with '{primary_locked}'.",
+            flush=True
+        )
+        finding["evidence_source_file"] = primary_locked
+
     return finding
