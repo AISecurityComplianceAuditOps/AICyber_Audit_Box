@@ -535,8 +535,8 @@
                                 Stop the scan to make changes.
                             </div>
 
-                            <div class="drop-zone" id="drop-zone"
-                                onclick="document.getElementById('evidence-file-input').click()"
+                            <div class="drop-zone" id="drop-zone-panel"
+                                onclick="document.getElementById('evidence-file-input-panel').click()"
                                 style="border: 2px dashed rgba(59, 130, 246, 0.35); border-radius: 12px; padding: 24px 12px; text-align: center; cursor: pointer; transition: all 0.2s ease; margin-bottom: 12px;">
                                 <span class="drop-icon"
                                     style="font-size: 2.2rem; display: block; margin-bottom: 6px;">📤</span>
@@ -544,7 +544,7 @@
                                     Drag-and-drop zone</h4>
                                 <p style="margin: 3px 0 0 0; font-size: 0.74rem; color: var(--text-muted);">Supports
                                     PDF, DOCX, XLSX, CSV, PPTX, HTML, JSON, TXT, PNG, JPG, & ZIP folders</p>
-                                <input type="file" id="evidence-file-input" multiple style="display: none;"
+                                <input type="file" id="evidence-file-input-panel" multiple style="display: none;"
                                     onchange="handleEvidenceUpload(event)">
                                 <input type="file" id="evidence-folder-input" webkitdirectory directory multiple
                                     style="display: none;" onchange="handleEvidenceFolderUpload(event)">
@@ -653,6 +653,19 @@
                                         style="font-size: 0.72rem; color: var(--text-muted); padding: 0 2px;">
                                         <span style="color:#10b981;font-weight:700;">🟢 Active:</span> <b>Excel Upload Scope</b> — Drag & drop or browse an Excel scoping matrix (.xlsx) below.
                                     </div>
+
+                                    <!-- Confirms which checklist is actually in scope. app.js writes
+                                         to these two ids from four places, but neither element was in
+                                         the DOM, so an auditor got no confirmation their checklist had
+                                         loaded -- and no visible difference between Excel and
+                                         question-based scope. -->
+                                    <div id="excel-scope-banner"
+                                        style="display: none; align-items: center; gap: 8px; margin-top: 8px; padding: 7px 10px; border-radius: 8px; border: 1px solid rgba(16,185,129,0.35); background: rgba(16,185,129,0.08);">
+                                        <span style="font-size: 0.82rem;">📋</span>
+                                        <span id="excel-scope-label"
+                                            style="font-size: 0.73rem; font-weight: 700; color: #047857;">Checklist
+                                            Loaded</span>
+                                    </div>
                                 </div>
 
                                 <!-- Dedicated Excel Upload Dropzone Box (shown when Excel Upload button is selected) -->
@@ -728,6 +741,28 @@
                                 <button id="stop-analysis-btn" class="btn-danger" onclick="stopAuditAnalysis()"
                                     style="display:none; width: 100%; padding: 12px; font-size: 0.95rem; font-weight: 800; border-radius: 10px; margin-top: 8px;">STOP
                                     ANALYSIS</button>
+
+                                <!-- Scan progress. app.js has always written to these three ids
+                                     (15 call sites) but they were never in the DOM, so every
+                                     write hit a null guard and the only progress an auditor
+                                     could see was the percentage inside the button label. -->
+                                <div id="pipeline-progress-box"
+                                    style="display: none; margin-top: 10px; padding: 10px 12px; border: 1px solid rgba(148,163,184,0.25); border-radius: 10px; background: rgba(15,23,42,0.03);">
+                                    <div
+                                        style="display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 6px;">
+                                        <span id="pipeline-status-text"
+                                            style="font-size: 0.74rem; font-weight: 600; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Scanning
+                                            controls...</span>
+                                        <span id="pipeline-progress-percent"
+                                            style="font-size: 0.74rem; font-weight: 800; color: #2563eb; font-variant-numeric: tabular-nums;">0%</span>
+                                    </div>
+                                    <div
+                                        style="height: 7px; border-radius: 999px; background: rgba(148,163,184,0.22); overflow: hidden;">
+                                        <div id="pipeline-progress-fill"
+                                            style="height: 100%; width: 0%; border-radius: 999px; background: linear-gradient(90deg,#2563eb,#6366f1); transition: width 0.35s ease;">
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>

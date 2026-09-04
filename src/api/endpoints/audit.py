@@ -130,6 +130,13 @@ class StartAuditRequest(BaseModel):
     current_framework: Optional[str] = None
     custom_evidence: Optional[dict] = None
     custom_documents: Optional[dict] = None
+    # Scope mode this run was started in ("CUSTOMIZE" / "EXCEL" / ...). It decides
+    # whether a control is judged on evidence alone or on policy AND evidence.
+    # Previously this only travelled inside custom_evidence["excel_items"], so a
+    # run whose items were missing (or a resume that lost them) silently fell back
+    # to the policy rule and failed every question-based row on a policy document
+    # the auditor never put in scope.
+    scoping_mode: Optional[str] = None
     username: Optional[str] = None
     is_resume: Optional[bool] = False
     reset_findings: Optional[bool] = False
@@ -1758,6 +1765,7 @@ def api_start_audit(req: StartAuditRequest, request: Request):
                     "file_registry": file_registry,
                     "custom_evidence": req.custom_evidence,
                     "custom_docs": req.custom_documents,
+                    "scoping_mode": req.scoping_mode,
                     "username": auth_user.get("username") or req.username
                 },
                 daemon=True
@@ -4325,6 +4333,9 @@ def api_resume_checkpoint(req: dict, background_tasks: BackgroundTasks, request:
                 audit_mode=_resume_mode,
                 custom_docs=_resume_docs,
                 custom_evidence=_resume_evidence,
+                # Read back from the checkpoint: a resumed Customize run must stay
+                # a Customize run, not revert to the policy+evidence rule.
+                scoping_mode=getattr(ck, "scoping_mode", None),
                 file_registry=None,
                 already_done_ids=already_done_ids,   # ← per-control skip list
                 username=auth_user.get("username"),

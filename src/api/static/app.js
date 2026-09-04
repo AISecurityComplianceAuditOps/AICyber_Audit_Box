@@ -610,6 +610,15 @@ async function loadRecentSessions() {
     }
 }
 
+// Wired to #show-more-sessions-btn in index.html. The button, the state flag
+// (window._showAllRecentSessions) and the label that reads it all existed --
+// this function did not, so clicking it threw ReferenceError and the session
+// list stayed capped at 10 with no way to see the rest.
+function toggleShowAllRecentSessions() {
+    window._showAllRecentSessions = !window._showAllRecentSessions;
+    renderFilteredRecentSessionsList();
+}
+
 function renderFilteredRecentSessionsList() {
     const container = document.getElementById("recent-sessions-list");
     const showMoreBtn = document.getElementById("show-more-sessions-btn");
@@ -697,6 +706,28 @@ function filterRecentSessionsList() {
 }
 
 window._sessionScopingCache = window._sessionScopingCache || {};
+
+// The scope mode for the current session. Every caller must agree on this:
+// the server judges a control on evidence alone in Customize mode, and on policy
+// AND evidence otherwise, so a mode that goes missing turns a question-based
+// audit into one that fails on policy documents nobody put in scope.
+// The scan progress box is shown by the progress poll and hidden here. Kept as
+// one function so every "scan finished/stopped/failed" path clears it the same
+// way -- there are several such paths and they used to leave the bar on screen.
+function hidePipelineProgress() {
+    const box = document.getElementById("pipeline-progress-box");
+    if (box) box.style.display = "none";
+    const fill = document.getElementById("pipeline-progress-fill");
+    if (fill) fill.style.width = "0%";
+}
+
+function resolveScopingMode() {
+    // The highlighted mode button is the fallback when the global is unset --
+    // it is what the auditor can actually see on screen.
+    const active = document.querySelector(".active-scope-mode");
+    const fromButton = active && active.id === "btn-customize-scoping" ? "CUSTOMIZE" : "";
+    return String(window.currentScopingMode || fromButton || "EXCEL").toUpperCase();
+}
 
 function saveSessionScopingCache(sessionId, customEvidenceData, mode) {
     if (!sessionId) return;
@@ -793,7 +824,7 @@ async function switchRecentSession(sessionId, sessionTitle) {
     // ── Reset UI: Scan run button ─────────────────────────────────────────────────
     const runBtn = document.getElementById("run-analysis-btn");
     const stopBtn = document.getElementById("stop-analysis-btn");
-    if (runBtn) { runBtn.disabled = false; runBtn.style.opacity = "1"; runBtn.innerText = "▶ Run Audit Scan"; }
+    if (runBtn) { runBtn.disabled = false; runBtn.style.opacity = "1"; runBtn.innerText = "▶ Run Audit Scan"; if (typeof hidePipelineProgress === "function") hidePipelineProgress(); }
     if (stopBtn) stopBtn.style.display = "none";
 
     // ── Restore or Reset UI: Controls checkboxes & scoping mode ───────────────────
@@ -948,11 +979,13 @@ function _setRunLockedInputs(locked) {
             b.disabled = locked;
             b.style.opacity = locked ? "0.5" : "";
         });
-        const drop = document.getElementById("drop-zone");
-        if (drop) {
+        // Every drop zone, not just the first: getElementById returns one
+        // element, and the page has two upload zones. The second stayed live
+        // during a scan, so evidence could still be added behind the lock.
+        document.querySelectorAll(".drop-zone").forEach(drop => {
             drop.style.opacity = locked ? "0.45" : "";
             drop.style.pointerEvents = locked ? "none" : "";
-        }
+        });
     }
 
     const note = document.getElementById("evidence-lock-note");
@@ -1086,7 +1119,7 @@ async function resumeSessionFromCheckpoint(sessionId) {
         return true;
     } catch (err) {
         showToast(`Resume failed: ${err.message}`, "error");
-        if (btn) { btn.disabled = false; btn.innerText = "▶ Run Audit Scan"; }
+        if (btn) { btn.disabled = false; btn.innerText = "▶ Run Audit Scan"; if (typeof hidePipelineProgress === "function") hidePipelineProgress(); }
         if (stopBtn) stopBtn.style.display = "none";
         return false;
     }
@@ -1115,7 +1148,7 @@ async function discardCheckpointAndReset() {
 
         const runBtn = document.getElementById("run-analysis-btn");
         const stopBtn = document.getElementById("stop-analysis-btn");
-        if (runBtn) { runBtn.disabled = false; runBtn.style.opacity = "1"; runBtn.innerText = "▶ Run Audit Scan"; }
+        if (runBtn) { runBtn.disabled = false; runBtn.style.opacity = "1"; runBtn.innerText = "▶ Run Audit Scan"; if (typeof hidePipelineProgress === "function") hidePipelineProgress(); }
         if (stopBtn) stopBtn.style.display = "none";
     } catch (err) {
         showToast(`Discard failed: ${err.message}`, "error");
@@ -1781,7 +1814,7 @@ async function startNewAuditSession(skipPrompt = false, customTitle = null) {
         if (allBtn) allBtn.classList.add("active");
 
         // ── Reset UI: Workflow filter ─────────────────────────────────────────────────
-        const wfFilter = document.getElementById("workflow-status-filter");
+        const wfFilter = document.getElementById("status-filter");
         if (wfFilter) wfFilter.value = "";
 
         // ── Reset UI: Progress bar ────────────────────────────────────────────────────
@@ -2762,7 +2795,10 @@ async function handleExcelScopeUpload(e) {
     // for it. Without this the questions would still be mapped onto ISO controls and
     // the mode would behave identically to ordinary Excel scoping.
     try {
-        if (window.currentScopingMode) formData.append("scoping_mode", window.currentScopingMode);
+        // Always sent, never conditional: an omitted mode makes the server
+        // fall back to Excel scoping, which judges the row on policy AND
+        // evidence and fails every question-based row on a missing policy.
+        formData.append("scoping_mode", resolveScopingMode());
     } catch (e) { /* optional */ }
 
     try {
@@ -3286,7 +3322,7 @@ async function triggerAuditAnalysis() {
                 );
                 if (!proceed) {
                     btn.disabled = false;
-                    btn.innerText = "▶ Run Audit Scan";
+                    btn.innerText = "▶ Run Audit Scan"; if (typeof hidePipelineProgress === "function") hidePipelineProgress();
                     if (stopBtn) stopBtn.style.display = "none";
                     return;
                 }
@@ -3297,7 +3333,7 @@ async function triggerAuditAnalysis() {
     if (selectedSls.length === 0) {
         alert("⚠️ Please select at least one control to analyze.");
         btn.disabled = false;
-        btn.innerText = "▶ Run Audit Scan";
+        btn.innerText = "▶ Run Audit Scan"; if (typeof hidePipelineProgress === "function") hidePipelineProgress();
         if (stopBtn) stopBtn.style.display = "none";
         return;
     }
@@ -3330,7 +3366,7 @@ async function triggerAuditAnalysis() {
     if (totalEvidenceCount === 0) {
         alert("⚠️ Please upload at least one evidence file before starting the audit.");
         btn.disabled = false;
-        btn.innerText = "▶ Run Audit Scan";
+        btn.innerText = "▶ Run Audit Scan"; if (typeof hidePipelineProgress === "function") hidePipelineProgress();
         if (stopBtn) stopBtn.style.display = "none";
         return;
     }
@@ -3366,6 +3402,7 @@ async function triggerAuditAnalysis() {
                 current_framework: currentFramework,
                 custom_evidence: customEvidenceMappings,
                 custom_documents: customControlDocuments,
+                scoping_mode: resolveScopingMode(),
                 username: currentUser ? currentUser.username : null,
                 // Only meaningful in Scanner mode; the checkbox is hidden
                 // otherwise, so this is false whenever it doesn't apply.
@@ -3397,7 +3434,7 @@ async function triggerAuditAnalysis() {
         progressInterval = setInterval(pollAuditProgress, 1000);
     } catch (err) {
         btn.disabled = false;
-        btn.innerText = "▶ Run Audit Scan";
+        btn.innerText = "▶ Run Audit Scan"; if (typeof hidePipelineProgress === "function") hidePipelineProgress();
         if (stopBtn) stopBtn.style.display = "none";
         // The scan never started -- a 409 from the re-run guard lands here --
         // so releasing the inputs is what lets the auditor act on the refusal.
@@ -3456,6 +3493,8 @@ async function pollAuditProgress() {
                 if (stopBtn) stopBtn.style.display = "block";
             }
 
+            const progressBox = document.getElementById("pipeline-progress-box");
+            if (progressBox) progressBox.style.display = "block";
             if (progressBar) progressBar.style.width = `${pct}%`;
             if (progressPercent) progressPercent.innerText = `${pct}%`;
             if (progressStatus) progressStatus.innerText = `${txt} (${pct}%)`;
@@ -3494,7 +3533,7 @@ async function pollAuditProgress() {
             if (activeSessionId !== targetSessionId) return;
 
             btn.disabled = false;
-            btn.innerText = "▶ Run Audit Scan";
+            btn.innerText = "▶ Run Audit Scan"; if (typeof hidePipelineProgress === "function") hidePipelineProgress();
             if (stopBtn) stopBtn.style.display = "none";
             if (progressBar) progressBar.style.width = `100%`;
             if (progressPercent) progressPercent.innerText = `100%`;
@@ -3515,7 +3554,7 @@ async function pollAuditProgress() {
         } else if (data.status === "idle" && data.checkpoint && data.checkpoint.status === "failed") {
             clearInterval(progressInterval);
             btn.disabled = false;
-            btn.innerText = "▶ Run Audit Scan";
+            btn.innerText = "▶ Run Audit Scan"; if (typeof hidePipelineProgress === "function") hidePipelineProgress();
             if (stopBtn) stopBtn.style.display = "none";
             if (progressStatus) progressStatus.innerText = `Scan failed`;
             alert("❌ Analysis failed. Verify Ollama or local llama-server is running.");
@@ -3523,7 +3562,7 @@ async function pollAuditProgress() {
             // If scan is idle, stopped, or not running, reset state cleanly
             clearInterval(progressInterval);
             btn.disabled = false;
-            btn.innerText = "▶ Run Audit Scan";
+            btn.innerText = "▶ Run Audit Scan"; if (typeof hidePipelineProgress === "function") hidePipelineProgress();
             if (stopBtn) {
                 stopBtn.style.display = "none";
                 stopBtn.disabled = false;
@@ -3627,7 +3666,7 @@ async function stopAuditAnalysis() {
             if (btn) {
                 btn.disabled = false;
                 btn.style.opacity = "1";
-                btn.innerText = "▶ Run Audit Scan";
+                btn.innerText = "▶ Run Audit Scan"; if (typeof hidePipelineProgress === "function") hidePipelineProgress();
             }
             if (stopBtn) {
                 stopBtn.style.display = "none";
@@ -3641,7 +3680,7 @@ async function stopAuditAnalysis() {
         if (progressInterval) { clearInterval(progressInterval); progressInterval = null; }
         if (btn) {
             btn.disabled = false;
-            btn.innerText = "▶ Run Audit Scan";
+            btn.innerText = "▶ Run Audit Scan"; if (typeof hidePipelineProgress === "function") hidePipelineProgress();
         }
         if (stopBtn) {
             stopBtn.style.display = "none";
@@ -6949,9 +6988,6 @@ function openEditFindingModal(finding) {
     // NIST rule: COMPLIANT / ACCEPTED / PASS / Out-of-scope have no actionable severity.
     _updateSeverityVisibility(targetStatusVal);
 
-    const descElem = document.getElementById("edit-finding-desc");
-    if (descElem) descElem.value = finding.description || finding.gap_detected || "";
-
     const srcElem = document.getElementById("edit-finding-source-files");
     if (srcElem) {
         srcElem.value = finding.source_files || finding.evidence_source_file || "";
@@ -9250,7 +9286,10 @@ async function handleScopingExcelUpload(event) {
         // See the sibling upload path above -- Customize needs the parser to skip
         // control resolution, which it only does when told the mode.
         try {
-            if (window.currentScopingMode) formData.append("scoping_mode", window.currentScopingMode);
+            // Always sent, never conditional: an omitted mode makes the server
+        // fall back to Excel scoping, which judges the row on policy AND
+        // evidence and fails every question-based row on a missing policy.
+        formData.append("scoping_mode", resolveScopingMode());
         } catch (e) { /* optional */ }
 
         const res = await authFetch(`${API_BASE}/controls/parse-scope-excel`, { // BUG-07 FIX: was bare fetch() — no JWT sent, caused silent 401 + fallback to 5-control default

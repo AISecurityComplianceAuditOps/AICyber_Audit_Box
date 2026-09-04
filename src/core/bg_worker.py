@@ -453,7 +453,20 @@ def _get_expected_evidence(uc, custom_evidence=None):
         return custom_evidence.get(uc["use_case"], uc["expected"])
     return uc["expected"]
 
-def _build_controls_for_audit(selected_sls=None, custom_evidence=None):
+def _build_controls_for_audit(selected_sls=None, custom_evidence=None, scoping_mode=None):
+    """Build the control list for a run.
+
+    `scoping_mode` is the session's own scope mode ("CUSTOMIZE" / "EXCEL" / ...).
+    It exists because `customize_mode` used to live ONLY on the individual
+    checklist items: when a run had no `excel_items` (the fallback branch below,
+    and any resume that lost them) nothing carried the flag, so a question-based
+    audit was silently judged under the policy+evidence rule and every row failed
+    on a policy document the auditor never put in scope. The session-level mode
+    is authoritative for the whole run, so a missing or empty item list can no
+    longer turn a Customize audit back into an Excel one.
+    """
+    _session_customize = str(scoping_mode or "").strip().upper().startswith("CUSTOM")
+
     if custom_evidence is not None and isinstance(custom_evidence, dict) and "excel_items" in custom_evidence:
         excel_items = custom_evidence["excel_items"]
         if excel_items and isinstance(excel_items, list):
@@ -506,8 +519,11 @@ def _build_controls_for_audit(selected_sls=None, custom_evidence=None):
                     # matched control is shown and evaluated) -- this only removes the
                     # policy half from the verdict, so a question-based audit is not
                     # failed for a policy document the auditor never put in scope.
-                    "customize_mode": bool(item.get("customize_mode")),
-                    "policy_required": not bool(item.get("customize_mode")),
+                    # Either signal is enough: the row's own flag, or the mode the
+                    # session is running in. A row that lost its flag in transit
+                    # can no longer drag a Customize run back onto the policy rule.
+                    "customize_mode": bool(item.get("customize_mode")) or _session_customize,
+                    "policy_required": not (bool(item.get("customize_mode")) or _session_customize),
                 })
             return controls
 
@@ -537,6 +553,12 @@ def _build_controls_for_audit(selected_sls=None, custom_evidence=None):
                 "standard": uc.get("standard", ""),
                 "recommendation": uc.get("recommendation", ""),
                 "keywords": kw_weights,
+                # This branch carried no scope flag at all, so a Customize run
+                # that reached it (no excel_items, or a resume that lost them)
+                # was judged under the policy+evidence rule and failed every
+                # question-based row on a missing policy document.
+                "customize_mode": _session_customize,
+                "policy_required": not _session_customize,
             })
     return controls
 
@@ -629,7 +651,7 @@ def _safe_json(value):
 
 def _checkpoint_create(session_id, bg_key, ai_model, selected_sls, file_names, context_str,
                        total_controls, batch_size, audit_mode="Deep",
-                       custom_evidence=None, custom_docs=None):
+                       custom_evidence=None, custom_docs=None, scoping_mode=None):
     with force_master():
         db = SessionLocal()
         try:
@@ -657,6 +679,7 @@ def _checkpoint_create(session_id, bg_key, ai_model, selected_sls, file_names, c
                 # Recorded so /resume-checkpoint can rebuild the same run rather
                 # than a default Deep, unscoped one -- see AuditCheckpoint.
                 audit_mode=str(audit_mode or "Deep"),
+                scoping_mode=(str(scoping_mode).strip() if scoping_mode else None),
                 custom_evidence_json=_safe_json(custom_evidence),
                 custom_docs_json=_safe_json(custom_docs),
                 status="in_progress",
@@ -815,10 +838,10 @@ def get_global_resumable_checkpoint():
         finally:
             db.close()
 
-def generate_ollama_findings(context, file_names_list, selected_sls, model_choice, bg_key=None, batch_size=None, checkpoint_session_id=None, audit_mode="Deep", custom_docs=None, custom_evidence=None, file_registry=None, already_done_ids=None, username=None):
+def generate_ollama_findings(context, file_names_list, selected_sls, model_choice, bg_key=None, batch_size=None, checkpoint_session_id=None, audit_mode="Deep", custom_docs=None, custom_evidence=None, file_registry=None, already_done_ids=None, username=None, scoping_mode=None):
     os.environ["RAG_RERANK_MODE"] = "quick" if "quick" in str(audit_mode).lower() else "deep"
     llm_model = _resolve_llm_model(model_choice)
-    controls = _build_controls_for_audit(selected_sls, custom_evidence)
+    controls = _build_controls_for_audit(selected_sls, custom_evidence, scoping_mode)
     scanned_files_str = ", ".join(file_names_list) if file_names_list else "None"
 
     # Resolved once and threaded into every control's graph state below, so
@@ -1921,7 +1944,7 @@ Return format: ["topic1", "topic2", ...]"""
 # Without --mlock, the OS manages memory like a normal app (swap to disk when
 # tight), so queuing is unnecessary — worst case is slower, never a crash.
 
-def _run_ollama_bg(bg_key, files_data, selected_sls_copy, ai_model, session_id=None, audit_mode="Deep", custom_docs=None, custom_evidence=None, file_registry=None, already_done_ids=None, username=None):
+def _run_ollama_bg(bg_key, files_data, selected_sls_copy, ai_model, session_id=None, audit_mode="Deep", custom_docs=None, custom_evidence=None, file_registry=None, already_done_ids=None, username=None, scoping_mode=None):
     print(f"[_run_ollama_bg] Starting thread for key {bg_key} with model {ai_model}...", flush=True)
     _sid = session_id or bg_key
     try:
@@ -2064,7 +2087,7 @@ def _run_ollama_bg(bg_key, files_data, selected_sls_copy, ai_model, session_id=N
         # PERF: Build controls list once and take its len -- previously called
         # _build_controls_for_audit() a second time here solely for the count,
         # rebuilding the entire list just to get a display number.
-        _controls_for_count = _build_controls_for_audit(selected_sls_copy, custom_evidence)
+        _controls_for_count = _build_controls_for_audit(selected_sls_copy, custom_evidence, scoping_mode)
         _total_ctrl_count = len(_controls_for_count)
         _batch_sz = 1 if ("7B" in ai_model or "8B" in ai_model or "9B" in ai_model or "Escalation" in ai_model) else 4
 
@@ -2079,6 +2102,7 @@ def _run_ollama_bg(bg_key, files_data, selected_sls_copy, ai_model, session_id=N
                 audit_mode=audit_mode,
                 custom_evidence=custom_evidence,
                 custom_docs=custom_docs,
+                scoping_mode=scoping_mode,
             )
         else:
             print(
@@ -2097,7 +2121,7 @@ def _run_ollama_bg(bg_key, files_data, selected_sls_copy, ai_model, session_id=N
             context_str, file_names_list, selected_sls_copy, ai_model, bg_key=bg_key,
             checkpoint_session_id=_sid, audit_mode=audit_mode,
             custom_docs=custom_docs, custom_evidence=custom_evidence, file_registry=file_registry,
-            already_done_ids=already_done_ids or [], username=username
+            already_done_ids=already_done_ids or [], username=username, scoping_mode=scoping_mode
         )
         if len(res) == 4:
             resolved_combined, findings_combined, all_results_combined, is_resource_paused = res

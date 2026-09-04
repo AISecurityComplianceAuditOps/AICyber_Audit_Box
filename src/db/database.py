@@ -291,6 +291,12 @@ class AuditCheckpoint(Base):
     # every remaining control was then judged against all uploaded evidence
     # instead of the files its checklist row pinned it to.
     audit_mode                = Column(String(50), default="Deep")
+    # The scope mode the run was started in ("CUSTOMIZE" / "EXCEL" / ...).
+    # Persisted because it decides whether a control is judged on evidence alone
+    # or on policy AND evidence. It used to live only on the in-memory checklist
+    # items, so a resume that lost them silently re-ran a question-based audit
+    # under the policy rule and failed every row on a missing policy document.
+    scoping_mode              = Column(String(50), nullable=True)
     custom_evidence_json      = Column(Text, nullable=True)
     custom_docs_json          = Column(Text, nullable=True)
     status                    = Column(String(50), default="in_progress")
