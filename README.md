@@ -5,22 +5,6 @@
 
 ---
 
-## Tech Stack
-
-| Layer | Technology |
-|---|---|
-| **LLM Engine** | llama.cpp (`llama-server.exe`) — runs GGUF models fully offline |
-| **Audit LLM (Primary)** | Gemma 4 12B (`gemma-4-12B-it-Q8_0.gguf`)  |
-| **Audit LLM (Fallback 1)** | Gemma 2 9B (`gemma-2-9b-it-Q8_0.gguf`) |
-| **Audit LLM (Fallback 2)** | Gemma 4 E4B (`google_gemma-4-E4B-it-Q4_K_M.gguf`) — Standard |
-| **Embeddings** | Nomic Embed Text v1.5 (`nomic-embed-text-v1.5.f16.gguf`) — local RAG |
-| **Backend API** | FastAPI + Uvicorn |
-| **Frontend UI** | Vanilla HTML + JavaScript (no frameworks) |
-| **Database (Production)** | ShaktiDB — PostgreSQL Master + Slave 1 + Slave 2 (port 15234/15235/15236) |
-| **Database (Local Fallback)** | SQLite (`data/sqlite/shakthidb_sqlite.db`) — auto-activated if ShaktiDB is offline |
-| **Document Parsing** | pdfplumber, pypdf, python-docx, python-pptx, openpyxl, pytesseract, doctr |
-| **RAG Retrieval** | Cosine similarity over local Nomic embeddings |
-
 ---
 
 ## Features
