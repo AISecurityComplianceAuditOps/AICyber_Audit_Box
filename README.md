@@ -1,90 +1,165 @@
-# 🛡️ AICyberAuditBox — Local Audit
+# 🛡️ AICyberAuditBox — Local AI Cyber Audit
 
-> **Agentic RAG · ISO 27001 Compliance Audit Intelligence**  
-> Powered by Ollama (offline LLM) · ShaktiDB (PostgreSQL) · Streamlit
+> **Agentic RAG · ISO 27001 / VAPT / PQC Compliance Audit Intelligence**  
+> Powered by **llama.cpp** (offline GGUF LLMs) · **FastAPI** · **SQLite** · **Vanilla HTML/JS UI**
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| **LLM Engine** | llama.cpp (`llama-server.exe`) with local GGUF models (Gemma 2/4) |
+| **Embeddings** | Nomic Embed Text v1.5 (local GGUF, via llama.cpp) |
+| **Backend API** | FastAPI + Uvicorn |
+| **Frontend UI** | Vanilla HTML + JavaScript (no frameworks) |
+| **Database** | SQLite (local file — `local_audit_app.db`) |
+| **Document Parsing** | pdfplumber, pypdf, python-docx, python-pptx, openpyxl, pytesseract, doctr |
+| **RAG Retrieval** | Cosine similarity over local Nomic embeddings |
 
 ---
 
 ## Features
 
-### 🔍 AI-Powered ISO 27001 Auditing
-- **Senior Lead Auditor logic** — relevance scoring, semantic evidence evaluation, no blind control checking
-- **4-State Compliance**: Compliant · Partially Compliant · Non-Compliant · Out Of Scope
-- **P1–P4 Severity Scale**: P1 Critical → P2 High → P3 Medium → P4 Low
-- False positive & false negative prevention built into the LLM prompt
+### 🔍 AI-Powered Auditing
+- **ISO 27001**, **VAPT** (Nessus, Nmap, Burp Suite, Qualys, Trivy, Kali), and **PQC** (Post-Quantum Cryptography) audit modes
+- **Dual evaluation**: Policy vs Evidence assessed independently — `FOUND`/`NOT_FOUND` + `COMPLIANT`/`NON_COMPLIANT`
+- **Deterministic validator** (`src/core/validator.py`) overrides LLM self-reported status — no hallucinated compliance
+- False positive / false negative prevention built into every prompt chain
+- **Applicability scoping** — controls automatically excluded if not relevant to the uploaded documents
 
 ### 📁 Evidence Upload
 | Format | Support |
 |---|---|
 | PDF | ✅ Native text + OCR for scanned pages |
-| Word (.docx/.doc) | ✅ |
-| Excel (.xlsx/.xls) | ✅ All sheets |
+| Word (.docx / .doc) | ✅ |
+| Excel (.xlsx / .xls) | ✅ All sheets |
+| Excel Scoping Sheet | ✅ Separate Policy + Evidence columns per control |
 | CSV | ✅ |
-| PowerPoint (.pptx/.ppt) | ✅ All slides |
+| PowerPoint (.pptx / .ppt) | ✅ All slides |
 | Plain Text (.txt) | ✅ |
-| PNG / JPG / JPEG | ✅ OCR (EasyOCR) |
-| **ZIP (folder upload)** | ✅ Recursively extracts all supported files |
-
-> **Folder upload:** Zip your folder → upload the `.zip` file. All files inside are automatically extracted, processed and combined as evidence.
+| PNG / JPG / JPEG | ✅ OCR (pytesseract / doctr) |
+| ZIP (folder upload) | ✅ Recursively extracts all supported files |
 
 ### ⚡ Crash-Resilient Checkpointing
-If the app crashes or shuts down mid-audit:
-1. Progress is saved to ShaktiDB after **every batch** (~10 controls)
-2. On restart, a **"Resume Interrupted Audit"** banner appears automatically
-3. One click resumes from the last completed batch — prior results are preserved and merged
+- Progress saved to SQLite after every control batch
+- On restart, a **"Resume Interrupted Audit"** banner appears automatically
+- One click resumes from the last completed batch — prior results are preserved and merged
 
 ### 📊 Audit Report
-- Interactive finding cards with Relevance Score, Evidence Found badge, Evidence Snippet, Compliance Status, Auditor Reasoning
-- Severity filter cards (P1/P2/P3/P4 + Compliant)
+- Interactive finding cards with Evidence Found badge, Evidence Snippet, Compliance Status, Auditor Reasoning, Gaps
+- Filter by severity (P1 Critical / P2 High / P3 Medium / P4 Low / Compliant)
 - Accept / Modify / Delete / Auditor Notes per finding
-- Export full CSV: Control ID · Relevance Score · Evidence Found · Evidence Snippet · Compliance Status · Severity · Finding · Recommendation · Reasoning
-
-### 🗄️ Database
-- **Primary**: ShaktiDB PostgreSQL Master (on `localhost:15234`)
-- **Replicas**: ShaktiDB PostgreSQL Slave 1 & Slave 2 (synchronously replicated)
+- Export to **PDF** and **DOCX** full audit reports
+- Interactive **HTML Proof Sheet** for each audit run
 
 ---
 
-## Quick Start
+## Quick Start (Windows)
 
+### 1. Install dependencies
 ```bat
-.\run_demo.bat
+pip install -r requirements.txt
 ```
 
-Or manually:
-
+### 2. Run the full stack (API + llama.cpp LLM server)
 ```bat
-docker-compose up -d
-streamlit run src/ui/app.py
+run_all.bat
 ```
+
+### 3. Or run just the API (with an external llama.cpp server already running)
+```bat
+run_api.bat
+```
+
+### 4. Run with llama.cpp bundled
+```bat
+run_api_llamacpp.bat
+```
+
+Then open your browser at: **`http://localhost:8000`**
 
 ---
 
 ## Architecture
 
-``
-src/ui/app.py       — Main Streamlit application
-database.py         — SQLAlchemy ORM (Master-Slave, 6 Normalized Tables, RoutingSession)
-auth.py             — Login gate / role management
-controls_data.py    — ISO 27001 control definitions
-scoping_engine.py   — Automatic document scope detection
 ```
+src/
+├── ai/
+│   ├── audit_chains.py       — LLM prompt chains (Policy + Evidence evaluation)
+│   ├── audit_graph.py        — LangGraph orchestration (per-control audit pipeline)
+│   ├── audit_models.py       — Pydantic models for audit findings
+│   ├── scoping_engine.py     — Automatic document scope detection
+│   ├── keyword_generator.py  — Keyword extraction for RAG retrieval
+│   └── knowledge_loop.py     — Knowledge base query loop
+├── api/
+│   ├── main.py               — FastAPI app entry point
+│   ├── endpoints/
+│   │   ├── audit.py          — Audit job submission, status polling, results
+│   │   ├── auth.py           — Login / JWT authentication
+│   │   ├── controls.py       — ISO 27001 control definitions API
+│   │   ├── license.py        — Hardware node license validation
+│   │   └── logs.py           — Audit run log streaming
+│   └── static/               — Vanilla HTML/JS/CSS frontend
+│       ├── index.html
+│       ├── app.js
+│       └── style.css
+├── core/
+│   ├── bg_worker.py          — Background audit job executor
+│   ├── validator.py          — Deterministic compliance rule engine
+│   ├── retrieval.py          — RAG vector retrieval (Nomic embeddings)
+│   ├── report_exporter.py    — PDF / DOCX report generation
+│   ├── llm_client.py         — llama.cpp HTTP client
+│   ├── controls_data.py      — ISO 27001 / VAPT / PQC control definitions
+│   ├── excel_scoping_parser.py — Excel checklist scoping parser
+│   ├── parsers/              — Document + scanner output parsers
+│   │   ├── doc_parsers.py
+│   │   ├── burp_parser.py
+│   │   ├── nessus_parser.py
+│   │   ├── nmap_parser.py
+│   │   ├── qualys_parser.py
+│   │   ├── trivy_parser.py
+│   │   ├── kali_parser.py
+│   │   └── pqc_parser.py
+│   └── knowledge/            — Embedded knowledge JSON files per standard
+└── db/
+    └── database.py           — SQLAlchemy ORM (SQLite)
+
+init.sql                      — DB schema bootstrap
+config/retrieval_config.json  — RAG retrieval tuning parameters
+requirements.txt
+```
+
+---
+
+## Models Required (place in project root)
+
+| Model file | Purpose |
+|---|---|
+| `gemma-2-2b-it-Q4_K_M.gguf` | Fast audit LLM (lightweight) |
+| `gemma-2-9b-it-Q8_0.gguf` | Deep audit LLM (high accuracy) |
+| `nomic-embed-text-v1.5.f16.gguf` | Local embedding model for RAG |
+
+> Models are **not** included in this repository. Download from HuggingFace or use `pull_models.bat`.
 
 ---
 
 ## Troubleshooting
 
-- **ShaktiDB not reachable?** App auto-switches to SQLite local DB.
-- **Ollama not running?** Start with `docker-compose up -d`, then pull models with `.\pull_models.bat`.
-- **Schema upgrade?** On first restart after an update, `audit_findings` and `audit_checkpoints` tables are automatically recreated.
+- **API not starting?** Run `pip install -r requirements.txt` first.
+- **LLM not responding?** Make sure `llama-server.exe` is running (started automatically by `run_all.bat` / `run_api_llamacpp.bat`).
+- **No results appearing?** Check that GGUF model files exist in the project root directory.
+- **DB errors?** Delete `local_audit_app.db` and restart — it will be recreated automatically from `init.sql`.
 
-```bat
-## Useful commands
-docker-compose up -d
-.\pull_models.bat
-python -m py_compile src/ui/app.py   # syntax check
-```
+---
 
-## 
-cd "C:\Users\HP\Desktop\llama,cpp\au"
-run_llamacpp_demo.bat
+## Compliance Standards Supported
+
+| Standard | Coverage |
+|---|---|
+| **ISO 27001:2022** | All Annex A controls (93 controls) |
+| **VAPT** | Nessus · Nmap · Burp Suite · Qualys · Trivy · Kali Linux reports |
+| **PQC** | Post-Quantum Cryptography readiness (NIST PQC algorithms) |
+| **NIST CSF** | Partial coverage via control mapping |
+| **SOC 2** | Partial coverage via control mapping |
+| **DPDP / GDPR** | Partial coverage via control mapping |
