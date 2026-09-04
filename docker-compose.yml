@@ -1,10 +1,10 @@
-﻿services:
+services:
   shakthidb:
     build: .
     image: aicyberauditbox-shakthidb:3.10
     container_name: shakthidb_service
     environment:
-      - POSTGRES_PASSWORD=ShakthiDB@2026
+      - POSTGRES_PASSWORD=ShakthiDB2026
       - POSTGRES_DB=shakthidb
     ports:
       - "15234:15234"

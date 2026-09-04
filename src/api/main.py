@@ -65,6 +65,16 @@ app = FastAPI(
     openapi_url=None,   # Disable /openapi.json in production
 )
 
+from src.core.scheduler import start_scheduler, stop_scheduler
+
+@app.on_event("startup")
+def on_startup():
+    start_scheduler()
+
+@app.on_event("shutdown")
+def on_shutdown():
+    stop_scheduler()
+
 from starlette.middleware.base import BaseHTTPMiddleware
 
 class NoCacheMiddleware(BaseHTTPMiddleware):

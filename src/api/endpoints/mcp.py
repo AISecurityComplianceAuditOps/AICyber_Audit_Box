@@ -3,13 +3,28 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session
 import json
+import asyncio
 
 from src.db.database import SessionLocal, MCPServerConfig
 from src.core.crypto_utils import encrypt_credential
 from src.core.mcp_client import get_mcp_manager_for_config
 from src.api.endpoints.auth import _require_auth
+from src.core.orchestrator import run_orchestrator_sweep
+from src.core.pqc_filter import is_pqc_file
 
 router = APIRouter(prefix="/mcp", tags=["mcp"])
+
+class OrchestratorTriggerRequest(BaseModel):
+    company_name: Optional[str] = None
+    mode: Optional[str] = "general"
+
+@router.post("/orchestrator/trigger")
+async def trigger_orchestrator(payload: OrchestratorTriggerRequest, request: Request):
+    """Manually triggers the daily asset sweep for testing."""
+    _require_auth(request)
+    # Fire and forget the sweep so we don't block the HTTP response
+    asyncio.create_task(run_orchestrator_sweep(company_name=payload.company_name, mode=payload.mode))
+    return {"status": "success", "message": f"Orchestrator sweep triggered for {payload.company_name or 'Global'} in {payload.mode} mode."}
 
 def get_db():
     db = SessionLocal()
@@ -21,6 +36,8 @@ def get_db():
 class MCPConfigCreate(BaseModel):
     name: str
     server_type: str
+    company_name: Optional[str] = None
+    asset_category: Optional[str] = None
     command: str
     args: str
     env: str
@@ -30,6 +47,8 @@ class MCPConfigResponse(BaseModel):
     id: int
     name: str
     server_type: str
+    company_name: Optional[str] = None
+    asset_category: Optional[str] = None
     command: str
     args: str
     env: str
@@ -45,6 +64,8 @@ def list_servers(request: Request, db: Session = Depends(get_db)):
             id=c.id,
             name=c.name,
             server_type=c.server_type,
+            company_name=c.company_name,
+            asset_category=c.asset_category,
             command=c.command or "",
             args=c.args or "[]",
             env=c.env or "{}",
@@ -64,6 +85,8 @@ def create_server(config: MCPConfigCreate, request: Request, db: Session = Depen
     new_config = MCPServerConfig(
         name=config.name,
         server_type=config.server_type,
+        company_name=config.company_name,
+        asset_category=config.asset_category,
         command=config.command,
         args=config.args,
         env=config.env,
@@ -77,6 +100,8 @@ def create_server(config: MCPConfigCreate, request: Request, db: Session = Depen
         id=new_config.id,
         name=new_config.name,
         server_type=new_config.server_type,
+        company_name=new_config.company_name,
+        asset_category=new_config.asset_category,
         command=new_config.command or "",
         args=new_config.args or "[]",
         env=new_config.env or "{}",
@@ -142,15 +167,14 @@ async def import_file(server_id: int, req: ImportRequest, request: Request, db: 
     try:
         await mcp.connect()
         if config.server_type.lower() == 'github':
-            # Sanitize Repo Path
-            repo_input = req.repo_or_path.strip()
-            if repo_input.endswith('.git'):
-                repo_input = repo_input[:-4]
-            if "github.com/" in repo_input:
-                repo_input = repo_input.split("github.com/")[-1]
-            r_parts = repo_input.strip("/").split("/")
-            owner = r_parts[0]
-            repo = r_parts[1] if len(r_parts) > 1 else ""
+            env_dict = {}
+            if config.env:
+                try:
+                    env_dict = json.loads(config.env)
+                except:
+                    pass
+            owner = env_dict.get("GITHUB_OWNER", "octocat")
+            repo = env_dict.get("GITHUB_REPO", "Hello-World")
             
             # Sanitize File Path
             f_path = req.file_path.strip()
@@ -163,52 +187,9 @@ async def import_file(server_id: int, req: ImportRequest, request: Request, db: 
                 f_path = f_path.split("tree/main/")[-1]
             elif "tree/master/" in f_path:
                 f_path = f_path.split("tree/master/")[-1]
-                
-            EXACT_MATCH_FILES = {
-                "httpd.conf", "ssl.conf", "haproxy.cfg", "web.config",
-                "my.cnf", "sql.config", "postgresql.conf", "sqlnet.ora",
-                "sshd_config", "id_rsa", "id_ed25519", "ipsec.conf", "wg0.conf",
-                "pom.xml", "build.gradle", "requirements.txt", "pyproject.toml", "package.json",
-                "dockerfile", "ntds.dit"
-            }
+            # The lists of PQC keywords, extensions, and the is_pqc_file function 
+            # have been moved to src.core.pqc_filter to prevent circular dependencies.
             
-            PQC_EXTENSIONS = {
-                ".pem", ".crt", ".cer", ".der", ".p12", ".pfx", ".key", ".pkcs8", ".jks", 
-                ".ovpn", ".tf", ".bicep", ".env"
-            }
-            
-            GENERIC_EXTENSIONS = {
-                ".conf", ".cfg", ".txt", ".xml", ".json", ".yaml", ".yml", ".ini", ".toml", ".cpg"
-            }
-            
-            PQC_KEYWORDS = {
-                "crypto", "cert", "tls", "ssl", "key", "rsa", "ecc", "kyber", 
-                "dilithium", "falcon", "sphincs", "security", "vault", "kms", 
-                "saml", "oauth", "oidc", "kerberos", "luks", "secret", "pqc"
-            }
-            
-            def is_pqc_file(filename: str) -> bool:
-                filename_lower = filename.lower()
-                basename = os.path.basename(filename_lower)
-                
-                # 1. Exact filenames
-                if basename in EXACT_MATCH_FILES:
-                    return True
-                    
-                ext = os.path.splitext(basename)[1]
-                
-                # 2. Targeted unconditional extensions
-                if ext in PQC_EXTENSIONS:
-                    return True
-                    
-                # 3. Generic extensions (MUST contain a security keyword)
-                if ext in GENERIC_EXTENSIONS or ext == "":
-                    for kw in PQC_KEYWORDS:
-                        if kw in basename:
-                            return True
-                            
-                return False
-
             MAX_FILES = 50
             items_to_fetch = [f_path]
             

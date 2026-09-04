@@ -1736,39 +1736,36 @@
                     <p style="margin: 4px 0 0 0; font-size: 0.80rem; color: #94a3b8; font-weight: 500;">Connect to GitHub, Jira, etc. to directly retrieve files</p>
                 </div>
             </div>
-            
-            <div style="margin-bottom: 16px;">
-                <label style="display: block; font-size: 0.76rem; font-weight: 700; color: var(--text-main); margin-bottom: 6px;">Select Server</label>
+            <div id="mcp-company-selector-container" style="margin-bottom: 20px;">
+                <label style="display: block; font-size: 0.76rem; font-weight: 700; color: var(--text-main); margin-bottom: 6px;">Select Company Session</label>
                 <div style="display: flex; gap: 8px;">
-                    <select id="mcp-server-select" onchange="onMcpServerSelect()" style="flex: 1; padding: 8px 12px; font-size: 0.86rem; border-radius: 8px; border: 1px solid rgba(148, 163, 184, 0.3); background: rgba(30, 41, 59, 0.8); color: white;">
-                        <option value="">-- Loading servers --</option>
+                    <select id="mcp-company-select" onchange="onCompanySelect()" style="flex: 1; padding: 8px 12px; font-size: 0.86rem; border-radius: 8px; border: 1px solid rgba(148, 163, 184, 0.3); background: rgba(30, 41, 59, 0.8); color: white;">
+                        <option value="">-- Loading Companies --</option>
                     </select>
-                    <button type="button" onclick="deleteMcpServer()" style="padding: 8px 12px; border-radius: 8px; border: 1px solid rgba(239, 68, 68, 0.5); background: rgba(239, 68, 68, 0.15); color: #ef4444; font-weight: 700; cursor: pointer; display: none;" id="mcp-delete-btn">Delete</button>
-                    <button type="button" onclick="showAddMcpServerForm()" style="padding: 8px 12px; border-radius: 8px; border: 1px solid rgba(16, 185, 129, 0.5); background: rgba(16, 185, 129, 0.15); color: #10b981; font-weight: 700; cursor: pointer;">+ Add New</button>
+                    <button type="button" onclick="showRegisterCompanyForm()" style="padding: 8px 12px; border-radius: 8px; border: 1px solid rgba(16, 185, 129, 0.5); background: rgba(16, 185, 129, 0.15); color: #10b981; font-weight: 700; cursor: pointer;">+ Register New Company</button>
                 </div>
             </div>
 
-<div id="mcp-import-mode-container" style="display: none; margin-bottom: 16px; background: rgba(15, 23, 42, 0.4); padding: 12px; border-radius: 8px; border: 1px dashed rgba(59, 130, 246, 0.4);">
-    <label style="display: block; font-size: 0.76rem; font-weight: 700; color: var(--text-main); margin-bottom: 8px;">Import Mode</label>
-    <div style="display: flex; gap: 16px;">
-        <label style="display: flex; align-items: center; gap: 6px; font-size: 0.82rem; color: #e2e8f0; cursor: pointer;">
-            <input type="radio" name="mcp-import-mode" value="general" checked onchange="onMcpModeChange()" style="accent-color: #3b82f6;"> General (Specific File/Folder)
-        </label>
-        <label style="display: flex; align-items: center; gap: 6px; font-size: 0.82rem; color: #e2e8f0; cursor: pointer;">
-            <input type="radio" name="mcp-import-mode" value="pqc" onchange="onMcpModeChange()" style="accent-color: #10b981;"> PQC (Scan Repo for Crypto Files)
-        </label>
-    </div>
-</div>
-
-            <div id="mcp-add-server-form" style="display: none; background: #1e293b; border: 1px solid rgba(59, 130, 246, 0.35); border-radius: 12px; padding: 18px; margin-bottom: 20px;">
-                <h4 style="margin: 0 0 12px 0; font-size: 0.9rem; color: #60a5fa;">Configure New Server</h4>
-                <input type="text" id="mcp-new-name" placeholder="Name (e.g. My GitHub)" style="width: 100%; margin-bottom: 8px; padding: 8px; border-radius: 6px; border: 1px solid rgba(148,163,184,0.3); background: #0f172a; color: white;">
+            <!-- View: Register Company -->
+            <div id="mcp-register-company-view" style="display: none; background: #1e293b; border: 1px solid rgba(59, 130, 246, 0.35); border-radius: 12px; padding: 18px; margin-bottom: 20px;">
+                <h4 style="margin: 0 0 12px 0; font-size: 0.9rem; color: #60a5fa;">Register New Company</h4>
+                <input type="text" id="mcp-new-company-name" placeholder="Company Name (e.g. XYZ Corp)" style="width: 100%; margin-bottom: 16px; padding: 8px; border-radius: 6px; border: 1px solid rgba(148,163,184,0.3); background: #0f172a; color: white;">
+                
+                <div style="border-bottom: 1px solid rgba(148, 163, 184, 0.2); margin-bottom: 16px;"></div>
+                
+                <h4 style="margin: 0 0 8px 0; font-size: 0.8rem; color: #e2e8f0;">Add Asset</h4>
+                <input type="text" id="mcp-new-name" placeholder="Asset Identifier (e.g. Main DB, Frontend Repo)" style="width: 100%; margin-bottom: 8px; padding: 8px; border-radius: 6px; border: 1px solid rgba(148,163,184,0.3); background: #0f172a; color: white;">
+                <input type="text" id="mcp-new-category" placeholder="Asset Category (e.g. Code, Database, Cloud)" style="width: 100%; margin-bottom: 8px; padding: 8px; border-radius: 6px; border: 1px solid rgba(148,163,184,0.3); background: #0f172a; color: white;">
                 <select id="mcp-new-type" onchange="onMcpNewTypeChange()" style="width: 100%; margin-bottom: 8px; padding: 8px; border-radius: 6px; border: 1px solid rgba(148,163,184,0.3); background: #0f172a; color: white;">
                     <option value="github">GitHub</option>
                     <option value="jira">Jira</option>
                     <option value="postgres">PostgreSQL</option>
                     <option value="azure">Azure Cloud Server</option>
                 </select>
+                
+                <div id="mcp-github-fields" style="display: block;">
+                    <input type="text" id="mcp-new-github-repo" placeholder="GitHub Repo (e.g. owner/repo)" style="width: 100%; margin-bottom: 8px; padding: 8px; border-radius: 6px; border: 1px solid rgba(148,163,184,0.3); background: #0f172a; color: white;">
+                </div>
                 
                 <div id="mcp-jira-fields" style="display: none;">
                     <input type="email" id="mcp-new-jira-email" placeholder="Jira Email (e.g. user@company.com)" style="width: 100%; margin-bottom: 8px; padding: 8px; border-radius: 6px; border: 1px solid rgba(148,163,184,0.3); background: #0f172a; color: white;">
@@ -1785,23 +1782,52 @@
                     <input type="password" id="mcp-azure-secret" placeholder="Azure Client Secret" style="width: 100%; margin-bottom: 8px; padding: 8px; border-radius: 6px; border: 1px solid rgba(148,163,184,0.3); background: #0f172a; color: white;">
                     <input type="text" id="mcp-azure-sub" placeholder="Azure Subscription ID" style="width: 100%; margin-bottom: 8px; padding: 8px; border-radius: 6px; border: 1px solid rgba(148,163,184,0.3); background: #0f172a; color: white;">
                 </div>
-
                 
-                <input type="password" id="mcp-new-cred" placeholder="Personal Access Token (PAT) / API Key" style="width: 100%; margin-bottom: 8px; padding: 8px; border-radius: 6px; border: 1px solid rgba(148,163,184,0.3); background: #0f172a; color: white;">
+                <input type="password" id="mcp-new-cred" placeholder="Personal Access Token (PAT) / API Key" style="width: 100%; margin-bottom: 12px; padding: 8px; border-radius: 6px; border: 1px solid rgba(148,163,184,0.3); background: #0f172a; color: white;">
+                
                 <div style="display: flex; gap: 8px; justify-content: flex-end;">
-                    <button type="button" onclick="hideAddMcpServerForm()" style="padding: 6px 12px; border-radius: 6px; background: transparent; color: #cbd5e1; border: 1px solid rgba(148,163,184,0.3); cursor: pointer;">Cancel</button>
-                    <button type="button" onclick="saveNewMcpServer()" style="padding: 6px 12px; border-radius: 6px; background: #3b82f6; color: white; border: none; cursor: pointer;">Save</button>
+                    <button type="button" onclick="cancelCompanyRegistration()" style="padding: 6px 12px; border-radius: 6px; background: transparent; color: #cbd5e1; border: 1px solid rgba(148,163,184,0.3); cursor: pointer;">Cancel</button>
+                    <button type="button" onclick="saveNewAssetToCompany()" style="padding: 6px 12px; border-radius: 6px; background: #3b82f6; color: white; border: none; cursor: pointer;">Save Asset to Company</button>
                 </div>
             </div>
 
-            <div id="mcp-import-workspace" style="display: none; margin-top: 16px;">
-                <input type="text" id="mcp-repo-path" placeholder="Repo or Project Path (e.g. owner/repo)" style="width: 100%; margin-bottom: 8px; padding: 10px; border-radius: 8px; border: 1px solid rgba(148, 163, 184, 0.3); background: rgba(30, 41, 59, 0.8); color: white;">
-                <input type="text" id="mcp-file-path" placeholder="File or Folder Path (e.g. README.md, docs/)" style="width: 100%; margin-bottom: 12px; padding: 10px; border-radius: 8px; border: 1px solid rgba(148, 163, 184, 0.3); background: rgba(30, 41, 59, 0.8); color: white;">
+            <!-- View: Company Dashboard -->
+            <div id="mcp-company-dashboard-view" style="display: none;">
+                
+                <div id="mcp-import-mode-container" style="margin-bottom: 16px; background: rgba(15, 23, 42, 0.4); padding: 12px; border-radius: 8px; border: 1px dashed rgba(59, 130, 246, 0.4);">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                        <label style="font-size: 0.76rem; font-weight: 700; color: var(--text-main);">Sweep Mode</label>
+                        <button type="button" onclick="triggerCompanySweep()" style="padding: 6px 12px; border-radius: 6px; background: linear-gradient(135deg, #a855f7 0%, #9333ea 100%); color: white; border: none; cursor: pointer; font-weight: bold; font-size: 0.8rem; box-shadow: 0 4px 10px rgba(168, 85, 247, 0.3);">⚡ Scan Entire Company</button>
+                    </div>
+                    <div style="display: flex; gap: 16px;">
+                        <label style="display: flex; align-items: center; gap: 6px; font-size: 0.82rem; color: #e2e8f0; cursor: pointer;">
+                            <input type="radio" name="mcp-import-mode" value="general" checked onchange="onMcpModeChange()" style="accent-color: #3b82f6;"> General (Scan All Content)
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 6px; font-size: 0.82rem; color: #e2e8f0; cursor: pointer;">
+                            <input type="radio" name="mcp-import-mode" value="pqc" onchange="onMcpModeChange()" style="accent-color: #10b981;"> PQC (Targeted Crypto/Security Scan)
+                        </label>
+                    </div>
+                </div>
+
+                <div style="margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
+                    <h4 style="margin: 0; font-size: 0.9rem; color: #94a3b8;">Individual Assets in this Company</h4>
+                    <button type="button" onclick="showRegisterCompanyForm(true)" style="padding: 4px 8px; border-radius: 6px; background: transparent; color: #10b981; border: 1px solid rgba(16, 185, 129, 0.5); cursor: pointer; font-size: 0.75rem;">+ Add Asset</button>
+                </div>
+                
+                <div style="background: rgba(30, 41, 59, 0.4); border-radius: 8px; border: 1px solid rgba(148, 163, 184, 0.2); max-height: 150px; overflow-y: auto; padding: 8px;" id="mcp-dashboard-assets-list">
+                    <!-- Javascript populates list of assets -->
+                </div>
+
+                <div id="mcp-import-workspace" style="display: none; margin-top: 16px; background: rgba(30, 41, 59, 0.6); padding: 12px; border-radius: 8px;">
+                    <h5 style="margin: 0 0 8px 0; color: #e2e8f0; font-size: 0.8rem;">Manual Asset Deep-Dive</h5>
+                    <input type="text" id="mcp-repo-path" placeholder="Repo or Project Path (e.g. owner/repo)" style="width: 100%; margin-bottom: 8px; padding: 10px; border-radius: 8px; border: 1px solid rgba(148, 163, 184, 0.3); background: rgba(15, 23, 42, 0.8); color: white;">
+                    <input type="text" id="mcp-file-path" placeholder="File or Folder Path (e.g. README.md, docs/)" style="width: 100%; margin-bottom: 12px; padding: 10px; border-radius: 8px; border: 1px solid rgba(148, 163, 184, 0.3); background: rgba(15, 23, 42, 0.8); color: white;">
+                    <button type="button" id="mcp-import-btn" onclick="executeMcpImport()" style="width: 100%; padding: 10px 22px; border-radius: 8px; border: none; background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color: #ffffff; font-weight: 800; cursor: pointer; box-shadow: 0 4px 14px rgba(59, 130, 246, 0.4);">Run Manual Scan</button>
+                </div>
             </div>
 
-            <div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 24px;">
-                <button type="button" onclick="closeMcpImportModal()" style="padding: 10px 18px; border-radius: 8px; border: 1px solid rgba(148, 163, 184, 0.3); background: transparent; color: #cbd5e1; font-weight: 600; cursor: pointer;">Cancel</button>
-                <button type="button" id="mcp-import-btn" onclick="executeMcpImport()" style="padding: 10px 22px; border-radius: 8px; border: none; background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: #ffffff; font-weight: 800; cursor: pointer; box-shadow: 0 4px 14px rgba(16, 185, 129, 0.4); display: none;">Import File</button>
+            <div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 24px; border-top: 1px solid rgba(148, 163, 184, 0.2); padding-top: 16px;">
+                <button type="button" onclick="closeMcpImportModal()" style="padding: 8px 16px; border-radius: 8px; background: rgba(239, 68, 68, 0.15); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.3); cursor: pointer; font-weight: bold;">Close Dashboard</button>
             </div>
         </div>
     </div>

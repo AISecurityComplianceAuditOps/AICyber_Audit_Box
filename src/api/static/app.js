@@ -7925,6 +7925,7 @@ async function undoDeleteEvidenceFile(sessionId, fileId, filename) {
 // ==========================================
 
 let currentMcpServers = [];
+let groupedCompanies = {};
 
 function openMcpImportModal() {
     document.getElementById('mcp-import-modal').style.display = 'flex';
@@ -7933,24 +7934,29 @@ function openMcpImportModal() {
 
 function closeMcpImportModal() {
     document.getElementById('mcp-import-modal').style.display = 'none';
-    hideAddMcpServerForm();
+    document.getElementById('mcp-register-company-view').style.display = 'none';
+    document.getElementById('mcp-company-dashboard-view').style.display = 'none';
     document.getElementById('mcp-import-workspace').style.display = 'none';
-    document.getElementById('mcp-import-btn').style.display = 'none';
-    document.getElementById('mcp-repo-path').value = '';
-    document.getElementById('mcp-file-path').value = '';
 }
 
 async function loadMcpServers() {
     try {
         const res = await authFetch(`${API_BASE}/mcp/servers`);
-        const servers = await res.json();
-        currentMcpServers = servers;
-        const select = document.getElementById('mcp-server-select');
-        select.innerHTML = '<option value="">-- Select a Server --</option>';
-        servers.forEach(s => {
+        currentMcpServers = await res.json();
+        
+        groupedCompanies = {};
+        currentMcpServers.forEach(s => {
+            const comp = s.company_name || "Global";
+            if (!groupedCompanies[comp]) groupedCompanies[comp] = [];
+            groupedCompanies[comp].push(s);
+        });
+        
+        const select = document.getElementById('mcp-company-select');
+        select.innerHTML = '<option value="">-- Select a Company Session --</option>';
+        Object.keys(groupedCompanies).forEach(c => {
             const opt = document.createElement('option');
-            opt.value = s.id;
-            opt.textContent = `${s.name} (${s.server_type})`;
+            opt.value = c;
+            opt.textContent = c;
             select.appendChild(opt);
         });
     } catch (e) {
@@ -7959,49 +7965,83 @@ async function loadMcpServers() {
     }
 }
 
-function showAddMcpServerForm() {
-    document.getElementById('mcp-add-server-form').style.display = 'block';
+function onCompanySelect() {
+    const compName = document.getElementById('mcp-company-select').value;
+    document.getElementById('mcp-register-company-view').style.display = 'none';
+    document.getElementById('mcp-import-workspace').style.display = 'none';
+    
+    if (!compName) {
+        document.getElementById('mcp-company-dashboard-view').style.display = 'none';
+        return;
+    }
+    
+    document.getElementById('mcp-company-dashboard-view').style.display = 'block';
+    
+    const assetsList = document.getElementById('mcp-dashboard-assets-list');
+    assetsList.innerHTML = '';
+    
+    const assets = groupedCompanies[compName] || [];
+    assets.forEach(s => {
+        const div = document.createElement('div');
+        div.style.padding = '8px';
+        div.style.borderBottom = '1px solid rgba(148, 163, 184, 0.2)';
+        div.style.display = 'flex';
+        div.style.justifyContent = 'space-between';
+        div.style.alignItems = 'center';
+        
+        const cat = s.asset_category || 'Uncategorized';
+        div.innerHTML = `
+            <div>
+                <strong style="color: #60a5fa;">${s.name}</strong> <span style="font-size: 0.75rem; color: #94a3b8;">(${s.server_type}) - [${cat}]</span>
+            </div>
+            <div style="display: flex; gap: 8px;">
+                <button onclick="prepareManualScan(${s.id})" style="padding: 4px 8px; border-radius: 4px; background: rgba(59, 130, 246, 0.2); border: 1px solid #3b82f6; color: #60a5fa; cursor: pointer; font-size: 0.7rem;">Manual Scan</button>
+                <button onclick="deleteAsset(${s.id})" style="padding: 4px 8px; border-radius: 4px; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); color: #ef4444; cursor: pointer; font-size: 0.7rem;">Delete</button>
+            </div>
+        `;
+        assetsList.appendChild(div);
+    });
 }
 
-function hideAddMcpServerForm() {
-    document.getElementById('mcp-add-server-form').style.display = 'none';
+function showRegisterCompanyForm(isAddingToExisting = false) {
+    document.getElementById('mcp-company-dashboard-view').style.display = 'none';
+    document.getElementById('mcp-register-company-view').style.display = 'block';
+    
+    if (isAddingToExisting) {
+        const compName = document.getElementById('mcp-company-select').value;
+        document.getElementById('mcp-new-company-name').value = compName;
+    } else {
+        document.getElementById('mcp-new-company-name').value = '';
+    }
+    
     document.getElementById('mcp-new-name').value = '';
+    document.getElementById('mcp-new-category').value = '';
     document.getElementById('mcp-new-cred').value = '';
-    document.getElementById('mcp-new-jira-email').value = '';
-    document.getElementById('mcp-new-jira-url').value = '';
+}
+
+function cancelCompanyRegistration() {
+    document.getElementById('mcp-register-company-view').style.display = 'none';
+    onCompanySelect(); // restores dashboard if a company is selected
 }
 
 function onMcpNewTypeChange() {
     const type = document.getElementById('mcp-new-type').value;
-    if (type === 'jira') {
-        document.getElementById('mcp-jira-fields').style.display = 'block';
-        document.getElementById('mcp-postgres-fields').style.display = 'none';
-        document.getElementById('mcp-azure-fields').style.display = 'none';
-        document.getElementById('mcp-new-cred').style.display = 'block';
-    } else if (type === 'postgres') {
-        document.getElementById('mcp-jira-fields').style.display = 'none';
-        document.getElementById('mcp-postgres-fields').style.display = 'block';
-        document.getElementById('mcp-azure-fields').style.display = 'none';
-        document.getElementById('mcp-new-cred').style.display = 'none';
-    } else if (type === 'azure') {
-        document.getElementById('mcp-jira-fields').style.display = 'none';
-        document.getElementById('mcp-postgres-fields').style.display = 'none';
-        document.getElementById('mcp-azure-fields').style.display = 'block';
-        document.getElementById('mcp-new-cred').style.display = 'none';
-    } else {
-        document.getElementById('mcp-jira-fields').style.display = 'none';
-        document.getElementById('mcp-postgres-fields').style.display = 'none';
-        document.getElementById('mcp-azure-fields').style.display = 'none';
-        document.getElementById('mcp-new-cred').style.display = 'block';
-    }
+    document.getElementById('mcp-github-fields').style.display = type === 'github' ? 'block' : 'none';
+    document.getElementById('mcp-jira-fields').style.display = type === 'jira' ? 'block' : 'none';
+    document.getElementById('mcp-postgres-fields').style.display = type === 'postgres' ? 'block' : 'none';
+    document.getElementById('mcp-azure-fields').style.display = type === 'azure' ? 'block' : 'none';
+    document.getElementById('mcp-new-cred').style.display = (type === 'postgres' || type === 'azure') ? 'none' : 'block';
 }
 
-async function saveNewMcpServer() {
+async function saveNewAssetToCompany() {
+    const company = document.getElementById('mcp-new-company-name').value.trim();
     const name = document.getElementById('mcp-new-name').value.trim();
+    const category = document.getElementById('mcp-new-category').value.trim();
     const type = document.getElementById('mcp-new-type').value;
     let cred = document.getElementById('mcp-new-cred').value.trim();
     
-    if (!name) return showToast('Please enter a server name', 'error');
+    if (!company) return showToast('Please enter a Company Name', 'error');
+    if (!name) return showToast('Please enter an Asset Name', 'error');
     
     let command = '';
     let args = '[]';
@@ -8010,6 +8050,11 @@ async function saveNewMcpServer() {
     if (type === 'github') {
         command = 'npx';
         args = JSON.stringify(['-y', '@modelcontextprotocol/server-github']);
+        const repoPath = document.getElementById('mcp-new-github-repo').value.trim();
+        if (!repoPath || !repoPath.includes('/')) return showToast('Please enter a valid GitHub repo (owner/repo)', 'error');
+        const [owner, repo] = repoPath.split('/');
+        envObj = { GITHUB_OWNER: owner, GITHUB_REPO: repo };
+
     } else if (type === 'jira') {
         command = 'npx';
         args = JSON.stringify(['-y', '@nexus2520/jira-mcp-server']);
@@ -8031,7 +8076,7 @@ async function saveNewMcpServer() {
         const sub = document.getElementById('mcp-azure-sub').value.trim();
         
         if (!tenant || !client || !secret || !sub) {
-            return showToast('All Azure credentials (Tenant, Client ID, Secret, Subscription) are required', 'error');
+            return showToast('All Azure credentials are required', 'error');
         }
         
         cred = JSON.stringify({
@@ -8049,6 +8094,8 @@ async function saveNewMcpServer() {
             body: JSON.stringify({
                 name,
                 server_type: type,
+                company_name: company,
+                asset_category: category,
                 command,
                 args,
                 env: JSON.stringify(envObj),
@@ -8056,107 +8103,88 @@ async function saveNewMcpServer() {
             })
         });
         
-        if (!res.ok) {
-            const data = await res.json();
-            throw new Error(data.detail || 'Failed to create server');
-        }
+        if (!res.ok) throw new Error((await res.json()).detail || 'Failed to create asset');
         
-        showToast('MCP Server configured successfully', 'success');
-        hideAddMcpServerForm();
+        showToast('Asset added to Company successfully', 'success');
+        document.getElementById('mcp-new-name').value = '';
         await loadMcpServers();
+        
+        // Auto select the new company
+        document.getElementById('mcp-company-select').value = company;
+        onCompanySelect();
     } catch (e) {
         showToast(e.message, 'error');
     }
 }
 
-async function deleteMcpServer() {
-    const serverId = document.getElementById('mcp-server-select').value;
-    if (!serverId) return;
-    
-    if (!confirm('Are you sure you want to delete this MCP server?')) return;
-    
+async function deleteAsset(serverId) {
+    if (!confirm('Are you sure you want to delete this asset?')) return;
     try {
-        const res = await authFetch(`${API_BASE}/mcp/servers/${serverId}`, {
-            method: 'DELETE'
-        });
-        if (!res.ok) throw new Error(await res.text());
-        
-        showToastBanner('Server deleted successfully', 'success');
+        const res = await authFetch(`${API_BASE}/mcp/servers/${serverId}`, { method: 'DELETE' });
+        if (!res.ok) throw new Error('Failed to delete asset');
+        showToast('Asset deleted', 'success');
         await loadMcpServers();
-    } catch (err) {
-        showToastBanner(`Delete failed: ${err.message}`, 'error');
+        onCompanySelect();
+    } catch (e) {
+        showToast(e.message, 'error');
     }
 }
 
-function onMcpServerSelect() {
-    const val = document.getElementById('mcp-server-select').value;
-    const deleteBtn = document.getElementById('mcp-delete-btn');
+async function triggerCompanySweep() {
+    const compName = document.getElementById('mcp-company-select').value;
+    const mode = document.querySelector('input[name="mcp-import-mode"]:checked')?.value || 'general';
     
-    if (val) {
-        if (deleteBtn) deleteBtn.style.display = 'block';
-        document.getElementById('mcp-import-workspace').style.display = 'block';
-        document.getElementById('mcp-import-btn').style.display = 'block';
-        
-        const server = currentMcpServers.find(s => s.id == val);
-        if (server && server.server_type.toLowerCase() === 'github') {
-            document.getElementById('mcp-import-mode-container').style.display = 'block';
-            document.getElementById('mcp-repo-path').style.display = 'block';
-            document.getElementById('mcp-file-path').style.display = 'block';
-            onMcpModeChange();
-        } else if (server && server.server_type.toLowerCase() === 'jira') {
-            document.getElementById('mcp-import-mode-container').style.display = 'none';
-            document.getElementById('mcp-repo-path').style.display = 'none';
-            document.getElementById('mcp-file-path').style.display = 'block';
-            document.getElementById('mcp-file-path').placeholder = 'Issue Key (e.g. PROJ-123)';
-        } else if (server && server.server_type.toLowerCase() === 'postgres') {
-            document.getElementById('mcp-import-mode-container').style.display = 'block';
-            document.getElementById('mcp-repo-path').style.display = 'none';
-            document.getElementById('mcp-file-path').style.display = 'block';
-            onMcpModeChange();
-        } else if (server && server.server_type.toLowerCase() === 'azure') {
-            document.getElementById('mcp-import-mode-container').style.display = 'block';
-            document.getElementById('mcp-repo-path').style.display = 'none';
-            document.getElementById('mcp-file-path').style.display = 'block';
-            onMcpModeChange();
-        } else {
-            document.getElementById('mcp-import-mode-container').style.display = 'none';
-            document.getElementById('mcp-repo-path').style.display = 'block';
-            document.getElementById('mcp-file-path').style.display = 'block';
-            document.getElementById('mcp-file-path').placeholder = 'File or Folder Path (e.g. README.md, docs/)';
-        }
-    } else {
-        if (deleteBtn) deleteBtn.style.display = 'none';
-        document.getElementById('mcp-import-workspace').style.display = 'none';
-        document.getElementById('mcp-import-btn').style.display = 'none';
+    if (!compName) return showToast('No company selected', 'error');
+    
+    showToast(`Triggering Sweep for ${compName} in ${mode.toUpperCase()} mode...`, 'info');
+    try {
+        const res = await authFetch(`${API_BASE}/mcp/orchestrator/trigger`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ company_name: compName, mode: mode })
+        });
+        if (!res.ok) throw new Error('Failed to trigger orchestrator');
+        showToast(`Sweep triggered for ${compName}! Check logs and inventory CSVs.`, 'success');
+    } catch (e) {
+        showToast(e.message, 'error');
     }
+}
+
+let activeManualScanServerId = null;
+
+function prepareManualScan(serverId) {
+    activeManualScanServerId = serverId;
+    document.getElementById('mcp-import-workspace').style.display = 'block';
+    onMcpModeChange();
 }
 
 function onMcpModeChange() {
     const mode = document.querySelector('input[name="mcp-import-mode"]:checked')?.value || 'general';
-    const serverId = document.getElementById('mcp-server-select').value;
+    const serverId = activeManualScanServerId;
+    if (!serverId) return;
+    
     const server = currentMcpServers.find(s => s.id == serverId);
     const isPostgres = server && server.server_type.toLowerCase() === 'postgres';
     const isAzure = server && server.server_type.toLowerCase() === 'azure';
-
+    const isGithub = server && server.server_type.toLowerCase() === 'github';
+    
+    document.getElementById('mcp-repo-path').style.display = isGithub ? 'block' : 'none';
+    
     if (isPostgres) {
-        if (mode === 'pqc') {
-            document.getElementById('mcp-file-path').placeholder = 'Optional: Custom PQC Query (leave empty for automated scan)';
-        } else {
-            document.getElementById('mcp-file-path').placeholder = 'Optional: Custom SQL Query (leave empty for automated report)';
-        }
+        document.getElementById('mcp-file-path').placeholder = mode === 'pqc' ? 'Optional: Custom PQC Query' : 'Optional: Custom SQL Query';
     } else if (isAzure) {
-        document.getElementById('mcp-file-path').placeholder = 'Optional: Key Vault Name (to extract Cryptographic Keys)';
+        document.getElementById('mcp-file-path').placeholder = 'Optional: Key Vault Name';
+    } else if (isGithub) {
+        document.getElementById('mcp-file-path').placeholder = mode === 'pqc' ? 'Optional: Subfolder to scan' : 'File or Folder Path (e.g. README.md)';
     } else {
-        if (mode === 'pqc') {
-            document.getElementById('mcp-file-path').placeholder = 'Optional: Subfolder to scan (leave empty for root)';
-        } else {
-            document.getElementById('mcp-file-path').placeholder = 'File or Folder Path (e.g. README.md, docs/)';
-        }
+        document.getElementById('mcp-file-path').placeholder = 'Issue Key (e.g. PROJ-123)';
     }
 }
 
 async function executeMcpImport() {
-    const serverId = document.getElementById('mcp-server-select').value;
+    if (!activeManualScanServerId) return showToast('Please select a specific asset to deep dive into', 'error');
+    
+    const serverId = activeManualScanServerId;
     const repoPath = document.getElementById('mcp-repo-path').value.trim();
     const filePath = document.getElementById('mcp-file-path').value.trim();
     
@@ -8169,11 +8197,8 @@ async function executeMcpImport() {
     const modeEl = document.querySelector('input[name="mcp-import-mode"]:checked');
     const mode = ((isGithub || isPostgres || isAzure) && modeEl) ? modeEl.value : 'general';
     
-    if (!serverId || (!isJira && !isPostgres && !isAzure && !repoPath)) {
-        return showToast('Please fill all required fields', 'error');
-    }
     if ((isJira || (isGithub && mode === 'general')) && !filePath) {
-        return showToast('Please specify a file or folder path', 'error');
+        return showToast('Please specify a file or issue key', 'error');
     }
     if (!activeSessionId) {
         return showToast('Please create or select an audit session first', 'error');
@@ -8181,40 +8206,37 @@ async function executeMcpImport() {
 
     const btn = document.getElementById('mcp-import-btn');
     const originalText = btn.innerText;
-    btn.innerText = 'Importing...';
     btn.disabled = true;
+    btn.innerText = 'Scanning...';
 
     try {
         const res = await authFetch(`${API_BASE}/mcp/${serverId}/import`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                session_id: activeSessionId,
+                server_id: serverId,
                 repo_or_path: repoPath,
                 file_path: filePath,
+                session_id: activeSessionId,
                 import_mode: mode
             })
         });
-        
+
         if (!res.ok) {
             const data = await res.json();
-            throw new Error(data.detail || 'Import failed');
+            throw new Error(data.detail || 'Failed to extract evidence');
         }
-        
+
         const data = await res.json();
-        if (data.count && data.count > 1) {
-            showToast(`Successfully imported ${data.count} files from folder`, 'success');
-        } else {
-            showToast(`File ${data.filename || 'imported'} successfully`, 'success');
-        }
+        showToast(`Extraction Complete: Found ${data.files_processed || 0} findings/files`, 'success');
         
-        // Refresh evidence list
         loadEvidenceFileList();
-        closeMcpImportModal();
+        
+        document.getElementById('mcp-file-path').value = '';
     } catch (e) {
         showToast(e.message, 'error');
     } finally {
-        btn.innerText = originalText;
         btn.disabled = false;
+        btn.innerText = originalText;
     }
 }

@@ -253,11 +253,23 @@ class MCPServerConfig(Base):
     id            = Column(Integer, primary_key=True, autoincrement=True)
     name          = Column(String(100), unique=True, nullable=False)
     server_type   = Column(String(50), nullable=False)
+    company_name  = Column(String(100), nullable=True)
+    asset_category= Column(String(100), nullable=True)
     command       = Column(String(300), nullable=True)
     args          = Column(Text, nullable=True)
     env           = Column(Text, nullable=True)
     encrypted_credentials = Column(Text, nullable=True)
     is_active     = Column(Boolean, default=True)
+    created_at    = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
+class AssetInventoryVersion(Base):
+    __tablename__ = "asset_inventory_versions"
+    id            = Column(Integer, primary_key=True, autoincrement=True)
+    company_name  = Column(String(100), nullable=False)
+    asset_category= Column(String(100), nullable=False)
+    file_path     = Column(Text, nullable=False)
+    delta_path    = Column(Text, nullable=True)
+    negative_alerts = Column(Integer, default=0)
     created_at    = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
 class ComplianceScore(Base):
