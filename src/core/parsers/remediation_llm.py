@@ -38,7 +38,7 @@ untouched. This function is never allowed to make a finding worse by running.
 import json
 import re
 import os
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List
 
 # Findings per LLM call. This was 8, which on a CPU-only box produces ~2000
@@ -260,7 +260,7 @@ def _vuln_type_key(f: Dict) -> str:
 
 
 def enrich_remediations(findings: List[Dict], model: str = "gemma4:e4b",
-                        session_id=None, timeout=None) -> List[Dict]:
+                        session_id=None, timeout=None, progress_cb=None) -> List[Dict]:
     """Rewrite the "remediation" and "remediation_actionable" keys on each
     finding dict using the LLM, grounded in that finding's own evidence.
     Returns the same list, mutated in place, so callers that already hold a
@@ -310,14 +310,32 @@ def enrich_remediations(findings: List[Dict], model: str = "gemma4:e4b",
     # valid report -- but the auditor asked for AI-tailored text and got the canned
     # version, and nothing anywhere said so. The caller surfaces this.
     _results = []
+
+    def _done(n):
+        """Report completed batches. Never let a reporting failure stop the run."""
+        if progress_cb:
+            try:
+                progress_cb(n, len(batches))
+            except Exception:
+                pass
+
     if len(batches) > 1:
+        # submit/as_completed rather than pool.map: map only yields once every
+        # batch has finished, so there is nothing to report until the slowest
+        # one lands. Batches still run in parallel exactly as before.
         with ThreadPoolExecutor(max_workers=min(_MAX_PARALLEL_BATCHES, len(batches))) as pool:
-            _results = list(pool.map(
-                lambda b: _enrich_batch(b, model, session_id=session_id, timeout=timeout),
-                batches,
-            ))
+            futures = [pool.submit(_enrich_batch, b, model,
+                                   session_id=session_id, timeout=timeout)
+                       for b in batches]
+            for _i, _f in enumerate(as_completed(futures), start=1):
+                try:
+                    _results.append(bool(_f.result()))
+                except Exception:
+                    _results.append(False)   # keeps its parser-generated text
+                _done(_i)
     elif batches:
         _results = [_enrich_batch(batches[0], model, session_id=session_id, timeout=timeout)]
+        _done(1)
 
     _failed = sum(1 for r in _results if not r)
     if _failed:

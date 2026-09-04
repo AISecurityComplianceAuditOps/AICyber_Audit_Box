@@ -1044,7 +1044,13 @@ Return format: ["topic1", "topic2", ...]"""
                 "reasoning": "Control is out of scope for the detected document type.",
                 "source_files": scanned_files_str,
             })
-        return [], all_results
+        # Same 4-tuple shape as the normal return below. This used to return two
+        # values, while the caller unpacks four (or three), so ANY run that ended
+        # up with no controls -- a checklist that matched nothing, a user who
+        # deselected everything, a sheet with no recognisable control ids -- died
+        # in the background thread with "not enough values to unpack (expected 3,
+        # got 2)" and left the session marked failed with no usable reason.
+        return [], [], all_results, False
 
     # NOTE: all_results was already seeded above (out_of_scope_results from
     # AI Auto-Scoping, or [] for manual/Excel scope) -- do NOT reset it here.
@@ -2314,6 +2320,29 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
     all_findings = []
     resolved_ctrls = set()
     _seen_dedup_keys = set()
+
+    def _vapt_progress(percent, text, **extra):
+        """Publish a progress tick for this scan.
+
+        A VAPT/PQC run used to write progress exactly once -- and only when
+        findings had been scope-excluded, and only the scope_note keys, never
+        percent or text. So the UI's 1s poll of /audit/status/{id} had nothing
+        to read and the bar sat at 0% for the whole scan, however long the AI
+        enrichment took. Same _bg_store shape the ISO path writes.
+        """
+        if not bg_key:
+            return
+        try:
+            with _bg_lock:
+                _prev = _bg_store["progress"].get(bg_key, {}) or {}
+                _bg_store["progress"][bg_key] = {
+                    **_prev,
+                    "text": text,
+                    "percent": max(0, min(100, int(percent))),
+                    **extra,
+                }
+        except Exception:
+            pass          # progress reporting must never take the scan down
     try:
         from src.core.parsers import parse_tool_file, map_finding_to_control
         # Aliased to avoid colliding with the module-level `Finding` import (the
@@ -2343,8 +2372,12 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
         except Exception as _seed_err:
             print(f"[VAPT DEDUP] Failed to pre-seed existing dedup keys: {_seed_err}", flush=True)
 
-        for fd in files_data:
+        _total_files = len(files_data) or 1
+        _vapt_progress(3, f"Reading {_total_files} evidence file(s)...")
+        for _fi, fd in enumerate(files_data, start=1):
             fname = fd.get("name", "")
+            _vapt_progress(3 + int(42 * (_fi - 1) / _total_files),
+                           f"Parsing {fname or 'evidence'} ({_fi}/{_total_files})...")
             ftext = fd.get("text", "")
             fname_lower = fname.lower()
             if not ftext and fd.get("bytes"):
@@ -2571,37 +2604,48 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
         # text, and only when the auditor explicitly asked for it. Left off,
         # this scan is exactly as fast and exactly as deterministic as it has
         # always been.
+        _vapt_progress(48, f"{len(all_findings)} finding(s) parsed and mapped "
+                           f"to controls.")
+
         if ai_recommendations and all_findings:
             try:
                 from src.core.parsers.remediation_llm import enrich_remediations
                 _model = _resolve_llm_model(ai_model) if ai_model else "gemma4:e4b"
                 print(f"[VAPT/PQC] AI-tailored recommendations requested -- "
                       f"enriching {len(all_findings)} finding(s) with {_model}.", flush=True)
-                enrich_remediations(all_findings, model=_model, session_id=bg_key)
+                _vapt_progress(52, f"Generating AI recommendations for "
+                                   f"{len(all_findings)} finding(s)...")
+
+                def _enrich_progress(_done, _total):
+                    # 52 -> 88. Every LLM call in a technical scan happens in
+                    # here, so this is the phase the auditor actually waits on.
+                    _vapt_progress(52 + int(36 * _done / max(_total, 1)),
+                                   f"AI recommendations: {_done}/{_total} "
+                                   f"batch(es) complete...")
+
+                enrich_remediations(all_findings, model=_model, session_id=bg_key,
+                                    progress_cb=_enrich_progress)
 
                 # Report a partial or total enrichment failure. Without this the
                 # auditor ticks "AI recommendations", waits, and receives the
                 # parser's canned text with nothing anywhere saying the LLM never
                 # answered -- indistinguishable from leaving the box unticked.
                 _failed = getattr(enrich_remediations, "last_failed_batches", 0)
-                _total = getattr(enrich_remediations, "last_total_batches", 0)
+                _total_b = getattr(enrich_remediations, "last_total_batches", 0)
                 if _failed and bg_key:
                     _note = (f"AI recommendations did not complete for {_failed} of "
-                             f"{_total} batch(es); those findings show the standard "
+                             f"{_total_b} batch(es); those findings show the standard "
                              f"parser-generated text.")
                     print(f"[VAPT/PQC] {_note}", flush=True)
-                    try:
-                        with _bg_lock:
-                            _prev = _bg_store["progress"].get(bg_key, {}) or {}
-                            _bg_store["progress"][bg_key] = {**_prev, "ai_note": _note}
-                    except Exception:
-                        pass
+                    _vapt_progress(88, _note, ai_note=_note)
             except Exception as _enrich_err:
                 # A failure here must never take the scan down with it -- the
                 # deterministic remediation text every finding already has is a
                 # complete, valid report on its own.
                 print(f"[VAPT/PQC] Recommendation enrichment failed, findings "
                       f"keep their parser-generated text: {_enrich_err}", flush=True)
+
+            _vapt_progress(90, "Writing executive summary and tactical recommendations...")
 
             # ── Scan-level narrative: executive summary + tactical recommendations ──
             # The report's executive summary and its "Tactical Recommendations" were
@@ -2691,16 +2735,14 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
         # Surfaced so the report and the UI can say the scan was narrowed, rather
         # than a filtered report looking like a complete one to whoever reads it next.
         if _excluded_count:
-            try:
-                _prev = _bg_store["progress"].get(bg_key, {}) or {}
-                _bg_store["progress"][bg_key] = {
-                    **_prev,
-                    "scope_excluded_count": _excluded_count,
-                    "scope_note": (f"{_excluded_count} finding(s) outside the selected controls "
-                                   f"were excluded from this report."),
-                }
-            except Exception:
-                pass
+            _vapt_progress(
+                94, f"Saving {len(all_findings)} finding(s)...",
+                scope_excluded_count=_excluded_count,
+                scope_note=(f"{_excluded_count} finding(s) outside the selected "
+                            f"controls were excluded from this report."),
+            )
+        else:
+            _vapt_progress(94, f"Saving {len(all_findings)} finding(s)...")
 
         # Update database with VAPT findings
         try:
@@ -2792,6 +2834,8 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
                 db_write.close()
         except Exception as e:
             print(f"[PIPELINE-VAPT] Failed to write findings: {e}", flush=True)
+
+        _vapt_progress(100, f"Scan complete -- {len(all_findings)} finding(s).")
 
         with _bg_lock:
             _bg_results[bg_key] = {
