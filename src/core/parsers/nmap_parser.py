@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 import re
-import xml.etree.ElementTree as ET
+from defusedxml import ElementTree as ET
 from typing import List, Tuple, Dict, Any
 from .base_parser import BaseParser, is_image_file
 from .finding_schema import Finding
