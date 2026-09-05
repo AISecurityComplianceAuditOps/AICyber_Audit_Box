@@ -37,5 +37,6 @@ docker-compose up -d
 # 3. Launching FastAPI & browser
 echo ""
 echo "[3/3] Launching Local API Dashboard..."
-open http://127.0.0.1:8000/
-python3 -m uvicorn src.api.main:app --host 127.0.0.1 --port 8000
+HOST="${HOST:-0.0.0.0}"
+PORT="${PORT:-8000}"
+python3 -m uvicorn src.api.main:app --host "$HOST" --port "$PORT"

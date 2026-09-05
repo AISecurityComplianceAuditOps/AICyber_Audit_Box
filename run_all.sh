@@ -49,5 +49,6 @@ export OLLAMA_KEEP_ALIVE=24h
 export OLLAMA_NUM_PARALLEL=4
 export OLLAMA_MAX_LOADED_MODELS=3
 
-open http://127.0.0.1:8000/
-python3 -m uvicorn src.api.main:app --host 127.0.0.1 --port 8000
+HOST="${HOST:-0.0.0.0}"
+PORT="${PORT:-8000}"
+python3 -m uvicorn src.api.main:app --host "$HOST" --port "$PORT"
