@@ -57,6 +57,7 @@ _BATCH_SIZE = int(os.environ.get("REMEDIATION_BATCH_SIZE", "4"))
 # already runs in the background, so waiting is cheap -- silently dropping the
 # text the auditor asked for is not.
 _ENRICH_TIMEOUT = int(os.environ.get("REMEDIATION_TIMEOUT_SEC", "1800"))
+_ENRICH_TIMEOUT_MAX = int(os.environ.get("REMEDIATION_TIMEOUT_MAX_SEC", "3600"))
 _MAX_EVIDENCE_CHARS = 400
 _MAX_DESCRIPTION_CHARS = 400
 
@@ -143,6 +144,32 @@ def _extract_json_object(raw: str):
     return json.loads(text)
 
 
+def _enrich_budget() -> int:
+    """Enrichment budget: our floor, but still scaling with concurrent load.
+
+    query_llm()'s own default is max(600, active*180). Replacing it with a flat
+    number fixed the single-scan case and quietly made the busy case worse --
+    generation is slowest exactly when many audits share the CPU, which is when
+    the scaling mattered. So keep the scaling and only raise the floor.
+    """
+    try:
+        from src.core.redis_metrics import get_live_metrics
+        m = get_live_metrics()
+        if m.get("redis_available"):
+            active = max(1, len(m.get("active_sessions", [])))
+        else:
+            from src.core.bg_state import _bg_running
+            active = max(1, len(_bg_running))
+    except Exception:
+        active = 1
+    # Ceiling, because the load signal cannot be trusted: the Redis
+    # active-sessions set accumulates entries that are never cleared (measured
+    # 422 "active" while nothing at all was running), which turns a scaling
+    # budget into a ~21-hour one -- long enough that a genuinely hung request
+    # never fails and the scan simply never ends. Scale, but not past an hour.
+    return max(_ENRICH_TIMEOUT, min(active * 180, _ENRICH_TIMEOUT_MAX))
+
+
 def _enrich_batch(batch: List[Dict], model: str, session_id=None, timeout=None) -> bool:
     """Mutates `.remediation` on the findings in `batch` in place. Never raises
     -- a batch that fails for any reason is left with its original text, and
@@ -155,7 +182,7 @@ def _enrich_batch(batch: List[Dict], model: str, session_id=None, timeout=None) 
     try:
         raw = query_llm(
             prompt, model, num_ctx=8192, temperature=0.1,
-            timeout=timeout if timeout is not None else _ENRICH_TIMEOUT,
+            timeout=timeout if timeout is not None else _enrich_budget(),
             session_id=session_id,
             # query_llm()'s DEFAULT stop list includes "```", tuned for the
             # ISO/VAPT XML-tag generator chains where a fence never appears in
