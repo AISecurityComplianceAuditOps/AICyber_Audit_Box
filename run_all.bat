@@ -111,10 +111,31 @@ if %EMBED_THREADS% LSS 1 set EMBED_THREADS=4
 :: (ctx/1024) x 0.12 x 0.5 GB with 8-bit KV, on top of ~4.5GB of model and OS.
 if "%MIN_CTX_PER_REQUEST%"=="" set MIN_CTX_PER_REQUEST=32768
 
+:: Model chosen BEFORE the slot maths below, which needs its real size on disk.
+set "MODEL_FILE=%~dp0gemma-4-12B-it-Q8_0.gguf"
+if not exist "%MODEL_FILE%" set "MODEL_FILE=%~dp0gemma-4-12b-it-Q8_0.gguf"
+if not exist "%MODEL_FILE%" set "MODEL_FILE=%~dp0gemma-2-9b-it-Q8_0.gguf"
+if not exist "%MODEL_FILE%" set "MODEL_FILE=%~dp0google_gemma-4-E4B-it-Q4_K_M.gguf"
+
+:: The model size is MEASURED, not assumed. This reserved a flat 4.5GB for
+:: "model and OS", which is about right for E4B (5.1GB) and badly wrong for
+:: gemma-4-12B Q8 (11.8GB) -- the formula then believed ~7GB more was free
+:: than existed and handed out slots against it. Measured on a 4-core/34GB
+:: host running 12B at -np 4: free RAM fell to 1.7GB and prompt processing
+:: dropped to 1.82 tok/s, SLOWER than generation, which only happens when the
+:: KV cache is being paged to disk. src/core/llm_client.py already sizes its
+:: auto-start this way (os.path.getsize on the chosen .gguf); this is the same
+:: arithmetic, so the launcher and the auto-start agree.
+:: The budget also honours what is actually FREE, not just total RAM, so a
+:: workstation with an IDE already holding 10GB gets fewer slots rather than
+:: a server that thrashes.
 for /f "usebackq delims=" %%R in (`powershell -NoProfile -Command ^
-  "$gb=[math]::Round((Get-CIMInstance Win32_ComputerSystem).TotalPhysicalMemory/1GB,2);" ^
+  "$totalGb=(Get-CIMInstance Win32_ComputerSystem).TotalPhysicalMemory/1GB;" ^
+  "$freeGb=(Get-CIMInstance Win32_OperatingSystem).FreePhysicalMemory/1MB;" ^
+  "$budget=[math]::Min($freeGb, $totalGb*0.85);" ^
+  "$modelGb=if(Test-Path '%MODEL_FILE%'){(Get-Item '%MODEL_FILE%').Length/1GB}else{4.5};" ^
   "$perSlot=(%MIN_CTX_PER_REQUEST%/1024)*0.12*0.5;" ^
-  "$usable=($gb*0.85)-4.5;" ^
+  "$usable=$budget-$modelGb-2.5;" ^
   "$s=[math]::Floor($usable/$perSlot); if($s -lt 1){$s=1};" ^
   "Write-Output $s"`) do set RAM_SLOTS=%%R
 if "%RAM_SLOTS%"=="" set RAM_SLOTS=2
@@ -137,10 +158,6 @@ set LLM_NUM_CTX=%MIN_CTX_PER_REQUEST%
 
 
 
-set "MODEL_FILE=%~dp0gemma-4-12B-it-Q8_0.gguf"
-if not exist "%MODEL_FILE%" set "MODEL_FILE=%~dp0gemma-4-12b-it-Q8_0.gguf"
-if not exist "%MODEL_FILE%" set "MODEL_FILE=%~dp0gemma-2-9b-it-Q8_0.gguf"
-if not exist "%MODEL_FILE%" set "MODEL_FILE=%~dp0google_gemma-4-E4B-it-Q4_K_M.gguf"
 
 echo.
 echo [3/6] Starting llama.cpp LLM Server (%PHYSICAL_CORES% Physical Cores -> %LLM_SLOTS% Slots x %MIN_CTX_PER_REQUEST% tokens = %LLM_TOTAL_CTX% Fluid Shared Pool / 8-bit KV Cache)...
