@@ -4,7 +4,7 @@
 # Regenerate both together; do not edit one without the other.
 fastapi==0.139.2
 uvicorn[standard]==0.48.0
-python-multipart==0.0.29
+python-multipart==0.0.31
 requests==2.34.2
 pdfplumber==0.11.9
 pypdfium2==5.8.0
@@ -32,7 +32,7 @@ langchain-ollama==1.1.0
 python-doctr[torch]==1.0.1
 numpy==2.4.6
 PyJWT==2.13.0
-transformers==5.9.0
+transformers==5.10.1
 huggingface-hub==1.16.4
 redis==8.1.0
 beautifulsoup4==4.14.3
@@ -43,7 +43,7 @@ lxml==6.1.1
 sentry-sdk[fastapi]==2.68.0
 rank-bm25==0.2.2
 defusedxml==0.7.1
-pillow==12.2.0
+pillow==12.3.0
 torch==2.12.1
 torchvision==0.27.1
 pytesseract==0.3.13
