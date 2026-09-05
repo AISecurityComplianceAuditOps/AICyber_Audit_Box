@@ -5791,7 +5791,6 @@ function renderPqcSummaryPanel(allFindings) {
     panel.innerHTML = `
         <div id="pqc-panel-header" onclick="togglePqcPanel()" style="display:flex;justify-content:space-between;align-items:center;padding:12px 18px;cursor:pointer;background:rgba(37,99,235,0.08);border-bottom:1px solid var(--border-color, rgba(148,163,184,0.2));">
             <div style="display:flex;align-items:center;gap:10px;">
-                <span style="font-size:1.1rem;">🔐</span>
                 <span style="font-weight:800;font-size:0.95rem;color:var(--text-main, #0f172a);letter-spacing:0.3px;">PQC Readiness Summary</span>
                 <span style="font-size:0.75rem;padding:3px 9px;border-radius:10px;background:rgba(239,68,68,0.15);color:#dc2626;border:1px solid rgba(239,68,68,0.35);font-weight:800;">${vulnCnt} Vulnerable</span>
                 ${weakCnt ? `<span style="font-size:0.75rem;padding:3px 9px;border-radius:10px;background:rgba(245,158,11,0.15);color:#d97706;border:1px solid rgba(245,158,11,0.35);font-weight:800;">${weakCnt} Weak</span>` : ""}
@@ -5803,7 +5802,7 @@ function renderPqcSummaryPanel(allFindings) {
         <div id="pqc-panel-body" style="display:grid;grid-template-columns:1fr 1fr;gap:0;transition:all 0.2s;">
             <!-- QBOM -->
             <div style="padding:14px 16px;border-right:1px solid var(--border-color, rgba(148,163,184,0.2));">
-                <p style="margin:0 0 10px 0;font-size:0.80rem;font-weight:800;color:var(--primary, #2563eb);text-transform:uppercase;letter-spacing:0.6px;">📋 QBOM — Quantum Bill of Materials</p>
+                <p style="margin:0 0 10px 0;font-size:0.80rem;font-weight:800;color:var(--primary, #2563eb);text-transform:uppercase;letter-spacing:0.6px;">QBOM — Quantum Bill of Materials</p>
                 <table style="width:100%;border-collapse:collapse;">
                     <thead>
                         <tr style="background:rgba(37,99,235,0.07);">
@@ -5817,7 +5816,7 @@ function renderPqcSummaryPanel(allFindings) {
             </div>
             <!-- OEM Matrix -->
             <div style="padding:14px 16px;">
-                <p style="margin:0 0 10px 0;font-size:0.80rem;font-weight:800;color:var(--primary, #2563eb);text-transform:uppercase;letter-spacing:0.6px;">🏭 OEM Readiness Matrix</p>
+                <p style="margin:0 0 10px 0;font-size:0.80rem;font-weight:800;color:var(--primary, #2563eb);text-transform:uppercase;letter-spacing:0.6px;">OEM Readiness Matrix</p>
                 <table style="width:100%;border-collapse:collapse;">
                     <thead>
                         <tr style="background:rgba(37,99,235,0.07);">
@@ -5884,7 +5883,6 @@ function renderFindingsList() {
     if (!list || list.length === 0) {
         container.innerHTML = `
             <div class="empty-state" style="text-align: center; padding: 40px; color: var(--text-muted);">
-                <span style="font-size: 2.5rem; display: block; margin-bottom: 12px;">🔍</span>
                 <p style="font-size: 1rem; font-weight: 600;">No audit findings match the current filter criteria.</p>
                 <p style="font-size: 0.85rem;">Try selecting "All Statuses" or running a new scoping scan.</p>
             </div>`;
