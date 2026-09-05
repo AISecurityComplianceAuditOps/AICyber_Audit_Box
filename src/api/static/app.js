@@ -3638,7 +3638,7 @@ function showToast(message, type = "info") {
         `<span style="flex:1; line-height:1.45;">${escapeHtml(String(message || ""))}</span>` +
         (isSticky
             ? `<button type="button" onclick="hideToast()" title="Dismiss"
-                 style="background:transparent; border:none; color:#cbd5e1; cursor:pointer; font-size:1rem; line-height:1; padding:0 2px; flex-shrink:0;">✕</button>`
+                 style="background:transparent; border:none; color:var(--text-main, #0f172a); cursor:pointer; font-size:1rem; line-height:1; padding:0 2px; flex-shrink:0;">✕</button>`
             : "");
 
     toast.style.transform = "translateY(0)";
@@ -3961,7 +3961,7 @@ function ensureAdminModalDOM() {
                                 </tr>
                             </thead>
                             <tbody id="benchmark-table-body">
-                                <tr><td colspan="11" style="text-align:center; padding:16px; color:#cbd5e1;">Loading audit session telemetry...</td></tr>
+                                <tr><td colspan="11" style="text-align:center; padding:16px; color:var(--text-main, #0f172a);">Loading audit session telemetry...</td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -4242,7 +4242,7 @@ async function loadAdminOverridesData() {
                     <td style="padding: 10px; font-weight: 600; color: #60a5fa;">${escapeHtml(log.auditor_user)}</td>
                     <td style="padding: 10px;"><span style="background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); padding: 2px 8px; border-radius: 4px; font-weight: 700; font-size: 0.74rem;">${escapeHtml(log.action)}</span></td>
                     <td style="padding: 10px; font-family: monospace; color: #fbbf24;">${escapeHtml(log.unreviewed_controls || 'N/A')}</td>
-                    <td style="padding: 10px; font-size: 0.78rem; color: #cbd5e1;">${escapeHtml(log.details)}</td>
+                    <td style="padding: 10px; font-size: 0.78rem; color: var(--text-main, #0f172a);">${escapeHtml(log.details)}</td>
                 </tr>
             `).join("");
         } else {
@@ -5416,7 +5416,7 @@ function buildEvidenceSnippetHtml(rawSnip, f_obj) {
     } else if (evStatus === "FOUND" && evAssess === "NON_COMPLIANT" && hasEvidenceText) {
         opHtml = `<div style="margin-bottom:8px;"><div style="font-size:0.75rem; font-weight:700; color:#f59e0b; letter-spacing:0.5px; margin-bottom:4px;">⚠️ EVIDENCE — NON-COMPLIANT ASSESSMENT</div><pre class="finding-snippet" style="${EVIDENCE_SNIPPET_PRE_STYLE.replace('rgba(59,130,246,0.3)', 'rgba(245,158,11,0.3)')}">${escapeHtml(formatEvidenceSnippet(opSnip))}</pre><div style="font-size:0.74rem; color:#fbbf24; margin-top:4px;">Note: Evidence artifact exists, but does not satisfy the control requirements.</div></div>`;
     } else {
-        opHtml = `<div style="margin-bottom:8px;"><div style="font-size:0.75rem; font-weight:700; color:#94a3b8; letter-spacing:0.5px; margin-bottom:4px;">🔍 EVIDENCE</div><div style="font-family:'Consolas','Fira Code',monospace; font-size:0.78rem; color:#f87171; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); padding:10px 12px; border-radius:8px; line-height:1.45; font-weight:700;">❌ NO RELEVANT EVIDENCE FOUND<br><span style="font-weight:400; color:#cbd5e1; font-size:0.75rem;">No valid evidence artifact (configuration, log, report, record, screenshot, assessment) addressing this control objective was located.</span></div></div>`;
+        opHtml = `<div style="margin-bottom:8px;"><div style="font-size:0.75rem; font-weight:700; color:#94a3b8; letter-spacing:0.5px; margin-bottom:4px;">🔍 EVIDENCE</div><div style="font-family:'Consolas','Fira Code',monospace; font-size:0.78rem; color:#f87171; background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); padding:10px 12px; border-radius:8px; line-height:1.45; font-weight:700;">❌ NO RELEVANT EVIDENCE FOUND<br><span style="font-weight:400; color:var(--text-main, #0f172a); font-size:0.75rem;">No valid evidence artifact (configuration, log, report, record, screenshot, assessment) addressing this control objective was located.</span></div></div>`;
     }
 
     return polHtml + opHtml;
@@ -5446,7 +5446,7 @@ function buildNistRiskPanelHtml(f) {
                 <span style="font-size:0.78rem; font-weight:700; color:#a78bfa; letter-spacing:0.5px; text-transform:uppercase;">⚖️ NIST SP 800-30 Rev. 1 Risk & Severity Assessment</span>
                 <span style="font-size:0.75rem; font-weight:800; padding:2px 8px; border-radius:4px; color:${riskBadgeColor}; background:${riskBg}; border:1px solid ${riskBadgeColor}40;">Risk: ${escapeHtml(riskLvl)} → ${escapeHtml(sev)}</span>
             </div>
-            <div style="display:flex; gap:16px; font-size:0.78rem; color:#cbd5e1; margin-bottom:6px;">
+            <div style="display:flex; gap:16px; font-size:0.78rem; color:var(--text-main, #0f172a); margin-bottom:6px;">
                 <div><b>Likelihood:</b> <span style="color:#60a5fa;">${escapeHtml(lh)}</span></div>
                 <div><b>Impact:</b> <span style="color:#f472b6;">${escapeHtml(imp)}</span></div>
                 <div><b>Assessed Risk Level:</b> <span style="color:${riskBadgeColor}; font-weight:700;">${escapeHtml(riskLvl)}</span></div>
@@ -5475,7 +5475,7 @@ function buildRequirementsCoveragePanelHtml(f) {
         <div style="margin-bottom:12px; padding:12px 14px; border-radius:8px; background:rgba(30,41,59,0.5); border:1px solid rgba(56,189,248,0.2);">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
                 <span style="font-size:0.78rem; font-weight:700; color:#38bdf8; letter-spacing:0.5px; text-transform:uppercase;">📊 Atomic Requirement Coverage Breakdown</span>
-                <span style="font-size:0.74rem; font-weight:700; color:#cbd5e1;">Total Requirements: ${total}</span>
+                <span style="font-size:0.74rem; font-weight:700; color:var(--text-main, #0f172a);">Total Requirements: ${total}</span>
             </div>
             <div style="display:flex; gap:12px; font-size:0.75rem; margin-bottom:8px;">
                 <span style="color:#34d399; font-weight:700;">✓ Supported: ${supported}</span>
@@ -5486,7 +5486,7 @@ function buildRequirementsCoveragePanelHtml(f) {
                 <div style="display:flex; flex-direction:column; gap:6px; max-height:160px; overflow-y:auto;">
                     ${covJson.map(r => `
                         <div style="padding:6px 10px; border-radius:4px; background:rgba(15,23,42,0.5); font-size:0.75rem; border-left:3px solid ${r.status === 'SUPPORTED' ? '#34d399' : (r.status === 'PARTIAL' ? '#fbbf24' : '#f87171')};">
-                            <div style="font-weight:700; color:#f1f5f9;">${escapeHtml(r.requirement || '')}</div>
+                            <div style="font-weight:700; color:var(--text-main, #0f172a);">${escapeHtml(r.requirement || '')}</div>
                             <div style="font-size:0.71rem; color:#94a3b8; margin-top:2px;">Status: <b style="color:${r.status === 'SUPPORTED' ? '#34d399' : (r.status === 'PARTIAL' ? '#fbbf24' : '#f87171')};">${escapeHtml(r.status)}</b> — ${escapeHtml(r.reason || '')}</div>
                         </div>
                     `).join('')}
@@ -6246,7 +6246,7 @@ function renderFindingsList() {
                     ${_ciaImpact ? `
                     <div class="finding-detail-row" style="margin-bottom: 10px;">
                         <label style="font-weight:700; font-size:0.78rem; color:#94a3b8; text-transform:uppercase; letter-spacing:0.5px; display:block; margin-bottom:4px;">🔒 CIA Impact${_isPii ? " & Data Classification" : ""}</label>
-                        <span style="font-size:0.78rem; padding:3px 9px; border-radius:6px; background:rgba(148,163,184,0.12); color:#cbd5e1; border:1px solid rgba(148,163,184,0.25); font-weight:700;">${escapeHtml(_ciaImpact)}</span>
+                        <span style="font-size:0.78rem; padding:3px 9px; border-radius:6px; background:rgba(148,163,184,0.12); color:var(--text-main, #0f172a); border:1px solid rgba(148,163,184,0.25); font-weight:700;">${escapeHtml(_ciaImpact)}</span>
                         ${_isPii ? `<span style="font-size:0.72rem; padding:3px 8px; border-radius:6px; background:rgba(239,68,68,0.15); color:#f87171; border:1px solid rgba(239,68,68,0.4); font-weight:800; margin-left:6px;">⚠ PII EXPOSURE DETECTED — Confidential</span>` : ""}
                     </div>` : ""}
 
