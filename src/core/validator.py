@@ -1583,6 +1583,13 @@ def validate_only(finding, document_text, expected_evidence_map, db_chunks=None)
             _ev_rel   = str(finding.get("evidence_relevance") or "").upper()
             _ev_stat  = str(finding.get("evidence_status")    or "").upper()
             _pol_stat = str(finding.get("policy_status")      or "").upper()
+            # A question-based (Customize) row has no policy dimension: the auditor
+            # wrote a question and attached evidence, and deliberately scoped no
+            # policy document. Telling them to "document a written policy" answers
+            # a requirement they explicitly excluded -- the very complaint this
+            # mode exists to avoid.
+            _cust = (bool(finding.get("customize_mode"))
+                     or str(finding.get("scoping_mode") or "").upper().startswith("CUSTOM"))
             _ev_snip  = str(finding.get("evidence_snippet") or finding.get("evidence_quote") or "").lower()
 
             # 1. OCR / image quality issue — blurry, unreadable, garbled text
@@ -1604,8 +1611,9 @@ def validate_only(finding, document_text, expected_evidence_map, db_chunks=None)
                     f"{next((uc.get('expected','') for uc in USE_CASES if uc['use_case']==control_id or uc['label']==control_id), 'appropriate evidence for this control')}."
                 )
 
-            # 3. Policy missing, evidence present → need a policy statement
-            elif _pol_stat == "NOT_FOUND" and _ev_stat == "FOUND":
+            # 3. Policy missing, evidence present → need a policy statement.
+            #    Skipped for question-based rows (see _cust above).
+            elif _pol_stat == "NOT_FOUND" and _ev_stat == "FOUND" and not _cust:
                 rec = (
                     f"Evidence of implementation was found but no formal policy statement was identified for {control_id}. "
                     f"Document a written policy or procedure that mandates this control requirement."
@@ -2206,6 +2214,63 @@ def _recommendation_contradicts_compliance(rec):
     for something absent to be created.
     """
     return bool(rec) and bool(_REC_DEMANDS_MISSING_RE.search(str(rec)))
+
+
+_POLICY_CLAUSE_RE = re.compile(
+    r"\s*(?:,|--|—)?\s*(?:but|although|however)?\s*"
+    r"(?:it is |there is |we |the auditor )?(?:not |no )?"
+    r"(?:synchroni[sz]ed |enabled |implemented |performed )?"
+    r"according to (?:a |any )?(?:documented |formal |written )?polic\w+",
+    re.I)
+
+
+def _align_customize_answer(finding, is_compliant):
+    """In question-based scope the opener must agree with the verdict.
+
+    Normally the leading Yes/No is left to the model even when it disagrees with
+    the overall status: a control can carry several requirements, and "Yes" can
+    be true of one while another fails. That does not apply here. A Customize row
+    IS a single question, and the verdict is precisely whether the evidence
+    answers it, so the two cannot legitimately differ.
+
+    The prompt already forbids discussing policy in this mode, in as many words.
+    The model does it anyway -- measured on a real run, a COMPLIANT finding read
+    "No, NTP is not synchronized according to a documented policy, but it is
+    operationally enabled and synchronized on the host." Verdict right, evidence
+    right, and the card still showed the auditor a red X and the word No.
+
+    Where the sentence contrasts the out-of-scope policy clause against the real
+    answer ("... policy, BUT it is operationally enabled"), the half after the
+    contrast IS the answer, so that half is kept. Rewriting the clause word by
+    word was tried first and produced worse prose than the bug itself
+    ("Yes, NTP is, but it is operationally enabled...").
+    """
+    want = "Yes" if is_compliant else "No"
+    for field in ("justification", "reasoning", "description", "final_reason"):
+        val = finding.get(field)
+        if not val:
+            continue
+        txt = str(val).strip()
+        m = _ANSWER_OPENER_RE.match(txt)
+        if not m or m.group(2).lower() == want.lower():
+            continue
+        rest = txt[m.end():]
+        first, sep, tail = rest.partition(".")
+        mentions_policy = re.search(r"\bpolic\w+", first, re.I)
+        contrast = re.search(r",?\s*\b(?:but|however|although|though|whereas)\b\s+",
+                             first, re.I)
+        if mentions_policy and contrast:
+            answer = first[contrast.end():].strip()
+            new_text = f"{want}, {answer}{sep}{tail}".strip()
+        elif mentions_policy:
+            remainder = tail.strip()
+            new_text = f"{want}. {remainder}" if remainder else f"{want}."
+        else:
+            new_text = f"{m.group(1)}{want}{m.group(3)}{rest}"
+        print(f"[VALIDATOR] Customize row: opener said '{m.group(2)}' on a "
+              f"{'COMPLIANT' if is_compliant else 'NON_COMPLIANT'} finding; "
+              f"corrected to '{want}'.", flush=True)
+        finding[field] = new_text
 
 
 def _clean_finding_narrative_fields(finding):
@@ -2895,6 +2960,7 @@ def post_process(finding, document_text, expected_evidence_map=None, db_chunks=N
             finding["policy_present"] = ""
             finding["policy_gap"] = ""
             finding["customize_mode"] = True
+            _align_customize_answer(finding, is_compliant)
         finding["evidence_present"] = ev_present
 
         if is_compliant:
