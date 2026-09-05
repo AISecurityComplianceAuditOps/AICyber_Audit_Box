@@ -54,3 +54,8 @@ sys_report_*users*.md
 samples/
 *.docx
 docx_preview.html
+
+# Build output — belongs in Artifactory, never in the source repository
+aicyberauditbox_bundle_*/
+aicyberauditbox-*.tar
+*.tar.enc

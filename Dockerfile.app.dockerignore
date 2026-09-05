@@ -1,0 +1,43 @@
+# Build context for Dockerfile.app ONLY. BuildKit picks up
+# "<dockerfile-name>.dockerignore" in preference to the shared .dockerignore,
+# which is what makes this possible.
+#
+# Why it exists: the shared .dockerignore deliberately does NOT exclude *.gguf,
+# because Dockerfile.llm COPYs two of the model files out of the build context
+# by exact name. The app image COPYs none of them -- it talks to the LLM
+# container over HTTP -- but it was still paying for them: every `docker build
+# -f Dockerfile.app` shipped ~28GB of model weights to the daemon before the
+# first instruction ran, several minutes of pure transfer for files no layer
+# reads. Excluding them here leaves Dockerfile.llm's context untouched.
+#
+# Keep the rest in step with .dockerignore.
+
+*.gguf
+
+.git
+__pycache__/
+*.pyc
+.venv/
+backups/
+logs/
+data/
+VAPT/
+samples/
+documents/
+"aa audit evidence samples/"
+node_modules/
+test-results/
+playwright-report/
+qa/
+scratch/
+.claude/
+.vscode/
+*.exe
+*.pem
+*.tar
+*.zip
+*.pdf
+dist/
+build/
+temp_clean_repo_export/
+.pytest_cache/
