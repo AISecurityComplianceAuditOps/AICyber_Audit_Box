@@ -2301,6 +2301,19 @@ def _run_ollama_bg(bg_key, files_data, selected_sls_copy, ai_model, session_id=N
             _bg_results[bg_key] = {"error": f"Error contacting {BACKEND_NAME}: {str(e)}"}
         _checkpoint_finish(_sid, "failed")
     finally:
+        # Redis must be released here, beside the in-memory state, not deeper in
+        # generate_ollama_findings(). session_start() runs in THIS function but
+        # the matching session_done() sat on the inner function's normal return
+        # path, so an exception or any early return -- the no-controls return
+        # among them -- left the session registered forever. The set had grown to
+        # 425 "active" audits with nothing running at all, and llm_client.py
+        # sizes its timeout as max(600, active*180): 21 hours, which is no
+        # timeout at all. A wedged llama-server would never have been caught.
+        # SREM is idempotent, so the inner call doing it first is harmless.
+        try:
+            _rm.session_done(session_id=_sid, status="done")
+        except Exception:
+            pass
         with _bg_lock:
             _bg_running.discard(bg_key)
             _bg_store["progress"].pop(bg_key, None)

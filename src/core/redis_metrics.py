@@ -233,6 +233,31 @@ def get_live_metrics(limit: int = 500) -> dict:
 
         active_ids = r.smembers("global:active_sessions") or set()
 
+        # ── Self-heal the active set ─────────────────────────────────────
+        # Membership is added by session_start() and removed by session_done().
+        # A process killed between the two leaves its id behind forever, and the
+        # set is not just a display: llm_client.py sizes every LLM timeout as
+        # max(600, len(active)*180). Measured on this box, it had reached 425
+        # "active" audits with nothing running -- a 21-hour timeout, which means
+        # a wedged model server is never caught.
+        #
+        # An id is dead if its per-session keys have expired (they carry a TTL,
+        # the set membership does not), or if its own status says it finished.
+        # Pruning here keeps the count honest for every reader.
+        _stale = set()
+        for _sid in active_ids:
+            _st = r.get(f"session:{_sid}:status")
+            if _st is None or str(_st).lower() in ("done", "failed", "completed", "stopped"):
+                _stale.add(_sid)
+        if _stale:
+            try:
+                r.srem("global:active_sessions", *_stale)
+                logger.info(f"[Redis] pruned {len(_stale)} stale session id(s) "
+                            f"from global:active_sessions")
+            except Exception:
+                pass
+            active_ids = active_ids - _stale
+
         # ── Build session rows: active first, then completed ──────────────────
         sessions = []
         seen_sids = set()

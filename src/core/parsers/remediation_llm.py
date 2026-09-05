@@ -153,13 +153,10 @@ def _enrich_budget() -> int:
     the scaling mattered. So keep the scaling and only raise the floor.
     """
     try:
-        from src.core.redis_metrics import get_live_metrics
-        m = get_live_metrics()
-        if m.get("redis_available"):
-            active = max(1, len(m.get("active_sessions", [])))
-        else:
-            from src.core.bg_state import _bg_running
-            active = max(1, len(_bg_running))
+        # Same source of truth as llm_client.py and audit_graph.py: sessions that
+        # are actually running, not the dashboard list that includes history.
+        from src.core.redis_metrics import get_running_session_count
+        active = max(1, get_running_session_count())
     except Exception:
         active = 1
     # Ceiling, because the load signal cannot be trusted: the Redis

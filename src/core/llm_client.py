@@ -311,13 +311,16 @@ def query_llm(prompt, model, format=None, num_ctx=16384, temperature=0.0, num_th
     # 1800/600 are no longer treated as an "auto-compute this" sentinel.
     if timeout is None:
         try:
-            from src.core.redis_metrics import get_live_metrics
-            m = get_live_metrics()
-            if m.get("redis_available"):
-                active_cnt = max(1, len(m.get("active_sessions", [])))
-            else:
-                from src.core.bg_state import _bg_running
-                active_cnt = max(1, len(_bg_running))
+            # get_live_metrics()["active_sessions"] is the ADMIN DASHBOARD list:
+            # live sessions plus up to 500 completed ones read back from the
+            # database. Counting it as concurrency made this timeout grow with
+            # audit history rather than with load -- measured at 425, i.e.
+            # max(600, 425*180) = 21 hours, which is no timeout at all: a wedged
+            # llama-server would never have been caught. get_running_session_count()
+            # filters to status == "running" and already backs audit_graph.py and
+            # bg_worker.py, so all three now agree.
+            from src.core.redis_metrics import get_running_session_count
+            active_cnt = max(1, get_running_session_count())
             timeout = max(600, active_cnt * 180)
         except Exception:
             timeout = 600
