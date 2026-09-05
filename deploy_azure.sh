@@ -1,12 +1,12 @@
 #!/bin/bash
 # ==============================================================================
 # AICyber_Audit_Box - Automated Azure VM Deployment Script
-# Target Public IP: 20.41.223.126
+# Target Public IP: 20.41.233.247
 # ==============================================================================
 set -e
 
 echo "=========================================================="
-echo "  Deploying AICyber_Audit_Box to Azure VM (20.41.223.126)"
+echo "  Deploying AICyber_Audit_Box to Azure VM (20.41.233.247)"
 echo "=========================================================="
 
 APP_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -85,6 +85,6 @@ sudo systemctl restart aicyberauditbox.service
 echo "=========================================================="
 echo "  DEPLOYMENT COMPLETE!"
 echo "  Status: active"
-echo "  Public URL: http://20.41.223.126:8000/"
+echo "  Public URL: http://20.41.233.247:8000/"
 echo "=========================================================="
 echo "To check live logs: sudo journalctl -u aicyberauditbox -f"
