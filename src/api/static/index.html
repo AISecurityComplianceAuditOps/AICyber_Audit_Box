@@ -742,27 +742,6 @@
                                     style="display:none; width: 100%; padding: 12px; font-size: 0.95rem; font-weight: 800; border-radius: 10px; margin-top: 8px;">STOP
                                     ANALYSIS</button>
 
-                                <!-- Scan progress. app.js has always written to these three ids
-                                     (15 call sites) but they were never in the DOM, so every
-                                     write hit a null guard and the only progress an auditor
-                                     could see was the percentage inside the button label. -->
-                                <div id="pipeline-progress-box"
-                                    style="display: none; margin-top: 10px; padding: 10px 12px; border: 1px solid rgba(148,163,184,0.25); border-radius: 10px; background: rgba(15,23,42,0.03);">
-                                    <div
-                                        style="display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 6px;">
-                                        <span id="pipeline-status-text"
-                                            style="font-size: 0.74rem; font-weight: 600; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Scanning
-                                            controls...</span>
-                                        <span id="pipeline-progress-percent"
-                                            style="font-size: 0.74rem; font-weight: 800; color: #2563eb; font-variant-numeric: tabular-nums;">0%</span>
-                                    </div>
-                                    <div
-                                        style="height: 7px; border-radius: 999px; background: rgba(148,163,184,0.22); overflow: hidden;">
-                                        <div id="pipeline-progress-fill"
-                                            style="height: 100%; width: 0%; border-radius: 999px; background: linear-gradient(90deg,#2563eb,#6366f1); transition: width 0.35s ease;">
-                                        </div>
-                                    </div>
-                                </div>
                             </div>
                         </div>
                     </div>
