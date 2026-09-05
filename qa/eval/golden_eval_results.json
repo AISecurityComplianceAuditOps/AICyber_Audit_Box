@@ -1,0 +1,216 @@
+{
+  "results": [
+    {
+      "id": "GD-001",
+      "control_id": "8.5",
+      "expected": "COMPLIANT",
+      "actual": "COMPLIANT",
+      "match": true,
+      "retrieval_recall": true,
+      "elapsed_sec": 410.63
+    },
+    {
+      "id": "GD-002",
+      "control_id": "8.5",
+      "expected": "NON_COMPLIANT",
+      "actual": "NON_COMPLIANT",
+      "match": true,
+      "retrieval_recall": true,
+      "elapsed_sec": 372.5
+    },
+    {
+      "id": "GD-003",
+      "control_id": "8.5",
+      "expected": "NON_COMPLIANT",
+      "actual": "NON_COMPLIANT",
+      "match": true,
+      "retrieval_recall": "N/A",
+      "elapsed_sec": 597.95
+    },
+    {
+      "id": "GD-004",
+      "control_id": "8.5",
+      "expected": "NON_COMPLIANT",
+      "actual": "NON_COMPLIANT",
+      "match": true,
+      "retrieval_recall": "N/A",
+      "elapsed_sec": 601.76
+    },
+    {
+      "id": "GD-005",
+      "control_id": "5.1",
+      "expected": "COMPLIANT",
+      "actual": "COMPLIANT",
+      "match": true,
+      "retrieval_recall": true,
+      "elapsed_sec": 249.9
+    },
+    {
+      "id": "GD-006",
+      "control_id": "5.1",
+      "expected": "NON_COMPLIANT",
+      "actual": "NON_COMPLIANT",
+      "match": true,
+      "retrieval_recall": "N/A",
+      "elapsed_sec": 334.01
+    },
+    {
+      "id": "GD-008",
+      "control_id": "5.9",
+      "expected": "NON_COMPLIANT",
+      "actual": "NON_COMPLIANT",
+      "match": true,
+      "retrieval_recall": "N/A",
+      "elapsed_sec": 295.06
+    },
+    {
+      "id": "GD-010",
+      "control_id": "5.15",
+      "expected": "NON_COMPLIANT",
+      "actual": "NON_COMPLIANT",
+      "match": true,
+      "retrieval_recall": true,
+      "elapsed_sec": 310.18
+    },
+    {
+      "id": "GD-011",
+      "control_id": "5.23",
+      "expected": "COMPLIANT",
+      "actual": "COMPLIANT",
+      "match": true,
+      "retrieval_recall": true,
+      "elapsed_sec": 315.64
+    },
+    {
+      "id": "GD-012",
+      "control_id": "5.23",
+      "expected": "NON_COMPLIANT",
+      "actual": "NON_COMPLIANT",
+      "match": true,
+      "retrieval_recall": true,
+      "elapsed_sec": 315.48
+    },
+    {
+      "id": "GD-013",
+      "control_id": "6.1",
+      "expected": "COMPLIANT",
+      "actual": "COMPLIANT",
+      "match": true,
+      "retrieval_recall": true,
+      "elapsed_sec": 334.49
+    },
+    {
+      "id": "GD-014",
+      "control_id": "6.1",
+      "expected": "NON_COMPLIANT",
+      "actual": "NON_COMPLIANT",
+      "match": true,
+      "retrieval_recall": "N/A",
+      "elapsed_sec": 314.17
+    },
+    {
+      "id": "GD-015",
+      "control_id": "6.3",
+      "expected": "COMPLIANT",
+      "actual": "COMPLIANT",
+      "match": true,
+      "retrieval_recall": true,
+      "elapsed_sec": 406.82
+    },
+    {
+      "id": "GD-016",
+      "control_id": "6.3",
+      "expected": "NON_COMPLIANT",
+      "actual": "NON_COMPLIANT",
+      "match": true,
+      "retrieval_recall": "N/A",
+      "elapsed_sec": 681.79
+    },
+    {
+      "id": "GD-017",
+      "control_id": "7.1",
+      "expected": "COMPLIANT",
+      "actual": "COMPLIANT",
+      "match": true,
+      "retrieval_recall": true,
+      "elapsed_sec": 309.91
+    },
+    {
+      "id": "GD-018",
+      "control_id": "7.1",
+      "expected": "NON_COMPLIANT",
+      "actual": "NON_COMPLIANT",
+      "match": true,
+      "retrieval_recall": "N/A",
+      "elapsed_sec": 349.46
+    },
+    {
+      "id": "GD-020",
+      "control_id": "7.4",
+      "expected": "NON_COMPLIANT",
+      "actual": "NON_COMPLIANT",
+      "match": true,
+      "retrieval_recall": true,
+      "elapsed_sec": 346.77
+    },
+    {
+      "id": "GD-022",
+      "control_id": "8.1",
+      "expected": "NON_COMPLIANT",
+      "actual": "NON_COMPLIANT",
+      "match": true,
+      "retrieval_recall": "N/A",
+      "elapsed_sec": 524.88
+    },
+    {
+      "id": "GD-024",
+      "control_id": "8.7",
+      "expected": "NON_COMPLIANT",
+      "actual": "NON_COMPLIANT",
+      "match": true,
+      "retrieval_recall": true,
+      "elapsed_sec": 323.95
+    },
+    {
+      "id": "GD-026",
+      "control_id": "8.16",
+      "expected": "NON_COMPLIANT",
+      "actual": "NON_COMPLIANT",
+      "match": true,
+      "retrieval_recall": "N/A",
+      "elapsed_sec": 581.58
+    },
+    {
+      "id": "GD-027",
+      "control_id": "8.24",
+      "expected": "COMPLIANT",
+      "actual": "COMPLIANT",
+      "match": true,
+      "retrieval_recall": true,
+      "elapsed_sec": 306.43
+    },
+    {
+      "id": "GD-028",
+      "control_id": "8.24",
+      "expected": "NON_COMPLIANT",
+      "actual": "NON_COMPLIANT",
+      "match": true,
+      "retrieval_recall": true,
+      "elapsed_sec": 317.16
+    }
+  ],
+  "metrics": {
+    "total_cases": 28,
+    "errors": 0,
+    "true_positives": 7,
+    "true_negatives": 15,
+    "false_positives": 0,
+    "false_negatives": 6,
+    "accuracy": 0.7857,
+    "precision": 1.0,
+    "recall": 0.5385,
+    "f1": 0.7,
+    "retrieval_recall_rate": 1.0,
+    "dataset_total": 28
+  }
+}

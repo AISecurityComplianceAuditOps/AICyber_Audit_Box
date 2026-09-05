@@ -1,0 +1,25 @@
+{
+  "isolation_ok": true,
+  "control_ids_a": [
+    "5.9 Inventory of Information and Other Associated Assets"
+  ],
+  "control_ids_b": [
+    "7.1 Physical Security Perimeters"
+  ],
+  "timings": {
+    "SESSION-B": {
+      "start_offset": 2.0063798427581787,
+      "end_offset": 691.557302236557,
+      "duration": 689.5509223937988
+    },
+    "SESSION-A": {
+      "start_offset": 0.0002484321594238281,
+      "end_offset": 711.5954129695892,
+      "duration": 711.5951645374298
+    }
+  },
+  "overlap_seconds": 689.5509223937988,
+  "total_wall_clock": 711.5984976291656,
+  "sum_durations": 1401.1460869312286,
+  "max_duration": 711.5951645374298
+}

@@ -1,0 +1,161 @@
+﻿# Customer deployment compose file.
+#
+# Unlike docker-compose.yml (the dev version, which builds images from
+# source), this one only references pre-built images -- no `build:` section
+# anywhere. Pair this file with the exported image bundle
+# (aicyberauditbox_bundle_v3.9.tar): the customer loads that bundle first
+# (`docker load -i aicyberauditbox_bundle_v3.9.tar`), then runs this file.
+
+# No internet access, no separate installs, nothing to build.
+
+services:
+  shakthidb:
+    image: aicyberauditbox-shakthidb:3.10
+    container_name: shakthidb_service
+    environment:
+      - POSTGRES_PASSWORD=ShakthiDB@2026
+      - POSTGRES_DB=shakthidb
+    ports:
+      - "15234:15234"
+      # 8000 is the APP's port, exposed here (not on the app service) because
+      # the app container uses network_mode: "service:shakthidb" below -- a
+      # container sharing another's network namespace can't declare its own
+      # port mappings; whichever service "owns" the shared namespace must
+      # expose them instead.
+      - "8000:8000"
+    command: postgres -p 15234 -c shared_buffers=2GB -c work_mem=64MB -c max_connections=200
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -p 15234 -U postgres" ]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: always
+
+  redis:
+    image: redis:7-alpine
+    container_name: vaptiso_redis
+    ports:
+      - "6379:6379"
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru --save ""
+    restart: always
+
+  llm:
+    image: aicyberauditbox-llm:3.22
+    container_name: aicyberauditbox_llm
+    environment:
+      - LLM_MODE=completion
+      # Which of the two baked-in completion models this container serves:
+      # 12b (Gemma 4 12B Q8_0, ~11.8GB of weights) or e4b (Gemma 4 E4B Q4_K_M,
+      # ~5GB). One llama-server process serves ONE model, so this is the choice
+      # -- the model dropdown in the application does not override it. Switching
+      # is an edit here plus a restart; both files are already in the image, so
+      # nothing is downloaded and no new image is needed.
+      #
+      # Dropping to e4b roughly halves the LLM's memory floor, which is the
+      # cheapest way to fit more concurrent auditors on a smaller box.
+      - LLM_MODEL=12b
+      # Tokens each request may use. 16384 admits only ~14 of the 30 passages
+      # Deep-mode retrieval produces; 32768 clears all 30 with headroom. The
+      # entrypoint sizes slots from this container's RAM and sets
+      # -c = slots x this value.  RAM ~= 12.5GB + slots x 1.92GB on 12b
+      # (4.5GB + slots x 1.92GB on e4b -- the entrypoint sets that floor from
+      # LLM_MODEL automatically; do not pin RESOURCE_GUARD_FIXED_OVERHEAD_GB
+      # unless you have measured your own).
+      - MIN_CTX_PER_REQUEST=32768
+    #
+    # Slots are bounded by this container's RAM and by CPU cores. With no
+    # mem_limit the RAM detection falls back to the HOST total, so on a large
+    # server the LLM sizes as if it owned the machine and crowds out the app,
+    # database and embedding server. Budget:
+    #   12.5GB (12b weights + base) + slots x 1.92GB (KV at 32k, 8-bit)
+    #   2 concurrent auditors  ->  2 slots -> ~17GB
+    #   5 concurrent auditors  ->  6 slots -> ~24GB
+    #   10 concurrent auditors -> 12 slots -> ~36GB
+    # On e4b, subtract 8GB from each of those.
+    # mem_limit: 36g
+      # LLM_THREADS intentionally NOT set here -- the container auto-detects
+      # its actual CPU allowance (cgroup quota, or the host's full core
+      # count if uncapped) and uses all of it by default, so this is correct
+      # out of the box on any customer VM size. Uncomment only to pin a
+      # specific thread count instead (e.g. to reserve cores for something
+      # else on the same machine):
+      # - LLM_THREADS=8
+      # Uncomment to override the auto-sized slot count instead of letting
+      # the container detect it from its own available RAM:
+      # - LLM_SLOTS_OVERRIDE=2
+    restart: always
+
+  llm-embed:
+    image: aicyberauditbox-llm-embed:3.22
+    container_name: aicyberauditbox_llm_embed
+    environment:
+      - LLM_MODE=embedding
+      # EMBED_THREADS intentionally NOT set here -- same auto-detection as
+      # LLM_THREADS above. Uncomment to pin a specific count instead:
+      # - EMBED_THREADS=8
+    restart: always
+
+  app:
+    image: aicyberauditbox-app:3.22
+    container_name: aicyberauditbox_app
+
+    network_mode: "service:shakthidb"
+    depends_on:
+      shakthidb:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      llm:
+        condition: service_started
+      llm-embed:
+        condition: service_started
+    environment:
+      - LLM_BACKEND=llama.cpp
+      - LLM_HOSTS=llm:11434
+      - EMBEDDING_HOST=http://llm-embed:11435
+      # Must equal the llm service's MIN_CTX_PER_REQUEST. With --kv-unified,
+      # llama-server reports the whole shared pool as each slot's n_ctx, so the
+      # app would size every prompt as though it owned the entire buffer.
+      - LLM_NUM_CTX=32768
+      - REDIS_URL=redis://redis:6379/0
+      # This deployment must use ShaktiDB -- never silently fall back to the
+      # container-local SQLite file (see database.py's except branch).
+      - REQUIRE_POSTGRES=1
+      # JWT_SECRET auto-generates and persists to the app-data volume on
+      # first boot if not set here. Uncomment to pin one yourself instead:
+      # - JWT_SECRET=your-unique-secret-here
+      #
+      # DO NOT set SENTRY_DSN here. This file is the air-gapped customer
+      # deliverable ("no internet access" above) -- Sentry phones home to an
+      # external server on every error, which both breaks the air-gap
+      # guarantee and risks leaking customer audit data off their network.
+      # SENTRY_DSN is for docker-compose.yml (your own internal/dev/staging
+      # use) only. See qa/monitoring/README.md.
+      #
+      # Concurrent audit limits.
+      #
+      # Left UNSET on purpose: the global cap now sizes itself from this
+      # machine's physical core count (roughly one audit per two cores, floored
+      # at 2, capped at 16). Slots decide how many audits can start; cores decide
+      # whether they finish.
+      #
+      # These were previously pinned to 30/60 for benchmark testing. On a
+      # 4-physical-core host that admits far more work than the machine can
+      # complete -- measured: three concurrent single-control audits were all
+      # still running after 900 seconds having finished nothing, while one audit
+      # alone takes about five minutes. Every audit is accepted, the interface
+      # shows them all running, and no result arrives. A refusal is better.
+      #
+      # Uncomment to pin your own values after measuring on your hardware:
+      # - MAX_AUDITS_PER_AUDITOR=2
+      # - MAX_CONCURRENT_AUDITS=8
+    volumes:
+      - app_data:/app/data
+    restart: always
+
+volumes:
+  pgdata:
+  app_data:

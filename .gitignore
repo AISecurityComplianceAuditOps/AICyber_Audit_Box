@@ -49,3 +49,8 @@ testsprite_tests/tmp/config.json
 real_user_simulation_cpu_*.csv
 real_user_simulation_cpu_*_report.md
 sys_report_*users*.md
+
+# Local audit outputs and client evidence — never committed
+samples/
+*.docx
+docx_preview.html

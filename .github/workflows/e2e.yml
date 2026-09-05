@@ -1,0 +1,50 @@
+name: E2E (Playwright)
+
+on:
+  workflow_dispatch: {}
+  # NOTE: not wired to `pull_request`/`push` yet. Login and export flows don't need
+  # the LLM servers, but "RUN AUDIT SCAN" does — and llama-server.exe + multi-GB GGUF
+  # models aren't something a stock GitHub-hosted runner can bring up. Same constraint
+  # as ai-eval.yml/load-test.yml (see qa/README.md). Revisit once a self-hosted
+  # runner is available, then add pull_request/push triggers here.
+
+jobs:
+  playwright:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start Postgres + Redis + app (no LLM servers)
+        run: docker compose up -d shakthidb redis app
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Playwright + deps
+        working-directory: qa/e2e
+        run: |
+          npm install
+          npx playwright install --with-deps chromium
+
+      - name: Run E2E tests
+        working-directory: qa/e2e
+        env:
+          E2E_BASE_URL: https://localhost:8000
+          E2E_USERNAME: ${{ secrets.E2E_USERNAME }}
+          E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
+          E2E_TOTP_SECRET: ${{ secrets.E2E_TOTP_SECRET }}
+        run: npx playwright test
+        continue-on-error: true # report-only until a test account + full stack are wired up in CI
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: qa/e2e/playwright-report/
+          if-no-files-found: ignore
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

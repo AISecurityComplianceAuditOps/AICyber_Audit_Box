@@ -1,0 +1,14 @@
+{
+  "step4_auditor_feedback_written": true,
+  "step5_hint_formatted_correctly": true,
+  "step6_feedback_available_for_run2": true,
+  "hint_text": "DOCUMENT NAVIGATION HINTS:\n Use these to know WHERE to look.\n Do NOT use as compliance evidence.\n - For Control 8.5: Note that a previous finding was REJECTED by the auditor: \"Document kl_test_ambiguous_auth.docx was rejected by auditor for control 8.5\". Do NOT repeat or generate this false finding.",
+  "run_1": {
+    "status": "NON_COMPLIANT",
+    "description": "Business Impact: Potential unauthorized access to internal systems due to reliance on single authentication factor. | Missing Requirements: Explicit documentation of a formal policy defining authentication standards., Evidence confirming the implementation of Multi-Factor Authentication (MFA) beyond the described SSO/session timeout mechanism."
+  },
+  "run_2": {
+    "status": "NON_COMPLIANT",
+    "description": "Business Impact: Potential unauthorized access to internal systems due to reliance solely on Active Directory credentials without explicit MFA enforcement. | Missing Requirements: Explicit documentation of the authentication configuration, specifically confirming the implementation and configuration of Multi-Factor Authentication (MFA)."
+  }
+}

@@ -1,0 +1,34 @@
+name: AI Evaluation
+
+on:
+  workflow_dispatch: {}
+  # Manual trigger only, same reason as e2e.yml: tests/run_evals.py needs the real
+  # llama-server.exe + GGUF models + Postgres stack, which requires a self-hosted
+  # runner. This workflow is provided so the run is at least scripted and its
+  # output archived — trigger it manually on a runner that has the models.
+
+jobs:
+  eval:
+    runs-on: self-hosted # requires a runner with llama-server.exe + GGUF models available; will fail on ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run AI evaluation suite
+        run: python tests/run_evals.py
+
+      - name: Upload eval report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-eval-report
+          path: |
+            scratch/eval_results.json
+            EVALUATION_TEST_SUITE_REPORT.md
+          if-no-files-found: ignore

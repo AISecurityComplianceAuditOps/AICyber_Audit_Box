@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Lint src/
+        run: ruff check src/
+        continue-on-error: true # report-only until the ruleset is tuned to this codebase
+
+      - name: Upload lint report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lint-report
+          path: ruff-report.txt
+          if-no-files-found: ignore
+
+  review-gate-reminder:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reminder
+        run: |
+          echo "Manual gate: run '/code-review' locally before merging this PR."
+          echo "See qa/README.md for the full pipeline and how to re-run any single stage."

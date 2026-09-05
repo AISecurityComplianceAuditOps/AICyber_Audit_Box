@@ -1,0 +1,63 @@
+name: Security Scan
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  semgrep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install semgrep
+        run: pip install semgrep
+
+      - name: Run semgrep
+        run: |
+          semgrep --config p/python --config p/security-audit --config qa/security/semgrep.yml \
+            src/ --sarif --output semgrep-report.sarif
+        continue-on-error: true # report-only until the ruleset is tuned to this codebase
+
+      - name: Upload semgrep report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-report
+          path: semgrep-report.sarif
+          if-no-files-found: ignore
+
+  trivy-images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # NOTE: Dockerfile.app bakes in CPU torch + OCR/reranker models, so this build
+      # is large and slow (many minutes) on a stock GitHub-hosted runner and may need
+      # a self-hosted runner or `trivy config` (Dockerfile-only lint, no build) instead
+      # if it proves impractical in practice — swap this step out if so.
+      - name: Build app image
+        run: docker build -f Dockerfile.app -t aicyberauditbox-app:ci .
+
+      - name: Scan app image with Trivy
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: aicyberauditbox-app:ci
+          format: sarif
+          output: trivy-app-report.sarif
+          ignorefile: qa/security/trivy-ignore.yaml
+          exit-code: "0" # report-only until findings are triaged
+
+      - name: Upload trivy report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-app-report
+          path: trivy-app-report.sarif
+          if-no-files-found: ignore

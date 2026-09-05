@@ -1,0 +1,45 @@
+name: Load Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      users:
+        description: "Concurrent users"
+        default: "10"
+      run_time:
+        description: "Run duration (e.g. 5m)"
+        default: "5m"
+  # Manual trigger only — same reason as ai-eval.yml: needs the real local LLM +
+  # Postgres stack, which requires a self-hosted runner.
+
+jobs:
+  locust:
+    runs-on: self-hosted # requires a runner with the full local stack (llama-server.exe, Postgres, Redis) up
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install locust
+        run: pip install locust pyotp
+
+      - name: Run load test
+        env:
+          LOAD_TEST_USERNAME: ${{ secrets.LOAD_TEST_USERNAME }}
+          LOAD_TEST_PASSWORD: ${{ secrets.LOAD_TEST_PASSWORD }}
+          LOAD_TEST_TOTP_SECRET: ${{ secrets.LOAD_TEST_TOTP_SECRET }}
+        run: |
+          locust -f qa/load/locustfile.py --host https://localhost:8000 \
+            --users ${{ github.event.inputs.users }} --spawn-rate 2 \
+            --run-time ${{ github.event.inputs.run_time }} --headless \
+            --html locust-report.html
+
+      - name: Upload load test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: locust-report
+          path: locust-report.html
+          if-no-files-found: ignore

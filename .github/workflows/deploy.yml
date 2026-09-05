@@ -1,0 +1,48 @@
+name: Deploy (Bundle Assist)
+
+on:
+  workflow_dispatch:
+    inputs:
+      services:
+        description: "Space-separated services to rebuild (e.g. 'app' or 'llm llm-embed' or 'shakthidb')"
+        required: true
+      tar_name:
+        description: "Output tar filename (e.g. aicyberauditbox_bundle_v2.2.tar)"
+        required: true
+
+# This assists the existing manual customer-bundle process, it does not replace it:
+#   1. You still manually bump the version tag(s) in docker-compose.yml AND
+#      docker-compose.customer.yml for the service(s) you're rebuilding, and commit that.
+#   2. Run this workflow with the same service names to build + docker-save them.
+#   3. Download the tar artifact from this run and ship it + the updated
+#      docker-compose.customer.yml to the customer, same as before.
+# Nothing here pushes anywhere automatically.
+
+jobs:
+  build-and-export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # NOTE: building `app` (CPU torch + OCR/reranker models) or `llm`/`llm-embed`
+      # (multi-GB GGUF models) is slow and disk-heavy on a stock GitHub-hosted
+      # runner — same caveat as security-scan.yml. A self-hosted runner may be
+      # worth it once this is used regularly.
+      - name: Build requested service(s)
+        run: docker compose build ${{ github.event.inputs.services }}
+
+      - name: Determine full image:tag list from docker-compose.yml
+        id: images
+        run: |
+          IMAGES=$(docker compose config --format json \
+            | python3 -c "import json,sys; c=json.load(sys.stdin); print(' '.join(s['image'] for s in c['services'].values() if 'image' in s))")
+          echo "images=$IMAGES" >> "$GITHUB_OUTPUT"
+
+      - name: Export all 4 images into the bundle tar
+        run: docker save ${{ steps.images.outputs.images }} -o "${{ github.event.inputs.tar_name }}"
+
+      - name: Upload bundle tar
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.tar_name }}
+          path: ${{ github.event.inputs.tar_name }}
