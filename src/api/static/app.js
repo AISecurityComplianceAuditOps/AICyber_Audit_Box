@@ -7952,8 +7952,17 @@ async function loadMcpServers() {
         const res = await authFetch(`${API_BASE}/mcp/servers`);
         const allServers = await res.json();
         
-        const currentSessionId = activeSessionTitle || activeSessionId || "Global";
-        currentMcpServers = allServers.filter(s => s.company_name === currentSessionId || s.company_name === "Global" || !s.company_name);
+        const currentSession = (activeSessionTitle || activeSessionId || "Global").trim().toLowerCase();
+        currentMcpServers = (allServers || []).filter(s => {
+            if (!s.company_name || s.company_name.toLowerCase() === "global") return true;
+            const comp = s.company_name.trim().toLowerCase();
+            return comp === currentSession || comp.includes(currentSession) || currentSession.includes(comp);
+        });
+        
+        // Fallback: If filtered list is empty but servers exist in system, show all servers
+        if (currentMcpServers.length === 0 && Array.isArray(allServers) && allServers.length > 0) {
+            currentMcpServers = allServers;
+        }
         
         refreshMcpDashboard();
     } catch (e) {
@@ -7963,14 +7972,20 @@ async function loadMcpServers() {
 }
 
 function refreshMcpDashboard() {
-    document.getElementById('mcp-register-company-view').style.display = 'none';
-    document.getElementById('mcp-company-dashboard-view').style.display = 'block';
+    const regView = document.getElementById('mcp-register-company-view');
+    const dashView = document.getElementById('mcp-company-dashboard-view');
+    const scanView = document.getElementById('mcp-scan-mode-view');
+    
+    if (regView) regView.style.display = 'none';
+    if (dashView) dashView.style.display = 'block';
+    if (scanView && scanView.style.display !== 'block') scanView.style.display = 'none';
     
     const assetsList = document.getElementById('mcp-dashboard-assets-list');
+    if (!assetsList) return;
     assetsList.innerHTML = '';
     
-    if (currentMcpServers.length === 0) {
-        assetsList.innerHTML = '<div style="padding: 12px; color: #94a3b8; font-size: 0.85rem; text-align: center;">No assets found for this session. Click "+ Add Asset" to configure one.</div>';
+    if (!currentMcpServers || currentMcpServers.length === 0) {
+        assetsList.innerHTML = '<div style="padding: 16px; color: #94a3b8; font-size: 0.85rem; text-align: center;">No assets configured yet. Click <b>+ Add Asset</b> above to register one.</div>';
         return;
     }
     
@@ -7985,11 +8000,11 @@ function refreshMcpDashboard() {
         const cat = s.asset_category || 'Uncategorized';
         div.innerHTML = `
             <div>
-                <strong style="color: #60a5fa; font-size: 0.95rem;">${s.name}</strong> <span style="font-size: 0.8rem; color: #94a3b8;">(${s.server_type}) - [${cat}]</span>
+                <strong style="color: #60a5fa; font-size: 0.95rem;">${escapeHtml(s.name)}</strong> <span style="font-size: 0.8rem; color: #94a3b8;">(${escapeHtml(s.server_type)}) - [${escapeHtml(cat)}]</span>
             </div>
             <div style="display: flex; gap: 8px;">
-                <button onclick="showScanModeSelection('manual', ${s.id})" style="padding: 6px 12px; border-radius: 6px; background: rgba(59, 130, 246, 0.2); border: 1px solid #3b82f6; color: #60a5fa; cursor: pointer; font-size: 0.75rem; font-weight: bold;">Manual Scan</button>
-                <button onclick="deleteAsset(${s.id})" style="padding: 6px 12px; border-radius: 6px; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); color: #ef4444; cursor: pointer; font-size: 0.75rem; font-weight: bold;">Delete</button>
+                <button type="button" onclick="showScanModeSelection('manual', ${s.id})" style="padding: 6px 12px; border-radius: 6px; background: rgba(59, 130, 246, 0.2); border: 1px solid #3b82f6; color: #60a5fa; cursor: pointer; font-size: 0.75rem; font-weight: bold;">Manual Scan</button>
+                <button type="button" onclick="deleteAsset(${s.id})" style="padding: 6px 12px; border-radius: 6px; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); color: #ef4444; cursor: pointer; font-size: 0.75rem; font-weight: bold;">Delete</button>
             </div>
         `;
         assetsList.appendChild(div);
@@ -8021,7 +8036,7 @@ function onMcpNewTypeChange() {
 }
 
 async function saveNewAssetToCompany() {
-    const company = activeSessionTitle || activeSessionId || 'Global';
+    const company = (activeSessionTitle || activeSessionId || 'Global').trim();
     const name = document.getElementById('mcp-new-name').value.trim();
     const category = document.getElementById('mcp-new-category').value.trim();
     const type = document.getElementById('mcp-new-type').value;
@@ -8037,7 +8052,6 @@ async function saveNewAssetToCompany() {
         command = 'npx';
         args = JSON.stringify(['-y', '@modelcontextprotocol/server-github']);
         let repoInput = document.getElementById('mcp-new-github-repo').value.trim();
-        // Strip URLs, protocols, domains, .git suffix
         let cleanRepo = repoInput.replace(/^https?:\/\/(www\.)?github\.com\//i, '')
                                  .replace(/^git@github\.com:/i, '')
                                  .replace(/\.git$/i, '')
@@ -8097,14 +8111,36 @@ async function saveNewAssetToCompany() {
         });
         
         if (!res.ok) throw new Error((await res.json()).detail || 'Failed to create asset');
+        const createdServer = await res.json();
         
-        showToast('Asset added to Company successfully', 'success');
+        showToast('Asset added successfully', 'success');
+        
+        // Immediately add to local array and refresh view
+        if (createdServer) {
+            const exists = currentMcpServers.some(s => s.id === createdServer.id);
+            if (!exists) {
+                currentMcpServers.push(createdServer);
+            }
+        }
+        
+        // Clear all form inputs
         document.getElementById('mcp-new-name').value = '';
-        await loadMcpServers();
+        document.getElementById('mcp-new-category').value = '';
+        document.getElementById('mcp-new-cred').value = '';
+        if (document.getElementById('mcp-new-github-repo')) document.getElementById('mcp-new-github-repo').value = '';
+        if (document.getElementById('mcp-new-jira-email')) document.getElementById('mcp-new-jira-email').value = '';
+        if (document.getElementById('mcp-new-jira-url')) document.getElementById('mcp-new-jira-url').value = '';
+        if (document.getElementById('mcp-new-pg-url')) document.getElementById('mcp-new-pg-url').value = '';
+        if (document.getElementById('mcp-azure-tenant')) document.getElementById('mcp-azure-tenant').value = '';
+        if (document.getElementById('mcp-azure-client')) document.getElementById('mcp-azure-client').value = '';
+        if (document.getElementById('mcp-azure-secret')) document.getElementById('mcp-azure-secret').value = '';
+        if (document.getElementById('mcp-azure-sub')) document.getElementById('mcp-azure-sub').value = '';
+
+        // Switch immediately back to dashboard and render
+        refreshMcpDashboard();
         
-        // Reload dashboard
-        document.getElementById('mcp-register-company-view').style.display = 'none';
-        document.getElementById('mcp-company-dashboard-view').style.display = 'block';
+        // Sync with backend
+        await loadMcpServers();
     } catch (e) {
         showToast(e.message, 'error');
     }
@@ -8113,12 +8149,17 @@ async function saveNewAssetToCompany() {
 async function deleteAsset(serverId) {
     if (!confirm('Are you sure you want to delete this asset?')) return;
     try {
+        // Optimistically remove from view
+        currentMcpServers = currentMcpServers.filter(s => s.id !== serverId);
+        refreshMcpDashboard();
+        
         const res = await authFetch(`${API_BASE}/mcp/servers/${serverId}`, { method: 'DELETE' });
         if (!res.ok) throw new Error('Failed to delete asset');
         showToast('Asset deleted', 'success');
         await loadMcpServers();
     } catch (e) {
         showToast(e.message, 'error');
+        await loadMcpServers();
     }
 }
 

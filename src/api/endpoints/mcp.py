@@ -53,6 +53,8 @@ def list_inventory_files(request: Request, db: Session = Depends(get_db)):
         norm_path = os.path.normpath(v.file_path) if v.file_path else ""
         if norm_path:
             tracked_paths.add(norm_path)
+            tracked_paths.add(os.path.abspath(norm_path))
+            tracked_paths.add(os.path.basename(norm_path))
             
         file_exists = os.path.exists(norm_path)
         file_size = os.path.getsize(norm_path) if file_exists else 0
@@ -84,6 +86,8 @@ def list_inventory_files(request: Request, db: Session = Depends(get_db)):
         if v.delta_path and os.path.exists(v.delta_path):
             norm_delta = os.path.normpath(v.delta_path)
             tracked_paths.add(norm_delta)
+            tracked_paths.add(os.path.abspath(norm_delta))
+            tracked_paths.add(os.path.basename(norm_delta))
             delta_size = os.path.getsize(norm_delta)
             delta_rows = 0
             try:
@@ -105,53 +109,56 @@ def list_inventory_files(request: Request, db: Session = Depends(get_db)):
                 "is_delta": True
             })
 
-    # Also detect any CSV files placed directly in data/inventory/
+    # Also detect any CSV files placed directly in data/inventory/ that are not tracked in DB
     disk_files = glob.glob(os.path.join(inventory_dir, "*.csv"))
     for fpath in disk_files:
         norm_path = os.path.normpath(fpath)
-        if norm_path not in tracked_paths:
-            filename = os.path.basename(norm_path)
-            file_size = os.path.getsize(norm_path)
-            row_count = 0
-            try:
-                with open(norm_path, 'r', encoding='utf-8', errors='ignore') as f:
-                    row_count = max(0, sum(1 for _ in f) - 1)
-            except Exception:
-                pass
+        abs_path = os.path.abspath(fpath)
+        base_name = os.path.basename(fpath)
+        if norm_path in tracked_paths or abs_path in tracked_paths or base_name in tracked_paths:
+            continue
             
-            clean_name = filename.replace(".csv", "")
-            is_delta = clean_name.startswith("delta_")
-            if is_delta:
-                clean_name = clean_name[6:]
-                
-            if "_Comprehensive_Inventory" in clean_name:
-                comp_raw = clean_name.split("_Comprehensive_Inventory")[0]
-                comp = comp_raw.replace("_", " ").strip()
-                cat = "Comprehensive Inventory"
-            else:
-                parts = clean_name.split("_")
-                comp = parts[0] if parts else "Global"
-                cat = parts[1] if len(parts) > 1 else "General"
-                
-            if is_delta:
-                cat = f"{cat} (Delta)"
+        file_size = os.path.getsize(norm_path)
+        row_count = 0
+        try:
+            with open(norm_path, 'r', encoding='utf-8', errors='ignore') as f:
+                row_count = max(0, sum(1 for _ in f) - 1)
+        except Exception:
+            pass
+        
+        clean_name = base_name.replace(".csv", "")
+        is_delta = clean_name.startswith("delta_")
+        if is_delta:
+            clean_name = clean_name[6:]
             
-            ctime = os.path.getctime(norm_path)
-            created_iso = datetime.fromtimestamp(ctime, timezone.utc).isoformat()
+        if "_Comprehensive_Inventory" in clean_name:
+            comp_raw = clean_name.split("_Comprehensive_Inventory")[0]
+            comp = comp_raw.replace("_", " ").strip()
+            cat = "Comprehensive Inventory"
+        else:
+            parts = clean_name.split("_")
+            comp = parts[0] if parts else "Global"
+            cat = parts[1] if len(parts) > 1 else "General"
             
-            result.append({
-                "id": f"disk_{abs(hash(norm_path)) % 100000}",
-                "filename": filename,
-                "company_name": comp,
-                "asset_category": cat,
-                "file_path": norm_path,
-                "delta_path": None,
-                "negative_alerts": 0,
-                "file_size": file_size,
-                "row_count": row_count,
-                "created_at": created_iso,
-                "is_delta": is_delta
-            })
+        if is_delta:
+            cat = f"{cat} (Delta)"
+        
+        ctime = os.path.getctime(norm_path)
+        created_iso = datetime.fromtimestamp(ctime, timezone.utc).isoformat()
+        
+        result.append({
+            "id": f"disk_{abs(hash(norm_path)) % 100000}",
+            "filename": base_name,
+            "company_name": comp,
+            "asset_category": cat,
+            "file_path": norm_path,
+            "delta_path": None,
+            "negative_alerts": 0,
+            "file_size": file_size,
+            "row_count": row_count,
+            "created_at": created_iso,
+            "is_delta": is_delta
+        })
 
     return result
 
