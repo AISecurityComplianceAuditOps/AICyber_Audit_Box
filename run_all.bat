@@ -128,7 +128,7 @@ if %errorlevel% equ 0 (
     if errorlevel 1 (
         docker stop shakthidb_service > nul 2>&1
         docker rm   shakthidb_service > nul 2>&1
-        docker run -d --name shakthidb_service -e POSTGRES_PASSWORD=ShakthiDB@2026 -e POSTGRES_DB=shakthidb -p 15234:5432 -v audittest_box_pgdata:/var/lib/postgresql/data --restart always aicyberauditbox-shakthidb:2.1 > nul 2>&1
+        docker run -d --name shakthidb_service -e POSTGRES_PASSWORD=ShakthiDB@2026 -e POSTGRES_DB=shakthidb -p 15234:5432 -v audittest_box_pgdata:/var/lib/postgresql/data --restart always aicyberauditbox-shakthidb:3.10 > nul 2>&1
     )
     call :DoBackup
 ) else (

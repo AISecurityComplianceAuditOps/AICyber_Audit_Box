@@ -1099,7 +1099,8 @@ class RoutingSession(Session):
                 is_write = True
                 
         # Force MASTER routing on WRITE or explicit context flag
-        if is_write or getattr(_routing_state, "force_master", False):
+        if is_write or getattr(_routing_state, "force_master", False) or getattr(self, "_pinned_to_master", False):
+            self._pinned_to_master = True
             if promoted_master_engine is not None:
                 return promoted_master_engine
             return engine_master

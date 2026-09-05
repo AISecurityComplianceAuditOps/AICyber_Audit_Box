@@ -536,19 +536,64 @@
                                     style="margin: 0; font-size: 0.98rem; font-weight: 700; color: var(--text-main); display: flex; align-items: center; gap: 6px;">
                                     <span>📂</span> <span>File Upload / Evidence Collector</span>
                                 </h3>
-                                <div style="display: flex; align-items: center; gap: 6px;">
+                                <div style="display: flex; align-items: center; gap: 8px;">
                                     <span id="evidence-count-badge" class="evidence-count-pill"
                                         style="font-size: 0.72rem; color: var(--text-muted); background: rgba(255,255,255,0.06); padding: 2px 8px; border-radius: 8px;">0
                                         files</span>
-                                    <button type="button" class="btn-secondary"
-                                        onclick="document.getElementById('evidence-file-input').click()"
-                                        style="padding: 4px 8px; font-size: 0.74rem;">+ Browse files</button>
-                                    <button type="button" class="btn-secondary"
-                                        onclick="document.getElementById('evidence-folder-input').click()"
-                                        style="padding: 4px 8px; font-size: 0.74rem; margin-left: 4px;">+ Browse folder</button>
-                                    <button type="button" class="btn-secondary"
-                                        onclick="openMcpImportModal()"
-                                        style="padding: 4px 8px; font-size: 0.74rem; margin-left: 4px; background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; border: none;">+ MCP Import</button>
+
+                                    <!-- OFFLINE MODE DROPDOWN -->
+                                    <div class="dropdown-wrapper" style="position: relative; display: inline-block;">
+                                        <button type="button" class="btn-secondary" id="offline-mode-btn"
+                                            onclick="toggleOfflineDropdown(event)"
+                                            style="padding: 5px 12px; font-size: 0.76rem; font-weight: 600; display: flex; align-items: center; gap: 6px; border-radius: 8px; background: rgba(59, 130, 246, 0.12); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.35); cursor: pointer; transition: all 0.2s ease;">
+                                            <span>📁 Offline</span>
+                                            <span style="font-size: 0.62rem; opacity: 0.8; margin-left: 2px;">▼</span>
+                                        </button>
+                                        <div id="offline-dropdown-menu"
+                                            style="display: none; position: absolute; right: 0; top: calc(100% + 6px); background: #1e293b; border: 1px solid rgba(255,255,255,0.15); border-radius: 10px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); z-index: 1000; min-width: 160px; padding: 5px; overflow: hidden; backdrop-filter: blur(10px);">
+                                            <button type="button"
+                                                onclick="document.getElementById('evidence-file-input').click(); hideOfflineDropdown();"
+                                                style="width: 100%; text-align: left; padding: 8px 10px; font-size: 0.76rem; background: transparent; border: none; color: #f1f5f9; border-radius: 6px; cursor: pointer; display: flex; align-items: center; gap: 8px; transition: background 0.15s;"
+                                                onmouseover="this.style.background='rgba(59,130,246,0.2)'"
+                                                onmouseout="this.style.background='transparent'">
+                                                <span>📄</span> <span>+ Browse files</span>
+                                            </button>
+                                            <button type="button"
+                                                onclick="document.getElementById('evidence-folder-input').click(); hideOfflineDropdown();"
+                                                style="width: 100%; text-align: left; padding: 8px 10px; font-size: 0.76rem; background: transparent; border: none; color: #f1f5f9; border-radius: 6px; cursor: pointer; display: flex; align-items: center; gap: 8px; transition: background 0.15s; margin-top: 2px;"
+                                                onmouseover="this.style.background='rgba(59,130,246,0.2)'"
+                                                onmouseout="this.style.background='transparent'">
+                                                <span>📁</span> <span>+ Browse folder</span>
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    <!-- ONLINE MODE DROPDOWN -->
+                                    <div class="dropdown-wrapper" style="position: relative; display: inline-block;">
+                                        <button type="button" class="btn-secondary" id="online-mode-btn"
+                                            onclick="toggleOnlineDropdown(event)"
+                                            style="padding: 5px 12px; font-size: 0.76rem; font-weight: 600; display: flex; align-items: center; gap: 6px; border-radius: 8px; background: linear-gradient(135deg, rgba(16, 185, 129, 0.2) 0%, rgba(5, 150, 105, 0.25) 100%); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.45); cursor: pointer; transition: all 0.2s ease;">
+                                            <span>🌐 Online</span>
+                                            <span style="font-size: 0.62rem; opacity: 0.8; margin-left: 2px;">▼</span>
+                                        </button>
+                                        <div id="online-dropdown-menu"
+                                            style="display: none; position: absolute; right: 0; top: calc(100% + 6px); background: #1e293b; border: 1px solid rgba(16, 185, 129, 0.35); border-radius: 10px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); z-index: 1000; min-width: 175px; padding: 5px; overflow: hidden; backdrop-filter: blur(10px);">
+                                            <button type="button"
+                                                onclick="openMcpImportModal(); hideOnlineDropdown();"
+                                                style="width: 100%; text-align: left; padding: 8px 10px; font-size: 0.76rem; background: transparent; border: none; color: #f1f5f9; border-radius: 6px; cursor: pointer; display: flex; align-items: center; gap: 8px; transition: background 0.15s;"
+                                                onmouseover="this.style.background='rgba(16,185,129,0.2)'"
+                                                onmouseout="this.style.background='transparent'">
+                                                <span>⚡</span> <span>+ MCP Import</span>
+                                            </button>
+                                            <button type="button"
+                                                onclick="switchToMcpInventoryTab(); hideOnlineDropdown();"
+                                                style="width: 100%; text-align: left; padding: 8px 10px; font-size: 0.76rem; background: transparent; border: none; color: #f1f5f9; border-radius: 6px; cursor: pointer; display: flex; align-items: center; gap: 8px; transition: background 0.15s; margin-top: 2px;"
+                                                onmouseover="this.style.background='rgba(16,185,129,0.2)'"
+                                                onmouseout="this.style.background='transparent'">
+                                                <span>📦</span> <span>MCP Inventory</span>
+                                            </button>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
 
@@ -911,6 +956,92 @@
                         </div>
                         <div id="auditee-history-table-container">
                             <div class="empty-state" style="padding: 30px; text-align: center; color: var(--text-muted);">Loading document submission history...</div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- ── TAB: MCP INVENTORY ── -->
+                <section id="tab-mcp-inventory" class="tab-panel">
+                    <div style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 16px; padding: 20px;">
+                        <!-- Header Banner & Action Bar -->
+                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; flex-wrap: wrap; gap: 14px;">
+                            <div>
+                                <h3 style="margin: 0; font-size: 1.25rem; font-weight: 800; color: var(--text-color); display: flex; align-items: center; gap: 10px;">
+                                    <span>📦</span> <span>MCP Asset Inventory & Delta Tracking</span>
+                                </h3>
+                                <p style="margin: 4px 0 0 0; font-size: 0.82rem; color: var(--text-muted);">
+                                    Live inventory snapshots (CSV) and automated change tracking generated from connected online assets (GitHub, PostgreSQL, Jira, Azure Cloud).
+                                </p>
+                            </div>
+                            <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                                <input type="text" id="mcp-inventory-search" placeholder="🔍 Search by company, category, file..." 
+                                    oninput="filterMcpInventoryTable()" 
+                                    style="padding: 8px 14px; font-size: 0.82rem; border-radius: 8px; border: 1px solid var(--border-color); background: rgba(15, 23, 42, 0.6); color: var(--text-color); min-width: 240px;">
+                                <button type="button" class="btn-primary" onclick="triggerMcpSweepFromInventory()" 
+                                    style="padding: 8px 16px; font-size: 0.82rem; font-weight: 800; border-radius: 8px; background: linear-gradient(135deg, #a855f7 0%, #9333ea 100%); border: none; cursor: pointer; color: white; display: flex; align-items: center; gap: 6px; box-shadow: 0 4px 12px rgba(168, 85, 247, 0.35);">
+                                    <span>⚡ Run Asset Sweep</span>
+                                </button>
+                                <button type="button" class="btn-secondary" onclick="loadMcpInventory()" 
+                                    style="padding: 8px 14px; font-size: 0.82rem; font-weight: 700; border-radius: 8px;">
+                                    <span>🔄 Refresh</span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- KPI Metrics Strip -->
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; margin-bottom: 20px;">
+                            <div style="background: rgba(15, 23, 42, 0.4); border: 1px solid var(--border-color); border-radius: 12px; padding: 14px; display: flex; align-items: center; gap: 14px;">
+                                <div style="width: 42px; height: 42px; border-radius: 10px; background: rgba(59, 130, 246, 0.15); color: #3b82f6; display: flex; align-items: center; justify-content: center; font-size: 1.3rem;">📊</div>
+                                <div>
+                                    <div style="font-size: 0.72rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Total CSV Snapshots</div>
+                                    <div id="mcp-inv-stat-total" style="font-size: 1.3rem; font-weight: 800; color: var(--text-color);">0</div>
+                                </div>
+                            </div>
+                            <div style="background: rgba(15, 23, 42, 0.4); border: 1px solid var(--border-color); border-radius: 12px; padding: 14px; display: flex; align-items: center; gap: 14px;">
+                                <div style="width: 42px; height: 42px; border-radius: 10px; background: rgba(160, 185, 129, 0.15); color: #10b981; display: flex; align-items: center; justify-content: center; font-size: 1.3rem;">🏷️</div>
+                                <div>
+                                    <div style="font-size: 0.72rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Asset Categories</div>
+                                    <div id="mcp-inv-stat-categories" style="font-size: 1.3rem; font-weight: 800; color: var(--text-color);">0</div>
+                                </div>
+                            </div>
+                            <div style="background: rgba(15, 23, 42, 0.4); border: 1px solid var(--border-color); border-radius: 12px; padding: 14px; display: flex; align-items: center; gap: 14px;">
+                                <div style="width: 42px; height: 42px; border-radius: 10px; background: rgba(245, 158, 11, 0.15); color: #f59e0b; display: flex; align-items: center; justify-content: center; font-size: 1.3rem;">⚠️</div>
+                                <div>
+                                    <div style="font-size: 0.72rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Delta Changes / Alerts</div>
+                                    <div id="mcp-inv-stat-deltas" style="font-size: 1.3rem; font-weight: 800; color: var(--text-color);">0</div>
+                                </div>
+                            </div>
+                            <div style="background: rgba(15, 23, 42, 0.4); border: 1px solid var(--border-color); border-radius: 12px; padding: 14px; display: flex; align-items: center; gap: 14px;">
+                                <div style="width: 42px; height: 42px; border-radius: 10px; background: rgba(168, 85, 247, 0.15); color: #a855f7; display: flex; align-items: center; justify-content: center; font-size: 1.3rem;">🕒</div>
+                                <div>
+                                    <div style="font-size: 0.72rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Latest Snapshot</div>
+                                    <div id="mcp-inv-stat-latest" style="font-size: 0.85rem; font-weight: 700; color: var(--text-color);">None</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Inventory Snapshots Table -->
+                        <div style="overflow-x: auto; border: 1px solid var(--border-color); border-radius: 12px; background: rgba(15, 23, 42, 0.3);">
+                            <table class="checklist-table" style="width: 100%; border-collapse: collapse; text-align: left; font-size: 0.84rem;">
+                                <thead>
+                                    <tr style="background: rgba(255, 255, 255, 0.03); border-bottom: 1px solid var(--border-color);">
+                                        <th style="padding: 12px 16px; font-weight: 800; color: var(--text-muted);">FILE NAME</th>
+                                        <th style="padding: 12px 16px; font-weight: 800; color: var(--text-muted);">COMPANY / SCOPE</th>
+                                        <th style="padding: 12px 16px; font-weight: 800; color: var(--text-muted);">CATEGORY</th>
+                                        <th style="padding: 12px 16px; font-weight: 800; color: var(--text-muted);">ROWS &amp; SIZE</th>
+                                        <th style="padding: 12px 16px; font-weight: 800; color: var(--text-muted);">DELTA STATUS</th>
+                                        <th style="padding: 12px 16px; font-weight: 800; color: var(--text-muted);">GENERATED AT</th>
+                                        <th style="padding: 12px 16px; font-weight: 800; color: var(--text-muted); text-align: right;">ACTIONS</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="mcp-inventory-table-body">
+                                    <tr>
+                                        <td colspan="7" style="padding: 30px; text-align: center; color: var(--text-muted);">
+                                            Loading MCP inventory snapshots...
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
                         </div>
                     </div>
                 </section>
@@ -1727,6 +1858,38 @@
         </div>
     </div>
 
+    <!-- CSV Data Preview Modal -->
+    <div id="csv-preview-modal" class="modal-overlay" style="display: none; position: fixed; inset: 0; background: rgba(15, 23, 42, 0.85); backdrop-filter: blur(10px); z-index: 10001; align-items: center; justify-content: center; padding: 20px;">
+        <div class="modal-card" style="background: #0f172a; border: 1px solid rgba(59, 130, 246, 0.4); border-radius: 16px; width: 100%; max-width: 1100px; max-height: 90vh; display: flex; flex-direction: column; padding: 24px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.8); color: #f8fafc;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; border-bottom: 1px solid rgba(59, 130, 246, 0.25); padding-bottom: 12px;">
+                <div>
+                    <h3 id="csv-preview-title" style="margin: 0; font-size: 1.15rem; font-weight: 800; color: #3b82f6;">CSV Data Preview</h3>
+                    <p id="csv-preview-subtitle" style="margin: 4px 0 0 0; font-size: 0.78rem; color: #94a3b8;">Showing formatted dataset</p>
+                </div>
+                <div style="display: flex; gap: 8px; align-items: center;">
+                    <button type="button" id="csv-preview-download-btn" class="btn-primary" style="padding: 6px 12px; font-size: 0.78rem; border-radius: 6px; cursor: pointer;">📥 Download CSV</button>
+                    <button type="button" onclick="closeCsvPreviewModal()" style="background: transparent; border: none; color: #94a3b8; font-size: 1.5rem; cursor: pointer; line-height: 1;">&times;</button>
+                </div>
+            </div>
+            
+            <div style="margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
+                <input type="text" id="csv-preview-search" placeholder="Filter rows in preview..." oninput="filterCsvPreviewRows()" style="padding: 6px 12px; font-size: 0.78rem; border-radius: 6px; border: 1px solid var(--border-color); background: #1e293b; color: white; width: 280px;">
+                <span id="csv-preview-row-count" style="font-size: 0.75rem; color: #94a3b8;"></span>
+            </div>
+
+            <div id="csv-preview-table-wrapper" style="flex: 1; overflow: auto; background: #1e293b; border-radius: 8px; border: 1px solid rgba(148, 163, 184, 0.2); min-height: 300px;">
+                <table id="csv-preview-table" style="width: 100%; border-collapse: collapse; font-size: 0.8rem; text-align: left;">
+                    <thead id="csv-preview-thead"></thead>
+                    <tbody id="csv-preview-tbody"></tbody>
+                </table>
+            </div>
+            
+            <div style="display: flex; justify-content: flex-end; margin-top: 16px;">
+                <button type="button" onclick="closeCsvPreviewModal()" style="padding: 8px 18px; border-radius: 8px; border: none; background: #3b82f6; color: white; font-weight: 700; cursor: pointer;">Close Preview</button>
+            </div>
+        </div>
+    </div>
+
     <!-- MCP Import Modal -->
     <div id="mcp-import-modal" class="modal-overlay" style="display: none; position: fixed; inset: 0; background: rgba(15, 23, 42, 0.85); backdrop-filter: blur(10px); z-index: 10000; align-items: center; justify-content: center; padding: 16px;">
         <div class="modal-card" style="background: #0f172a; border: 1px solid rgba(16, 185, 129, 0.4); border-radius: 16px; width: 100%; max-width: 600px; padding: 26px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.8); color: #f8fafc;">
@@ -1736,20 +1899,8 @@
                     <p style="margin: 4px 0 0 0; font-size: 0.80rem; color: #94a3b8; font-weight: 500;">Connect to GitHub, Jira, etc. to directly retrieve files</p>
                 </div>
             </div>
-            <div id="mcp-company-selector-container" style="margin-bottom: 20px;">
-                <label style="display: block; font-size: 0.76rem; font-weight: 700; color: var(--text-main); margin-bottom: 6px;">Select Company Session</label>
-                <div style="display: flex; gap: 8px;">
-                    <select id="mcp-company-select" onchange="onCompanySelect()" style="flex: 1; padding: 8px 12px; font-size: 0.86rem; border-radius: 8px; border: 1px solid rgba(148, 163, 184, 0.3); background: rgba(30, 41, 59, 0.8); color: white;">
-                        <option value="">-- Loading Companies --</option>
-                    </select>
-                    <button type="button" onclick="showRegisterCompanyForm()" style="padding: 8px 12px; border-radius: 8px; border: 1px solid rgba(16, 185, 129, 0.5); background: rgba(16, 185, 129, 0.15); color: #10b981; font-weight: 700; cursor: pointer;">+ Register New Company</button>
-                </div>
-            </div>
-
-            <!-- View: Register Company -->
+            <!-- View: Register Asset -->
             <div id="mcp-register-company-view" style="display: none; background: #1e293b; border: 1px solid rgba(59, 130, 246, 0.35); border-radius: 12px; padding: 18px; margin-bottom: 20px;">
-                <h4 style="margin: 0 0 12px 0; font-size: 0.9rem; color: #60a5fa;">Register New Company</h4>
-                <input type="text" id="mcp-new-company-name" placeholder="Company Name (e.g. XYZ Corp)" style="width: 100%; margin-bottom: 16px; padding: 8px; border-radius: 6px; border: 1px solid rgba(148,163,184,0.3); background: #0f172a; color: white;">
                 
                 <div style="border-bottom: 1px solid rgba(148, 163, 184, 0.2); margin-bottom: 16px;"></div>
                 
@@ -1794,39 +1945,48 @@
             <!-- View: Company Dashboard -->
             <div id="mcp-company-dashboard-view" style="display: none;">
                 
-                <div id="mcp-import-mode-container" style="margin-bottom: 16px; background: rgba(15, 23, 42, 0.4); padding: 12px; border-radius: 8px; border: 1px dashed rgba(59, 130, 246, 0.4);">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                        <label style="font-size: 0.76rem; font-weight: 700; color: var(--text-main);">Sweep Mode</label>
-                        <button type="button" onclick="triggerCompanySweep()" style="padding: 6px 12px; border-radius: 6px; background: linear-gradient(135deg, #a855f7 0%, #9333ea 100%); color: white; border: none; cursor: pointer; font-weight: bold; font-size: 0.8rem; box-shadow: 0 4px 10px rgba(168, 85, 247, 0.3);">⚡ Scan Entire Company</button>
-                    </div>
-                    <div style="display: flex; gap: 16px;">
-                        <label style="display: flex; align-items: center; gap: 6px; font-size: 0.82rem; color: #e2e8f0; cursor: pointer;">
-                            <input type="radio" name="mcp-import-mode" value="general" checked onchange="onMcpModeChange()" style="accent-color: #3b82f6;"> General (Scan All Content)
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 6px; font-size: 0.82rem; color: #e2e8f0; cursor: pointer;">
-                            <input type="radio" name="mcp-import-mode" value="pqc" onchange="onMcpModeChange()" style="accent-color: #10b981;"> PQC (Targeted Crypto/Security Scan)
-                        </label>
-                    </div>
-                </div>
+                <button type="button" onclick="showScanModeSelection('full')" style="width: 100%; margin-bottom: 20px; padding: 12px; border-radius: 8px; background: linear-gradient(135deg, #a855f7 0%, #9333ea 100%); color: white; border: none; cursor: pointer; font-weight: bold; font-size: 1rem; box-shadow: 0 4px 10px rgba(168, 85, 247, 0.3);">⚡ Run Entire Scan</button>
 
                 <div style="margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
-                    <h4 style="margin: 0; font-size: 0.9rem; color: #94a3b8;">Individual Assets in this Company</h4>
-                    <button type="button" onclick="showRegisterCompanyForm(true)" style="padding: 4px 8px; border-radius: 6px; background: transparent; color: #10b981; border: 1px solid rgba(16, 185, 129, 0.5); cursor: pointer; font-size: 0.75rem;">+ Add Asset</button>
+                    <h4 style="margin: 0; font-size: 0.9rem; color: #94a3b8;">Configured Assets</h4>
+                    <button type="button" onclick="showRegisterCompanyForm()" style="padding: 4px 8px; border-radius: 6px; background: transparent; color: #10b981; border: 1px solid rgba(16, 185, 129, 0.5); cursor: pointer; font-size: 0.75rem;">+ Add Asset</button>
                 </div>
                 
-                <div style="background: rgba(30, 41, 59, 0.4); border-radius: 8px; border: 1px solid rgba(148, 163, 184, 0.2); max-height: 150px; overflow-y: auto; padding: 8px;" id="mcp-dashboard-assets-list">
+                <div style="background: rgba(30, 41, 59, 0.4); border-radius: 8px; border: 1px solid rgba(148, 163, 184, 0.2); max-height: 250px; overflow-y: auto; padding: 8px;" id="mcp-dashboard-assets-list">
                     <!-- Javascript populates list of assets -->
                 </div>
 
-                <div id="mcp-import-workspace" style="display: none; margin-top: 16px; background: rgba(30, 41, 59, 0.6); padding: 12px; border-radius: 8px;">
-                    <h5 style="margin: 0 0 8px 0; color: #e2e8f0; font-size: 0.8rem;">Manual Asset Deep-Dive</h5>
+            </div>
+
+            <!-- View: Scan Mode Selection -->
+            <div id="mcp-scan-mode-view" style="display: none; margin-top: 16px; background: rgba(30, 41, 59, 0.6); padding: 16px; border-radius: 12px; border: 1px dashed rgba(59, 130, 246, 0.4);">
+                <h5 style="margin: 0 0 12px 0; color: #e2e8f0; font-size: 0.9rem;">Select Sweep Mode</h5>
+                <div style="display: flex; flex-direction: column; gap: 12px; margin-bottom: 16px;">
+                    <label style="display: flex; align-items: center; gap: 8px; font-size: 0.85rem; color: #e2e8f0; cursor: pointer; background: rgba(15, 23, 42, 0.5); padding: 10px; border-radius: 8px;">
+                        <input type="radio" name="mcp-import-mode" value="general" checked onchange="onMcpModeChange()" style="accent-color: #3b82f6;"> 
+                        <span><strong>General</strong> (Scan All Content)</span>
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 8px; font-size: 0.85rem; color: #e2e8f0; cursor: pointer; background: rgba(15, 23, 42, 0.5); padding: 10px; border-radius: 8px;">
+                        <input type="radio" name="mcp-import-mode" value="pqc" onchange="onMcpModeChange()" style="accent-color: #10b981;"> 
+                        <span><strong>PQC</strong> (Targeted Crypto/Security Scan)</span>
+                    </label>
+                </div>
+                
+                <div id="mcp-import-workspace" style="display: none;">
                     <input type="text" id="mcp-repo-path" placeholder="Repo or Project Path (e.g. owner/repo)" style="width: 100%; margin-bottom: 8px; padding: 10px; border-radius: 8px; border: 1px solid rgba(148, 163, 184, 0.3); background: rgba(15, 23, 42, 0.8); color: white;">
                     <input type="text" id="mcp-file-path" placeholder="File or Folder Path (e.g. README.md, docs/)" style="width: 100%; margin-bottom: 12px; padding: 10px; border-radius: 8px; border: 1px solid rgba(148, 163, 184, 0.3); background: rgba(15, 23, 42, 0.8); color: white;">
-                    <button type="button" id="mcp-import-btn" onclick="executeMcpImport()" style="width: 100%; padding: 10px 22px; border-radius: 8px; border: none; background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color: #ffffff; font-weight: 800; cursor: pointer; box-shadow: 0 4px 14px rgba(59, 130, 246, 0.4);">Run Manual Scan</button>
+                </div>
+
+                <div style="display: flex; gap: 8px;">
+                    <button type="button" onclick="cancelScanModeSelection()" style="flex: 1; padding: 10px; border-radius: 8px; background: transparent; color: #cbd5e1; border: 1px solid rgba(148,163,184,0.3); cursor: pointer; font-weight: bold;">Back</button>
+                    <button type="button" id="mcp-import-btn" onclick="startScan()" style="flex: 2; padding: 10px; border-radius: 8px; border: none; background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color: #ffffff; font-weight: 800; cursor: pointer; box-shadow: 0 4px 14px rgba(59, 130, 246, 0.4);">Start Scan</button>
                 </div>
             </div>
 
-            <div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 24px; border-top: 1px solid rgba(148, 163, 184, 0.2); padding-top: 16px;">
+            <div style="display: flex; gap: 12px; justify-content: space-between; align-items: center; margin-top: 24px; border-top: 1px solid rgba(148, 163, 184, 0.2); padding-top: 16px;">
+                <button type="button" onclick="closeMcpImportModal(); switchToMcpInventoryTab();" style="padding: 8px 14px; border-radius: 8px; background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.35); cursor: pointer; font-weight: 700; font-size: 0.8rem; display: flex; align-items: center; gap: 6px;">
+                    <span>📦 Open MCP Inventory Tab</span>
+                </button>
                 <button type="button" onclick="closeMcpImportModal()" style="padding: 8px 16px; border-radius: 8px; background: rgba(239, 68, 68, 0.15); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.3); cursor: pointer; font-weight: bold;">Close Dashboard</button>
             </div>
         </div>

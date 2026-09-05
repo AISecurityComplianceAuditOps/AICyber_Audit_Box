@@ -1,11 +1,16 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session
+from datetime import datetime, timezone
 import json
 import asyncio
+import os
+import glob
+import csv
 
-from src.db.database import SessionLocal, MCPServerConfig
+from src.db.database import SessionLocal, MCPServerConfig, AssetInventoryVersion
 from src.core.crypto_utils import encrypt_credential
 from src.core.mcp_client import get_mcp_manager_for_config
 from src.api.endpoints.auth import _require_auth
@@ -25,6 +30,239 @@ async def trigger_orchestrator(payload: OrchestratorTriggerRequest, request: Req
     # Fire and forget the sweep so we don't block the HTTP response
     asyncio.create_task(run_orchestrator_sweep(company_name=payload.company_name, mode=payload.mode))
     return {"status": "success", "message": f"Orchestrator sweep triggered for {payload.company_name or 'Global'} in {payload.mode} mode."}
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+@router.get("/inventory")
+def list_inventory_files(request: Request, db: Session = Depends(get_db)):
+    """Retrieves all generated MCP Asset Inventory CSV snapshots and Delta versions."""
+    auth_user = _require_auth(request)
+    inventory_dir = os.path.normpath(os.path.join(os.getcwd(), "data", "inventory"))
+    os.makedirs(inventory_dir, exist_ok=True)
+    
+    db_versions = db.query(AssetInventoryVersion).order_by(AssetInventoryVersion.created_at.desc()).all()
+    tracked_paths = set()
+    result = []
+    
+    for v in db_versions:
+        norm_path = os.path.normpath(v.file_path) if v.file_path else ""
+        if norm_path:
+            tracked_paths.add(norm_path)
+            
+        file_exists = os.path.exists(norm_path)
+        file_size = os.path.getsize(norm_path) if file_exists else 0
+        row_count = 0
+        if file_exists:
+            try:
+                with open(norm_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    row_count = max(0, sum(1 for _ in f) - 1)
+            except Exception:
+                pass
+                
+        cat_display = v.asset_category.replace("_", " ") if v.asset_category else "Comprehensive Inventory"
+        filename = os.path.basename(norm_path) if norm_path else f"inventory_{v.id}.csv"
+        
+        result.append({
+            "id": v.id,
+            "filename": filename,
+            "company_name": v.company_name,
+            "asset_category": cat_display,
+            "file_path": norm_path,
+            "delta_path": v.delta_path,
+            "negative_alerts": v.negative_alerts or 0,
+            "file_size": file_size,
+            "row_count": row_count,
+            "created_at": v.created_at.isoformat() if v.created_at else None,
+            "is_delta": False
+        })
+        
+        if v.delta_path and os.path.exists(v.delta_path):
+            norm_delta = os.path.normpath(v.delta_path)
+            tracked_paths.add(norm_delta)
+            delta_size = os.path.getsize(norm_delta)
+            delta_rows = 0
+            try:
+                with open(norm_delta, 'r', encoding='utf-8', errors='ignore') as f:
+                    delta_rows = max(0, sum(1 for _ in f) - 1)
+            except Exception:
+                pass
+            result.append({
+                "id": f"delta_{v.id}",
+                "filename": os.path.basename(norm_delta),
+                "company_name": v.company_name,
+                "asset_category": f"{cat_display} (Delta)",
+                "file_path": norm_delta,
+                "delta_path": None,
+                "negative_alerts": v.negative_alerts or 0,
+                "file_size": delta_size,
+                "row_count": delta_rows,
+                "created_at": v.created_at.isoformat() if v.created_at else None,
+                "is_delta": True
+            })
+
+    # Also detect any CSV files placed directly in data/inventory/
+    disk_files = glob.glob(os.path.join(inventory_dir, "*.csv"))
+    for fpath in disk_files:
+        norm_path = os.path.normpath(fpath)
+        if norm_path not in tracked_paths:
+            filename = os.path.basename(norm_path)
+            file_size = os.path.getsize(norm_path)
+            row_count = 0
+            try:
+                with open(norm_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    row_count = max(0, sum(1 for _ in f) - 1)
+            except Exception:
+                pass
+            
+            clean_name = filename.replace(".csv", "")
+            is_delta = clean_name.startswith("delta_")
+            if is_delta:
+                clean_name = clean_name[6:]
+                
+            if "_Comprehensive_Inventory" in clean_name:
+                comp_raw = clean_name.split("_Comprehensive_Inventory")[0]
+                comp = comp_raw.replace("_", " ").strip()
+                cat = "Comprehensive Inventory"
+            else:
+                parts = clean_name.split("_")
+                comp = parts[0] if parts else "Global"
+                cat = parts[1] if len(parts) > 1 else "General"
+                
+            if is_delta:
+                cat = f"{cat} (Delta)"
+            
+            ctime = os.path.getctime(norm_path)
+            created_iso = datetime.fromtimestamp(ctime, timezone.utc).isoformat()
+            
+            result.append({
+                "id": f"disk_{abs(hash(norm_path)) % 100000}",
+                "filename": filename,
+                "company_name": comp,
+                "asset_category": cat,
+                "file_path": norm_path,
+                "delta_path": None,
+                "negative_alerts": 0,
+                "file_size": file_size,
+                "row_count": row_count,
+                "created_at": created_iso,
+                "is_delta": is_delta
+            })
+
+    return result
+
+@router.get("/inventory/preview")
+def preview_inventory_file(filename: Optional[str] = None, file_path: Optional[str] = None, request: Request = None):
+    """Previews up to 300 rows of an MCP inventory CSV file."""
+    if request:
+        _require_auth(request)
+    target_path = None
+    if file_path and os.path.exists(file_path):
+        target_path = file_path
+    elif filename:
+        safe_name = os.path.basename(filename)
+        candidate = os.path.normpath(os.path.join(os.getcwd(), "data", "inventory", safe_name))
+        if os.path.exists(candidate):
+            target_path = candidate
+            
+    if not target_path or not os.path.exists(target_path):
+        raise HTTPException(status_code=404, detail="Inventory CSV file not found.")
+        
+    try:
+        import pandas as pd
+        df = pd.read_csv(target_path, nrows=300).fillna("")
+        columns = list(df.columns)
+        records = df.to_dict(orient="records")
+        return {
+            "status": "success",
+            "filename": os.path.basename(target_path),
+            "columns": columns,
+            "rows": records,
+            "total_rows": len(records)
+        }
+    except Exception as e:
+        with open(target_path, 'r', encoding='utf-8', errors='ignore') as f:
+            reader = csv.DictReader(f)
+            records = [row for i, row in enumerate(reader) if i < 300]
+            columns = list(reader.fieldnames or [])
+            return {
+                "status": "success",
+                "filename": os.path.basename(target_path),
+                "columns": columns,
+                "rows": records,
+                "total_rows": len(records)
+            }
+
+@router.get("/inventory/download")
+def download_inventory_file(filename: Optional[str] = None, file_path: Optional[str] = None, request: Request = None):
+    """Downloads an inventory CSV file."""
+    if request:
+        _require_auth(request)
+    target_path = None
+    if file_path and os.path.exists(file_path):
+        target_path = file_path
+    elif filename:
+        safe_name = os.path.basename(filename)
+        candidate = os.path.normpath(os.path.join(os.getcwd(), "data", "inventory", safe_name))
+        if os.path.exists(candidate):
+            target_path = candidate
+            
+    if not target_path or not os.path.exists(target_path):
+        raise HTTPException(status_code=404, detail="Inventory CSV file not found.")
+        
+    return FileResponse(
+        target_path,
+        media_type="text/csv",
+        filename=os.path.basename(target_path)
+    )
+
+@router.delete("/inventory/{item_id}")
+def delete_inventory_file(item_id: str, request: Request, filename: Optional[str] = None, file_path: Optional[str] = None, db: Session = Depends(get_db)):
+    """Deletes an inventory record and its CSV file from database and disk."""
+    _require_auth(request)
+    
+    # 1. If item_id is numeric, delete by database record ID
+    if item_id.isdigit():
+        record = db.query(AssetInventoryVersion).filter(AssetInventoryVersion.id == int(item_id)).first()
+        if record:
+            if record.file_path and os.path.exists(record.file_path):
+                try: os.remove(record.file_path)
+                except: pass
+            if record.delta_path and os.path.exists(record.delta_path):
+                try: os.remove(record.delta_path)
+                except: pass
+            db.delete(record)
+            db.commit()
+            return {"status": "success", "message": "Inventory version deleted"}
+
+    # 2. If filename or file_path is passed (or item_id contains a filename), delete file on disk & matching DB rows
+    candidates = []
+    if file_path:
+        candidates.append(os.path.normpath(file_path))
+    if filename:
+        candidates.append(os.path.normpath(os.path.join(os.getcwd(), "data", "inventory", os.path.basename(filename))))
+    if item_id and ".csv" in item_id:
+        candidates.append(os.path.normpath(os.path.join(os.getcwd(), "data", "inventory", os.path.basename(item_id))))
+        
+    for c in candidates:
+        if os.path.exists(c):
+            try: os.remove(c)
+            except Exception as err: print(f"Error removing {c}: {err}")
+            
+        # Also remove matching DB records if any
+        records = db.query(AssetInventoryVersion).filter(
+            (AssetInventoryVersion.file_path == c) | (AssetInventoryVersion.delta_path == c)
+        ).all()
+        for r in records:
+            db.delete(r)
+        if records:
+            db.commit()
+
+    return {"status": "success", "message": "File removed"}
 
 def get_db():
     db = SessionLocal()
@@ -173,22 +411,45 @@ async def import_file(server_id: int, req: ImportRequest, request: Request, db: 
                     env_dict = json.loads(config.env)
                 except:
                     pass
-            owner = env_dict.get("GITHUB_OWNER", "octocat")
-            repo = env_dict.get("GITHUB_REPO", "Hello-World")
             
-            # Sanitize File Path
-            f_path = req.file_path.strip()
+            raw_owner = str(env_dict.get("GITHUB_OWNER", "")).strip()
+            raw_repo = str(env_dict.get("GITHUB_REPO", "")).strip()
+            
+            # Combine and sanitize if URL was given in env
+            full_target = f"{raw_owner}/{raw_repo}".strip("/")
+            full_target = full_target.replace("https://", "").replace("http://", "").replace("github.com/", "").replace("www.github.com/", "").strip("/")
+            parts = [p for p in full_target.split("/") if p]
+            
+            if len(parts) >= 2:
+                owner = parts[0]
+                repo = parts[1]
+            elif len(parts) == 1:
+                owner = parts[0]
+                repo = "Hello-World"
+            else:
+                owner = "octocat"
+                repo = "Hello-World"
+            
+            # Sanitize File Path and extract owner/repo if full URL provided in input
+            f_path = req.file_path.strip() if req.file_path else ""
             f_path = urllib.parse.unquote(f_path)
-            if "blob/main/" in f_path:
-                f_path = f_path.split("blob/main/")[-1]
-            elif "blob/master/" in f_path:
-                f_path = f_path.split("blob/master/")[-1]
-            elif "tree/main/" in f_path:
-                f_path = f_path.split("tree/main/")[-1]
-            elif "tree/master/" in f_path:
-                f_path = f_path.split("tree/master/")[-1]
-            # The lists of PQC keywords, extensions, and the is_pqc_file function 
-            # have been moved to src.core.pqc_filter to prevent circular dependencies.
+            
+            if "github.com/" in f_path:
+                url_tail = f_path.split("github.com/")[-1].strip("/")
+                url_parts = [p for p in url_tail.split("/") if p]
+                if len(url_parts) >= 2:
+                    owner = url_parts[0]
+                    repo = url_parts[1]
+                    if len(url_parts) > 4 and url_parts[2] in ["blob", "tree"]:
+                        f_path = "/".join(url_parts[4:])
+                    elif len(url_parts) > 2:
+                        f_path = "/".join(url_parts[2:])
+                    else:
+                        f_path = ""
+            
+            for branch_tag in ["blob/main/", "blob/master/", "tree/main/", "tree/master/"]:
+                if branch_tag in f_path:
+                    f_path = f_path.split(branch_tag)[-1]
             
             MAX_FILES = 50
             items_to_fetch = [f_path]
@@ -199,7 +460,11 @@ async def import_file(server_id: int, req: ImportRequest, request: Request, db: 
                 
                 result = await mcp.call_tool("get_file_contents", args)
                 if hasattr(result, 'isError') and result.isError:
-                    err_msg = str(result.content) if hasattr(result, 'content') else "Unknown tool error"
+                    err_msg = ""
+                    if hasattr(result, 'content') and result.content:
+                        err_msg = "\n".join([c.text for c in result.content if hasattr(c, 'text')]) or str(result.content)
+                    else:
+                        err_msg = "Unknown GitHub MCP error"
                     raise HTTPException(status_code=400, detail=f"GitHub API Error: {err_msg}")
                     
                 if hasattr(result, 'content') and len(result.content) > 0 and hasattr(result.content[0], 'text'):
@@ -222,7 +487,11 @@ async def import_file(server_id: int, req: ImportRequest, request: Request, db: 
                             else:
                                 fetched_files.append(data)
                     except json.JSONDecodeError:
-                        raise HTTPException(status_code=500, detail="Failed to parse GitHub MCP response.")
+                        fallback_name = current_path.split("/")[-1] if current_path else "github_file.txt"
+                        fetched_files.append({
+                            "name": fallback_name,
+                            "content": result.content[0].text
+                        })
         elif config.server_type.lower() == 'jira':
             issue_key = req.file_path.strip()
             if not issue_key:
@@ -359,26 +628,35 @@ async def import_file(server_id: int, req: ImportRequest, request: Request, db: 
                 "content": md
             })
         elif config.server_type.lower() == 'azure':
-            md = "# Azure Cloud MCP Report\n\n"
+            md = "# Azure Cloud Infrastructure & Security Report\n\n"
             md += f"**Mode:** {req.import_mode.upper()}\n\n"
             
             queries = []
             if req.import_mode == "general":
-                queries.append(("Resource Health Events", "resourcehealth", {"command": "list-events"}))
-                queries.append(("Role Assignments", "role", {"command": "list-assignments"}))
+                md += "> **General Mode Scope**: Auditing cloud infrastructure boundaries, VM security, Network Security Groups, Public IPs, Storage access, Database security, and RBAC policies.\n\n"
+                queries.append(("Resource Groups (Cloud Boundary & Environments)", "group", {"command": "list"}))
+                queries.append(("Virtual Machines (Compute & OS Security)", "vm", {"command": "list"}))
+                queries.append(("Network Security Groups (Firewall & Exposure Rules)", "network", {"command": "nsg list"}))
+                queries.append(("Virtual Networks & Subnets (Segmentation)", "network", {"command": "vnet list"}))
+                queries.append(("Public IP Addresses (External Attack Surface)", "network", {"command": "public-ip list"}))
+                queries.append(("Storage Accounts (HTTPS & Public Access Policies)", "storage", {"command": "accounts list"}))
+                queries.append(("Azure SQL Database Servers (Network, TLS & Auth)", "sql", {"command": "servers list"}))
+                queries.append(("IAM Role Assignments (RBAC & Privileged Access)", "role", {"command": "list-assignments"}))
+                queries.append(("Key Vaults Inventory (Cryptographic Assets)", "keyvault", {"command": "vaults list"}))
+                queries.append(("Resource Health Events & Incident Logs", "resourcehealth", {"command": "list-events"}))
             elif req.import_mode == "pqc":
-                md += "> **PQC Focus**: Extracting Cryptographic Data (Key Vaults) and Infrastructure Security Configurations (Storage, SQL, RBAC) to satisfy HSM and Network Matrix requirements.\n\n"
+                md += "> **PQC Focus**: Extracting Cryptographic Keys, Certificates, HSM Inventory, TLS Protocol Configurations, and Data Encryption settings to satisfy Post-Quantum Cryptographic and Quantum-Resilience requirements.\n\n"
+                queries.append(("Key Vaults & Dedicated HSMs Inventory", "keyvault", {"command": "vaults list"}))
                 if req.file_path:
-                    queries.append((f"Cryptographic Keys in {req.file_path}", "keyvault", {"command": "keyvault_key_get", "parameters": {"vault": req.file_path.strip()}}))
-                    queries.append((f"Certificates in {req.file_path}", "keyvault", {"command": "keyvault_certificate_get", "parameters": {"vault": req.file_path.strip()}}))
+                    queries.append((f"Cryptographic Keys in Vault '{req.file_path.strip()}'", "keyvault", {"command": "keyvault_key_get", "parameters": {"vault": req.file_path.strip()}}))
+                    queries.append((f"Certificates in Vault '{req.file_path.strip()}'", "keyvault", {"command": "keyvault_certificate_get", "parameters": {"vault": req.file_path.strip()}}))
                 else:
-                    md += "*(No Vault Name provided. Skipping Key Vault keys extraction).* \n\n"
+                    md += "*(Optional: Provide a specific Key Vault name in the file path box to pull granular RSA/ECC keys and certificates).* \n\n"
                 
-                # Append broader cloud security scans
-                queries.append(("Azure SQL Servers (Network & Entra ID Settings)", "sql", {"command": "servers list"}))
-                queries.append(("Storage Accounts (HTTPS & TLS Settings)", "storage", {"command": "accounts list"}))
-                md += "> Note: The 'role_assignment_list' tool requires a scope (e.g. /subscriptions/<id>). You can provide it in the file path box or run this via General mode.\n\n"
-                queries.append(("Role Assignments (RBAC)", "role", {"command": "role_assignment_list"}))
+                queries.append(("Storage Accounts (HTTPS Enforcement & Minimum TLS 1.2/1.3)", "storage", {"command": "accounts list"}))
+                queries.append(("Azure SQL Database Servers (Minimal TLS & TDE BYOK Status)", "sql", {"command": "servers list"}))
+                queries.append(("Application Gateway & Load Balancer SSL Policies", "network", {"command": "appgateway list"}))
+                queries.append(("Role Assignments (Cryptographic Administrators)", "role", {"command": "list-assignments"}))
                 
             for title, tool_name, args in queries:
                 md += f"## {title}\n"
@@ -387,14 +665,33 @@ async def import_file(server_id: int, req: ImportRequest, request: Request, db: 
                     result = await mcp.call_tool(tool_name, args)
                     if hasattr(result, 'isError') and result.isError:
                         err = str(result.content) if hasattr(result, 'content') else "Error"
-                        md += f"**MCP Error:** {err}\n\n"
+                        md += f"**MCP Note:** {err}\n\n"
                         continue
                         
                     if hasattr(result, 'content') and len(result.content) > 0 and hasattr(result.content[0], 'text'):
                         try:
                             data = json.loads(result.content[0].text)
-                            if isinstance(data, list) and len(data) == 0:
-                                md += "*No results returned.*\n\n"
+                            table_rows = []
+                            if isinstance(data, list):
+                                table_rows = data
+                            elif isinstance(data, dict):
+                                if "value" in data and isinstance(data["value"], list):
+                                    table_rows = data["value"]
+                                elif "resources" in data and isinstance(data["resources"], list):
+                                    table_rows = data["resources"]
+                                elif "items" in data and isinstance(data["items"], list):
+                                    table_rows = data["items"]
+                            
+                            if table_rows and len(table_rows) > 0 and isinstance(table_rows[0], dict):
+                                headers = [h for h in list(table_rows[0].keys())[:8] if not h.startswith("_")]
+                                md += "| " + " | ".join(headers) + " |\n"
+                                md += "| " + " | ".join(["---"] * len(headers)) + " |\n"
+                                for row in table_rows[:50]:
+                                    row_vals = [str(row.get(h, "")).replace('\n', ' ')[:100] for h in headers]
+                                    md += "| " + " | ".join(row_vals) + " |\n"
+                                md += "\n"
+                            elif isinstance(data, list) and len(data) == 0:
+                                md += "*No resources returned for this query.*\n\n"
                             else:
                                 md += f"```json\n{json.dumps(data, indent=2)}\n```\n\n"
                         except json.JSONDecodeError:
@@ -402,7 +699,7 @@ async def import_file(server_id: int, req: ImportRequest, request: Request, db: 
                     else:
                         md += "*No content returned.*\n\n"
                 except Exception as e:
-                    md += f"**MCP Exception:** Failed to execute {tool_name}. Check permissions. Details: {str(e)}\n\n"
+                    md += f"**MCP Exception:** Failed to execute {tool_name}. Details: {str(e)}\n\n"
                     
             fetched_files.append({
                 "name": f"AzureCloud_{req.import_mode.upper()}_Report.md",
@@ -438,31 +735,17 @@ async def import_file(server_id: int, req: ImportRequest, request: Request, db: 
                         dl_res = requests.get(file_data["download_url"], headers=headers, timeout=10)
                         if dl_res.status_code == 200:
                             file_bytes = dl_res.content
-                        else:
-                            continue
-                    except requests.exceptions.RequestException as e:
-                        print(f"raw.githubusercontent.com timed out for {filename}, falling back to MCP get_file_contents...")
-                        try:
-                            fb_args = {"owner": owner, "repo": repo, "path": file_data.get("path", "")}
-                            fb_res = await mcp.call_tool("get_file_contents", fb_args)
-                            if hasattr(fb_res, 'content') and len(fb_res.content) > 0 and hasattr(fb_res.content[0], 'text'):
-                                fb_data = json.loads(fb_res.content[0].text)
-                                if isinstance(fb_data, dict) and "content" in fb_data and fb_data.get("encoding") == "base64":
-                                    b64_str = fb_data["content"].replace("\\n", "")
-                                    b64_str += "=" * ((4 - len(b64_str) % 4) % 4)
-                                    file_bytes = base64.b64decode(b64_str)
-                                else:
-                                    continue
-                            else:
-                                continue
-                        except Exception as fb_e:
-                            print(f"Fallback failed for {filename}: {fb_e}")
-                            continue
-                elif file_data.get("encoding") == "base64" and "content" in file_data:
-                    b64_str = file_data["content"].replace("\\n", "")
-                    b64_str += "=" * ((4 - len(b64_str) % 4) % 4)
-                    file_bytes = base64.b64decode(b64_str)
-                else:
+                    except Exception as e:
+                        print(f"Direct download failed for {filename}: {e}")
+                
+                if not file_bytes and file_data.get("encoding") == "base64" and "content" in file_data:
+                    try:
+                        b64_str = file_data["content"].replace("\n", "").replace("\\n", "")
+                        b64_str += "=" * ((4 - len(b64_str) % 4) % 4)
+                        file_bytes = base64.b64decode(b64_str)
+                    except Exception as b64_err:
+                        print(f"Base64 decode error for {filename}: {b64_err}")
+                elif not file_bytes and "content" in file_data:
                     file_bytes = str(file_data.get("content", "")).encode("utf-8")
                     
                 if not file_bytes:
@@ -489,6 +772,6 @@ async def import_file(server_id: int, req: ImportRequest, request: Request, db: 
                 
                 threading.Thread(target=_bg_extract_and_chunk, args=(filename, file_bytes, report.id)).start()
                 
-            return {"status": "success", "count": len(saved_files), "files": saved_files}
+            return {"status": "success", "count": len(saved_files), "files_processed": len(saved_files), "files": saved_files}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database Error: {str(e)}")

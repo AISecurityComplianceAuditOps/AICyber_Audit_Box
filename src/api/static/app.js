@@ -442,6 +442,7 @@ function setupTabs(role) {
         // Admin Role - includes System & Auditor Warning Logs
         tabs = [
             { id: "tab-scan-workspace", label: "Scan Workspace" },
+            { id: "tab-mcp-inventory", label: "MCP Inventory" },
             { id: "tab-audit-records", label: "Audit Records & Findings" },
             { id: "tab-audit-report", label: "Report Exporter" },
             { id: "tab-auditee-docs", label: "Audit Reports" },
@@ -452,6 +453,7 @@ function setupTabs(role) {
         // Auditor Role
         tabs = [
             { id: "tab-scan-workspace", label: "Scan Workspace" },
+            { id: "tab-mcp-inventory", label: "MCP Inventory" },
             { id: "tab-audit-records", label: "Audit Records & Findings" },
             { id: "tab-audit-report", label: "Report Exporter" },
             { id: "tab-auditee-docs", label: "Audit Reports" },
@@ -488,6 +490,7 @@ function switchTab(tabId, tabBtn) {
     const wsTitle = document.getElementById("workspace-title");
     if (wsTitle) {
         if (tabId === "tab-scan-workspace") wsTitle.innerText = "Audit Scan Workspace";
+        else if (tabId === "tab-mcp-inventory") wsTitle.innerText = "MCP Asset Inventory & Delta Tracking";
         else if (tabId === "tab-audit-records") wsTitle.innerText = "Audit Records & Compliance Gaps Workspace";
         else if (tabId === "tab-auditee-docs") wsTitle.innerText = "Auditee Evidence Documents";
         else if (tabId === "tab-audit-report") wsTitle.innerText = "Audit Report & Delivery Center";
@@ -501,6 +504,8 @@ function switchTab(tabId, tabBtn) {
     // Perform tab-specific loading
     if (tabId === "tab-scan-workspace") {
         loadEvidenceFileList();
+    } else if (tabId === "tab-mcp-inventory") {
+        loadMcpInventory();
     } else if (tabId === "tab-upload-evidence") {
         loadRegisteredAuditors();
     } else if (tabId === "tab-audit-records") {
@@ -7929,6 +7934,9 @@ let groupedCompanies = {};
 
 function openMcpImportModal() {
     document.getElementById('mcp-import-modal').style.display = 'flex';
+    document.getElementById('mcp-company-dashboard-view').style.display = 'block';
+    document.getElementById('mcp-scan-mode-view').style.display = 'none';
+    document.getElementById('mcp-register-company-view').style.display = 'none';
     loadMcpServers();
 }
 
@@ -7936,54 +7944,39 @@ function closeMcpImportModal() {
     document.getElementById('mcp-import-modal').style.display = 'none';
     document.getElementById('mcp-register-company-view').style.display = 'none';
     document.getElementById('mcp-company-dashboard-view').style.display = 'none';
-    document.getElementById('mcp-import-workspace').style.display = 'none';
+    document.getElementById('mcp-scan-mode-view').style.display = 'none';
 }
 
 async function loadMcpServers() {
     try {
         const res = await authFetch(`${API_BASE}/mcp/servers`);
-        currentMcpServers = await res.json();
+        const allServers = await res.json();
         
-        groupedCompanies = {};
-        currentMcpServers.forEach(s => {
-            const comp = s.company_name || "Global";
-            if (!groupedCompanies[comp]) groupedCompanies[comp] = [];
-            groupedCompanies[comp].push(s);
-        });
+        const currentSessionId = activeSessionTitle || activeSessionId || "Global";
+        currentMcpServers = allServers.filter(s => s.company_name === currentSessionId || s.company_name === "Global" || !s.company_name);
         
-        const select = document.getElementById('mcp-company-select');
-        select.innerHTML = '<option value="">-- Select a Company Session --</option>';
-        Object.keys(groupedCompanies).forEach(c => {
-            const opt = document.createElement('option');
-            opt.value = c;
-            opt.textContent = c;
-            select.appendChild(opt);
-        });
+        refreshMcpDashboard();
     } catch (e) {
         console.error('Error loading MCP servers:', e);
         showToast('Failed to load MCP servers', 'error');
     }
 }
 
-function onCompanySelect() {
-    const compName = document.getElementById('mcp-company-select').value;
+function refreshMcpDashboard() {
     document.getElementById('mcp-register-company-view').style.display = 'none';
-    document.getElementById('mcp-import-workspace').style.display = 'none';
-    
-    if (!compName) {
-        document.getElementById('mcp-company-dashboard-view').style.display = 'none';
-        return;
-    }
-    
     document.getElementById('mcp-company-dashboard-view').style.display = 'block';
     
     const assetsList = document.getElementById('mcp-dashboard-assets-list');
     assetsList.innerHTML = '';
     
-    const assets = groupedCompanies[compName] || [];
-    assets.forEach(s => {
+    if (currentMcpServers.length === 0) {
+        assetsList.innerHTML = '<div style="padding: 12px; color: #94a3b8; font-size: 0.85rem; text-align: center;">No assets found for this session. Click "+ Add Asset" to configure one.</div>';
+        return;
+    }
+    
+    currentMcpServers.forEach(s => {
         const div = document.createElement('div');
-        div.style.padding = '8px';
+        div.style.padding = '10px 8px';
         div.style.borderBottom = '1px solid rgba(148, 163, 184, 0.2)';
         div.style.display = 'flex';
         div.style.justifyContent = 'space-between';
@@ -7992,27 +7985,21 @@ function onCompanySelect() {
         const cat = s.asset_category || 'Uncategorized';
         div.innerHTML = `
             <div>
-                <strong style="color: #60a5fa;">${s.name}</strong> <span style="font-size: 0.75rem; color: #94a3b8;">(${s.server_type}) - [${cat}]</span>
+                <strong style="color: #60a5fa; font-size: 0.95rem;">${s.name}</strong> <span style="font-size: 0.8rem; color: #94a3b8;">(${s.server_type}) - [${cat}]</span>
             </div>
             <div style="display: flex; gap: 8px;">
-                <button onclick="prepareManualScan(${s.id})" style="padding: 4px 8px; border-radius: 4px; background: rgba(59, 130, 246, 0.2); border: 1px solid #3b82f6; color: #60a5fa; cursor: pointer; font-size: 0.7rem;">Manual Scan</button>
-                <button onclick="deleteAsset(${s.id})" style="padding: 4px 8px; border-radius: 4px; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); color: #ef4444; cursor: pointer; font-size: 0.7rem;">Delete</button>
+                <button onclick="showScanModeSelection('manual', ${s.id})" style="padding: 6px 12px; border-radius: 6px; background: rgba(59, 130, 246, 0.2); border: 1px solid #3b82f6; color: #60a5fa; cursor: pointer; font-size: 0.75rem; font-weight: bold;">Manual Scan</button>
+                <button onclick="deleteAsset(${s.id})" style="padding: 6px 12px; border-radius: 6px; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); color: #ef4444; cursor: pointer; font-size: 0.75rem; font-weight: bold;">Delete</button>
             </div>
         `;
         assetsList.appendChild(div);
     });
 }
 
-function showRegisterCompanyForm(isAddingToExisting = false) {
+function showRegisterCompanyForm() {
     document.getElementById('mcp-company-dashboard-view').style.display = 'none';
+    document.getElementById('mcp-scan-mode-view').style.display = 'none';
     document.getElementById('mcp-register-company-view').style.display = 'block';
-    
-    if (isAddingToExisting) {
-        const compName = document.getElementById('mcp-company-select').value;
-        document.getElementById('mcp-new-company-name').value = compName;
-    } else {
-        document.getElementById('mcp-new-company-name').value = '';
-    }
     
     document.getElementById('mcp-new-name').value = '';
     document.getElementById('mcp-new-category').value = '';
@@ -8021,7 +8008,7 @@ function showRegisterCompanyForm(isAddingToExisting = false) {
 
 function cancelCompanyRegistration() {
     document.getElementById('mcp-register-company-view').style.display = 'none';
-    onCompanySelect(); // restores dashboard if a company is selected
+    document.getElementById('mcp-company-dashboard-view').style.display = 'block';
 }
 
 function onMcpNewTypeChange() {
@@ -8034,13 +8021,12 @@ function onMcpNewTypeChange() {
 }
 
 async function saveNewAssetToCompany() {
-    const company = document.getElementById('mcp-new-company-name').value.trim();
+    const company = activeSessionTitle || activeSessionId || 'Global';
     const name = document.getElementById('mcp-new-name').value.trim();
     const category = document.getElementById('mcp-new-category').value.trim();
     const type = document.getElementById('mcp-new-type').value;
     let cred = document.getElementById('mcp-new-cred').value.trim();
     
-    if (!company) return showToast('Please enter a Company Name', 'error');
     if (!name) return showToast('Please enter an Asset Name', 'error');
     
     let command = '';
@@ -8050,9 +8036,16 @@ async function saveNewAssetToCompany() {
     if (type === 'github') {
         command = 'npx';
         args = JSON.stringify(['-y', '@modelcontextprotocol/server-github']);
-        const repoPath = document.getElementById('mcp-new-github-repo').value.trim();
-        if (!repoPath || !repoPath.includes('/')) return showToast('Please enter a valid GitHub repo (owner/repo)', 'error');
-        const [owner, repo] = repoPath.split('/');
+        let repoInput = document.getElementById('mcp-new-github-repo').value.trim();
+        // Strip URLs, protocols, domains, .git suffix
+        let cleanRepo = repoInput.replace(/^https?:\/\/(www\.)?github\.com\//i, '')
+                                 .replace(/^git@github\.com:/i, '')
+                                 .replace(/\.git$/i, '')
+                                 .replace(/^\/+|\/+$/g, '');
+        const parts = cleanRepo.split('/').filter(p => Boolean(p.trim()));
+        if (parts.length < 2) return showToast('Please enter a valid GitHub repo (e.g. owner/repo or https://github.com/owner/repo)', 'error');
+        const owner = parts[0].trim();
+        const repo = parts[1].trim();
         envObj = { GITHUB_OWNER: owner, GITHUB_REPO: repo };
 
     } else if (type === 'jira') {
@@ -8109,9 +8102,9 @@ async function saveNewAssetToCompany() {
         document.getElementById('mcp-new-name').value = '';
         await loadMcpServers();
         
-        // Auto select the new company
-        document.getElementById('mcp-company-select').value = company;
-        onCompanySelect();
+        // Reload dashboard
+        document.getElementById('mcp-register-company-view').style.display = 'none';
+        document.getElementById('mcp-company-dashboard-view').style.display = 'block';
     } catch (e) {
         showToast(e.message, 'error');
     }
@@ -8124,19 +8117,54 @@ async function deleteAsset(serverId) {
         if (!res.ok) throw new Error('Failed to delete asset');
         showToast('Asset deleted', 'success');
         await loadMcpServers();
-        onCompanySelect();
     } catch (e) {
         showToast(e.message, 'error');
     }
 }
 
+let currentScanType = 'full';
+let activeManualScanServerId = null;
+
+function showScanModeSelection(scanType, serverId = null) {
+    currentScanType = scanType;
+    activeManualScanServerId = serverId;
+    
+    document.getElementById('mcp-company-dashboard-view').style.display = 'none';
+    document.getElementById('mcp-scan-mode-view').style.display = 'block';
+    
+    const importWorkspace = document.getElementById('mcp-import-workspace');
+    if (scanType === 'manual' && serverId) {
+        importWorkspace.style.display = 'block';
+        onMcpModeChange(); // Updates placeholders
+    } else {
+        importWorkspace.style.display = 'none';
+    }
+}
+
+function cancelScanModeSelection() {
+    document.getElementById('mcp-scan-mode-view').style.display = 'none';
+    document.getElementById('mcp-company-dashboard-view').style.display = 'block';
+}
+
+function startScan() {
+    if (currentScanType === 'full') {
+        triggerCompanySweep();
+    } else {
+        executeMcpImport();
+    }
+}
+
 async function triggerCompanySweep() {
-    const compName = document.getElementById('mcp-company-select').value;
+    const compName = activeSessionTitle || activeSessionId || 'Global';
     const mode = document.querySelector('input[name="mcp-import-mode"]:checked')?.value || 'general';
     
-    if (!compName) return showToast('No company selected', 'error');
+    showToast(`Triggering asset sweep for ${compName} in ${mode.toUpperCase()} mode...`, 'info');
+    cancelScanModeSelection();
+    closeMcpImportModal();
     
-    showToast(`Triggering Sweep for ${compName} in ${mode.toUpperCase()} mode...`, 'info');
+    // Switch to MCP Inventory Tab so user sees the live updates
+    switchToMcpInventoryTab();
+    
     try {
         const res = await authFetch(`${API_BASE}/mcp/orchestrator/trigger`, {
             method: 'POST',
@@ -8144,18 +8172,20 @@ async function triggerCompanySweep() {
             body: JSON.stringify({ company_name: compName, mode: mode })
         });
         if (!res.ok) throw new Error('Failed to trigger orchestrator');
-        showToast(`Sweep triggered for ${compName}! Check logs and inventory CSVs.`, 'success');
+        showToast(`Asset sweep is running in the background. Live inventory datasets are updating...`, 'success');
+        
+        // Refresh inventory datasets and evidence list
+        setTimeout(() => {
+            loadMcpInventory();
+            loadEvidenceFileList();
+        }, 2000);
+        setTimeout(() => {
+            loadMcpInventory();
+            loadEvidenceFileList();
+        }, 5000);
     } catch (e) {
         showToast(e.message, 'error');
     }
-}
-
-let activeManualScanServerId = null;
-
-function prepareManualScan(serverId) {
-    activeManualScanServerId = serverId;
-    document.getElementById('mcp-import-workspace').style.display = 'block';
-    onMcpModeChange();
 }
 
 function onMcpModeChange() {
@@ -8173,7 +8203,7 @@ function onMcpModeChange() {
     if (isPostgres) {
         document.getElementById('mcp-file-path').placeholder = mode === 'pqc' ? 'Optional: Custom PQC Query' : 'Optional: Custom SQL Query';
     } else if (isAzure) {
-        document.getElementById('mcp-file-path').placeholder = 'Optional: Key Vault Name';
+        document.getElementById('mcp-file-path').placeholder = mode === 'pqc' ? 'Optional: Key Vault Name (e.g. kv-prod-crypto)' : 'Optional: Scope or Resource Group';
     } else if (isGithub) {
         document.getElementById('mcp-file-path').placeholder = mode === 'pqc' ? 'Optional: Subfolder to scan' : 'File or Folder Path (e.g. README.md)';
     } else {
@@ -8231,8 +8261,8 @@ async function executeMcpImport() {
         showToast(`Extraction Complete: Found ${data.files_processed || 0} findings/files`, 'success');
         
         loadEvidenceFileList();
-        
         document.getElementById('mcp-file-path').value = '';
+        cancelScanModeSelection();
     } catch (e) {
         showToast(e.message, 'error');
     } finally {
@@ -8240,3 +8270,316 @@ async function executeMcpImport() {
         btn.innerText = originalText;
     }
 }
+
+// ── MCP ASSET INVENTORY MODULE ──
+
+let currentMcpInventoryList = [];
+let currentCsvPreviewRows = [];
+let currentCsvPreviewCols = [];
+
+function switchToMcpInventoryTab() {
+    const tabBtn = Array.from(document.querySelectorAll("#tabs-bar button")).find(b => b.innerText.includes("Inventory") || b.innerText.includes("MCP Inventory"));
+    if (tabBtn) {
+        tabBtn.click();
+    } else {
+        switchTab("tab-mcp-inventory", null);
+    }
+}
+
+async function loadMcpInventory() {
+    const tbody = document.getElementById("mcp-inventory-table-body");
+    if (!tbody) return;
+    tbody.innerHTML = `<tr><td colspan="7" style="padding: 30px; text-align: center; color: var(--text-muted);"><span class="loading-spinner"></span> Loading MCP inventory snapshots...</td></tr>`;
+    
+    try {
+        const res = await authFetch(`${API_BASE}/mcp/inventory`);
+        if (!res.ok) throw new Error("Failed to load inventory");
+        const data = await res.json();
+        currentMcpInventoryList = data || [];
+        
+        renderMcpInventoryTable(currentMcpInventoryList);
+        updateMcpInventoryStats(currentMcpInventoryList);
+    } catch (e) {
+        console.error("Error loading MCP inventory:", e);
+        tbody.innerHTML = `<tr><td colspan="7" style="padding: 30px; text-align: center; color: #ef4444;">Failed to load inventory: ${e.message}</td></tr>`;
+    }
+}
+
+function updateMcpInventoryStats(list) {
+    const totalEl = document.getElementById("mcp-inv-stat-total");
+    const catsEl = document.getElementById("mcp-inv-stat-categories");
+    const deltasEl = document.getElementById("mcp-inv-stat-deltas");
+    const latestEl = document.getElementById("mcp-inv-stat-latest");
+    
+    if (totalEl) totalEl.innerText = list.length;
+    
+    const cats = new Set(list.map(item => item.asset_category).filter(Boolean));
+    if (catsEl) catsEl.innerText = cats.size;
+    
+    const deltaCount = list.filter(item => item.is_delta || item.negative_alerts > 0).length;
+    if (deltasEl) deltasEl.innerText = deltaCount;
+    
+    if (latestEl) {
+        if (list.length > 0 && list[0].created_at) {
+            try {
+                const d = new Date(list[0].created_at);
+                latestEl.innerText = d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+            } catch {
+                latestEl.innerText = list[0].created_at.split('T')[0];
+            }
+        } else {
+            latestEl.innerText = "None";
+        }
+    }
+}
+
+function renderMcpInventoryTable(list) {
+    const tbody = document.getElementById("mcp-inventory-table-body");
+    if (!tbody) return;
+    
+    if (!list || list.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="7" style="padding: 40px; text-align: center; color: var(--text-muted);">
+            <div style="font-size: 2rem; margin-bottom: 8px;">📂</div>
+            <div style="font-weight: 700; font-size: 0.95rem; color: var(--text-color);">No Inventory Snapshots Found</div>
+            <div style="font-size: 0.8rem; margin-top: 4px;">Click <b>⚡ Run Asset Sweep</b> above or trigger an MCP scan to generate inventory datasets.</div>
+        </td></tr>`;
+        return;
+    }
+    
+    tbody.innerHTML = list.map(item => {
+        const sizeStr = item.file_size > 1024 * 1024 ? (item.file_size / (1024 * 1024)).toFixed(1) + ' MB' : (item.file_size / 1024).toFixed(1) + ' KB';
+        const formattedDate = item.created_at ? new Date(item.created_at).toLocaleString() : 'Recent';
+        
+        let deltaBadge = `<span style="font-size: 0.72rem; padding: 2px 8px; border-radius: 6px; background: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3); font-weight: 700;">✓ Baseline Snapshot</span>`;
+        if (item.is_delta) {
+            deltaBadge = `<span style="font-size: 0.72rem; padding: 2px 8px; border-radius: 6px; background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.4); font-weight: 700;">⚡ Delta Diff</span>`;
+        } else if (item.negative_alerts > 0) {
+            deltaBadge = `<span style="font-size: 0.72rem; padding: 2px 8px; border-radius: 6px; background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); font-weight: 700;">⚠️ ${item.negative_alerts} Negative Alert(s)</span>`;
+        }
+        
+        const safePath = (item.file_path || '').replace(/\\/g, '/');
+        const safeName = item.filename || 'inventory.csv';
+        
+        return `
+            <tr style="border-bottom: 1px solid var(--border-color); transition: background 0.15s ease;" onmouseover="this.style.background='rgba(255,255,255,0.02)'" onmouseout="this.style.background='transparent'">
+                <td style="padding: 12px 16px; font-weight: 700; color: #60a5fa; font-family: monospace; font-size: 0.82rem;">
+                    <span style="display: flex; align-items: center; gap: 6px;">
+                        <span>📊</span> <span>${escapeHtml(safeName)}</span>
+                    </span>
+                </td>
+                <td style="padding: 12px 16px; color: var(--text-color); font-weight: 600;">${escapeHtml(item.company_name || 'Global')}</td>
+                <td style="padding: 12px 16px; color: var(--text-muted);"><span style="background: rgba(255,255,255,0.06); padding: 3px 8px; border-radius: 6px; font-size: 0.75rem;">${escapeHtml(item.asset_category || 'General')}</span></td>
+                <td style="padding: 12px 16px; color: var(--text-muted); font-size: 0.78rem;">
+                    <b>${item.row_count}</b> rows <span style="opacity: 0.6;">(${sizeStr})</span>
+                </td>
+                <td style="padding: 12px 16px;">${deltaBadge}</td>
+                <td style="padding: 12px 16px; color: var(--text-muted); font-size: 0.76rem;">${formattedDate}</td>
+                <td style="padding: 12px 16px; text-align: right;">
+                    <div style="display: inline-flex; gap: 6px; align-items: center;">
+                        <button type="button" class="btn-secondary" onclick="previewMcpInventoryFile('${escapeHtml(safeName)}', '${escapeHtml(safePath)}')" style="padding: 4px 10px; font-size: 0.76rem; border-radius: 6px; font-weight: 700;" title="Preview Dataset">
+                            👁️ Preview
+                        </button>
+                        <button type="button" class="btn-primary" onclick="downloadMcpInventoryFile('${escapeHtml(safeName)}', '${escapeHtml(safePath)}')" style="padding: 4px 10px; font-size: 0.76rem; border-radius: 6px; font-weight: 700; background: #2563eb; color: white;" title="Download CSV">
+                            📥 Download
+                        </button>
+                        <button type="button" class="btn-secondary" onclick="deleteMcpInventoryFile('${item.id}', '${escapeHtml(safeName)}')" style="padding: 4px 8px; font-size: 0.76rem; border-radius: 6px; color: #ef4444; border-color: rgba(239,68,68,0.3);" title="Delete Record">
+                            🗑️
+                        </button>
+                    </div>
+                </td>
+            </tr>
+        `;
+    }).join("");
+}
+
+function filterMcpInventoryTable() {
+    const query = document.getElementById("mcp-inventory-search")?.value.toLowerCase().trim() || "";
+    if (!query) {
+        renderMcpInventoryTable(currentMcpInventoryList);
+        return;
+    }
+    const filtered = currentMcpInventoryList.filter(item => {
+        return (item.filename || "").toLowerCase().includes(query) ||
+               (item.company_name || "").toLowerCase().includes(query) ||
+               (item.asset_category || "").toLowerCase().includes(query);
+    });
+    renderMcpInventoryTable(filtered);
+}
+
+async function previewMcpInventoryFile(filename, filepath) {
+    const modal = document.getElementById("csv-preview-modal");
+    const titleEl = document.getElementById("csv-preview-title");
+    const subtitleEl = document.getElementById("csv-preview-subtitle");
+    const thead = document.getElementById("csv-preview-thead");
+    const tbody = document.getElementById("csv-preview-tbody");
+    const downloadBtn = document.getElementById("csv-preview-download-btn");
+    const searchInput = document.getElementById("csv-preview-search");
+    
+    if (titleEl) titleEl.innerText = filename || "CSV Dataset Preview";
+    if (subtitleEl) subtitleEl.innerText = "Loading data from server...";
+    if (thead) thead.innerHTML = "";
+    if (tbody) tbody.innerHTML = `<tr><td style="padding: 30px; text-align: center; color: var(--text-muted);">Loading dataset...</td></tr>`;
+    if (searchInput) searchInput.value = "";
+    if (modal) modal.style.display = "flex";
+    
+    if (downloadBtn) {
+        downloadBtn.onclick = () => downloadMcpInventoryFile(filename, filepath);
+    }
+    
+    try {
+        const param = filepath ? `file_path=${encodeURIComponent(filepath)}` : `filename=${encodeURIComponent(filename)}`;
+        const res = await authFetch(`${API_BASE}/mcp/inventory/preview?${param}`);
+        if (!res.ok) throw new Error("Failed to read CSV content");
+        const data = await res.json();
+        
+        currentCsvPreviewCols = data.columns || [];
+        currentCsvPreviewRows = data.rows || [];
+        
+        if (subtitleEl) subtitleEl.innerText = `Showing ${currentCsvPreviewRows.length} rows across ${currentCsvPreviewCols.length} columns`;
+        renderCsvPreviewTable(currentCsvPreviewCols, currentCsvPreviewRows);
+    } catch (e) {
+        if (tbody) tbody.innerHTML = `<tr><td style="padding: 30px; text-align: center; color: #ef4444;">Error loading CSV: ${e.message}</td></tr>`;
+    }
+}
+
+function renderCsvPreviewTable(columns, rows) {
+    const thead = document.getElementById("csv-preview-thead");
+    const tbody = document.getElementById("csv-preview-tbody");
+    const countEl = document.getElementById("csv-preview-row-count");
+    
+    if (countEl) countEl.innerText = `${rows.length} rows`;
+    
+    if (!columns || columns.length === 0) {
+        if (thead) thead.innerHTML = "";
+        if (tbody) tbody.innerHTML = `<tr><td style="padding: 30px; text-align: center; color: var(--text-muted);">Empty dataset</td></tr>`;
+        return;
+    }
+    
+    if (thead) {
+        thead.innerHTML = `
+            <tr style="background: rgba(15, 23, 42, 0.95); position: sticky; top: 0; z-index: 10; border-bottom: 2px solid rgba(59, 130, 246, 0.3);">
+                ${columns.map(col => `<th style="padding: 10px 14px; font-weight: 800; color: #93c5fd; white-space: nowrap; border-right: 1px solid rgba(255,255,255,0.06); font-size: 0.78rem;">${escapeHtml(col)}</th>`).join("")}
+            </tr>
+        `;
+    }
+    
+    if (tbody) {
+        if (!rows || rows.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="${columns.length}" style="padding: 30px; text-align: center; color: var(--text-muted);">No matching rows found</td></tr>`;
+            return;
+        }
+        
+        tbody.innerHTML = rows.map((row, idx) => `
+            <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); background: ${idx % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.02)'};" onmouseover="this.style.background='rgba(59,130,246,0.1)'" onmouseout="this.style.background='${idx % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.02)'}'">
+                ${columns.map(col => {
+                    const val = row[col] !== undefined && row[col] !== null ? String(row[col]) : "";
+                    return `<td style="padding: 8px 14px; color: #e2e8f0; border-right: 1px solid rgba(255,255,255,0.04); white-space: nowrap; max-width: 300px; overflow: hidden; text-overflow: ellipsis;" title="${escapeHtml(val)}">${escapeHtml(val)}</td>`;
+                }).join("")}
+            </tr>
+        `).join("");
+    }
+}
+
+function filterCsvPreviewRows() {
+    const query = document.getElementById("csv-preview-search")?.value.toLowerCase().trim() || "";
+    if (!query) {
+        renderCsvPreviewTable(currentCsvPreviewCols, currentCsvPreviewRows);
+        return;
+    }
+    const filtered = currentCsvPreviewRows.filter(row => {
+        return Object.values(row).some(val => String(val || "").toLowerCase().includes(query));
+    });
+    renderCsvPreviewTable(currentCsvPreviewCols, filtered);
+}
+
+function closeCsvPreviewModal() {
+    const modal = document.getElementById("csv-preview-modal");
+    if (modal) modal.style.display = "none";
+}
+
+function downloadMcpInventoryFile(filename, filepath) {
+    const param = filepath ? `file_path=${encodeURIComponent(filepath)}` : `filename=${encodeURIComponent(filename)}`;
+    const url = `${API_BASE}/mcp/inventory/download?${param}`;
+    
+    const link = document.createElement("a");
+    link.href = url;
+    link.setAttribute("download", filename || "inventory.csv");
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
+
+async function deleteMcpInventoryFile(itemId, filename) {
+    if (!confirm(`Are you sure you want to delete '${filename}' from inventory?`)) return;
+    try {
+        const param = filename ? `?filename=${encodeURIComponent(filename)}` : '';
+        const res = await authFetch(`${API_BASE}/mcp/inventory/${itemId}${param}`, { method: "DELETE" });
+        if (!res.ok) throw new Error("Delete failed");
+        showToast(`Deleted ${filename}`, "success");
+        loadMcpInventory();
+    } catch (e) {
+        showToast(e.message, "error");
+    }
+}
+
+async function triggerMcpSweepFromInventory() {
+    const company = activeSessionTitle || activeSessionId || 'Global';
+    try {
+        showToast(`Triggering asset sweep for ${company}...`, "info");
+        const res = await authFetch(`${API_BASE}/mcp/orchestrator/trigger`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ company_name: company, mode: 'general' })
+        });
+        if (!res.ok) throw new Error("Failed to trigger sweep");
+        showToast("Asset sweep in progress in background. Refreshing inventory in 3 seconds...", "success");
+        setTimeout(loadMcpInventory, 3500);
+    } catch (e) {
+        showToast(e.message, "error");
+    }
+}
+
+// ── OFFLINE / ONLINE EVIDENCE MODE DROPDOWNS ──
+function toggleOfflineDropdown(event) {
+    if (event) event.stopPropagation();
+    const offlineMenu = document.getElementById('offline-dropdown-menu');
+    const onlineMenu = document.getElementById('online-dropdown-menu');
+    if (onlineMenu) onlineMenu.style.display = 'none';
+    if (offlineMenu) {
+        offlineMenu.style.display = (offlineMenu.style.display === 'block') ? 'none' : 'block';
+    }
+}
+
+function hideOfflineDropdown() {
+    const offlineMenu = document.getElementById('offline-dropdown-menu');
+    if (offlineMenu) offlineMenu.style.display = 'none';
+}
+
+function toggleOnlineDropdown(event) {
+    if (event) event.stopPropagation();
+    const onlineMenu = document.getElementById('online-dropdown-menu');
+    const offlineMenu = document.getElementById('offline-dropdown-menu');
+    if (offlineMenu) offlineMenu.style.display = 'none';
+    if (onlineMenu) {
+        onlineMenu.style.display = (onlineMenu.style.display === 'block') ? 'none' : 'block';
+    }
+}
+
+function hideOnlineDropdown() {
+    const onlineMenu = document.getElementById('online-dropdown-menu');
+    if (onlineMenu) onlineMenu.style.display = 'none';
+}
+
+// Close dropdowns when clicking anywhere outside
+document.addEventListener('click', (e) => {
+    const offlineMenu = document.getElementById('offline-dropdown-menu');
+    const onlineMenu = document.getElementById('online-dropdown-menu');
+    if (offlineMenu && !e.target.closest('#offline-mode-btn') && !e.target.closest('#offline-dropdown-menu')) {
+        offlineMenu.style.display = 'none';
+    }
+    if (onlineMenu && !e.target.closest('#online-mode-btn') && !e.target.closest('#online-dropdown-menu')) {
+        onlineMenu.style.display = 'none';
+    }
+});
+
+
