@@ -3520,6 +3520,17 @@ async function pollAuditProgress() {
                 if (busyWarning) showToastBanner(busyWarning, "warning");
                 window._lastBusyWarning = busyWarning;
             }
+
+            // ── AI recommendations that did not complete ──────────────────────
+            // The worker keeps the parser's text when an enrichment batch fails,
+            // which is a valid report -- but silently, so ticking the box and
+            // having it time out looked exactly like never ticking it. Same
+            // state-change debouncing as the notices above.
+            const aiNote = p.ai_note || null;
+            if (aiNote !== window._lastAiNote) {
+                if (aiNote) showToastBanner(`⚠️ ${aiNote}`, "warning");
+                window._lastAiNote = aiNote;
+            }
         } else if (data.status === "completed") {
             clearInterval(progressInterval);
             progressInterval = null;

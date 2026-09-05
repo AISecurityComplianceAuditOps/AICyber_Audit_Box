@@ -37,12 +37,26 @@ untouched. This function is never allowed to make a finding worse by running.
 """
 import json
 import re
+import os
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List
 
-_BATCH_SIZE = 8          # findings per LLM call -- enough to amortise the
-                          # prompt/handshake cost without risking context
-                          # truncation on a long evidence excerpt.
+# Findings per LLM call. This was 8, which on a CPU-only box produces ~2000
+# output tokens per call -- roughly 15 minutes at the ~1.7 tok/s a 12B model
+# manages here, against query_llm()'s default budget of max(600, active*180)
+# seconds. Batches therefore ran out of time, and because a failed batch keeps
+# its parser text silently, the whole feature looked exactly like leaving it
+# switched off: measured 22/22 byte-identical recommendations across an AI-on
+# and an AI-off scan of the same evidence. Four keeps each generation short
+# enough to finish inside the budget.
+_BATCH_SIZE = int(os.environ.get("REMEDIATION_BATCH_SIZE", "4"))
+
+# Explicit budget for enrichment rather than inheriting query_llm()'s default,
+# which is tuned for the ISO generator's much shorter completions. This path
+# writes several paragraphs per call and legitimately needs longer; the scan
+# already runs in the background, so waiting is cheap -- silently dropping the
+# text the auditor asked for is not.
+_ENRICH_TIMEOUT = int(os.environ.get("REMEDIATION_TIMEOUT_SEC", "1800"))
 _MAX_EVIDENCE_CHARS = 400
 _MAX_DESCRIPTION_CHARS = 400
 
@@ -129,7 +143,7 @@ def _extract_json_object(raw: str):
     return json.loads(text)
 
 
-def _enrich_batch(batch: List[Dict], model: str, session_id=None, timeout=None) -> None:
+def _enrich_batch(batch: List[Dict], model: str, session_id=None, timeout=None) -> bool:
     """Mutates `.remediation` on the findings in `batch` in place. Never raises
     -- a batch that fails for any reason is left with its original text, and
     the caller moves on to the next batch rather than aborting the run."""
@@ -141,7 +155,8 @@ def _enrich_batch(batch: List[Dict], model: str, session_id=None, timeout=None) 
     try:
         raw = query_llm(
             prompt, model, num_ctx=8192, temperature=0.1,
-            timeout=timeout, session_id=session_id,
+            timeout=timeout if timeout is not None else _ENRICH_TIMEOUT,
+            session_id=session_id,
             # query_llm()'s DEFAULT stop list includes "```", tuned for the
             # ISO/VAPT XML-tag generator chains where a fence never appears in
             # a valid response. Here the model is EXPECTED to wrap its answer
@@ -165,7 +180,7 @@ def _enrich_batch(batch: List[Dict], model: str, session_id=None, timeout=None) 
     except Exception as e:
         print(f"[REMEDIATION LLM] Batch of {len(batch)} finding(s) not enriched, "
               f"keeping parser text: {type(e).__name__}: {e}", flush=True)
-        return
+        return False
 
     for i, f in enumerate(batch):
         entry = remediations.get(str(i))
@@ -187,6 +202,8 @@ def _enrich_batch(batch: List[Dict], model: str, session_id=None, timeout=None) 
             f["remediation"] = rem_text
         if len(act_text) >= 15:
             f["remediation_actionable"] = act_text
+
+    return True
 
 
 def _vuln_type_key(f: Dict) -> str:
@@ -262,14 +279,25 @@ def enrich_remediations(findings: List[Dict], model: str = "gemma4:e4b",
               f"will reuse the same text).", flush=True)
 
     batches = [representatives[i:i + _BATCH_SIZE] for i in range(0, len(representatives), _BATCH_SIZE)]
+    # Count what actually landed. A failed batch keeps its parser text, which is a
+    # valid report -- but the auditor asked for AI-tailored text and got the canned
+    # version, and nothing anywhere said so. The caller surfaces this.
+    _results = []
     if len(batches) > 1:
         with ThreadPoolExecutor(max_workers=min(_MAX_PARALLEL_BATCHES, len(batches))) as pool:
-            list(pool.map(
+            _results = list(pool.map(
                 lambda b: _enrich_batch(b, model, session_id=session_id, timeout=timeout),
                 batches,
             ))
     elif batches:
-        _enrich_batch(batches[0], model, session_id=session_id, timeout=timeout)
+        _results = [_enrich_batch(batches[0], model, session_id=session_id, timeout=timeout)]
+
+    _failed = sum(1 for r in _results if not r)
+    if _failed:
+        print(f"[REMEDIATION LLM] {_failed}/{len(batches)} batch(es) failed -- those "
+              f"finding(s) keep their parser-generated text.", flush=True)
+    enrich_remediations.last_failed_batches = _failed
+    enrich_remediations.last_total_batches = len(batches)
 
     # Copy each representative's (possibly still-original, if enrichment
     # failed for that batch) text onto every other member of its group.

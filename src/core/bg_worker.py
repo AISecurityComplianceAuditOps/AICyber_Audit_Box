@@ -2578,6 +2578,24 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
                 print(f"[VAPT/PQC] AI-tailored recommendations requested -- "
                       f"enriching {len(all_findings)} finding(s) with {_model}.", flush=True)
                 enrich_remediations(all_findings, model=_model, session_id=bg_key)
+
+                # Report a partial or total enrichment failure. Without this the
+                # auditor ticks "AI recommendations", waits, and receives the
+                # parser's canned text with nothing anywhere saying the LLM never
+                # answered -- indistinguishable from leaving the box unticked.
+                _failed = getattr(enrich_remediations, "last_failed_batches", 0)
+                _total = getattr(enrich_remediations, "last_total_batches", 0)
+                if _failed and bg_key:
+                    _note = (f"AI recommendations did not complete for {_failed} of "
+                             f"{_total} batch(es); those findings show the standard "
+                             f"parser-generated text.")
+                    print(f"[VAPT/PQC] {_note}", flush=True)
+                    try:
+                        with _bg_lock:
+                            _prev = _bg_store["progress"].get(bg_key, {}) or {}
+                            _bg_store["progress"][bg_key] = {**_prev, "ai_note": _note}
+                    except Exception:
+                        pass
             except Exception as _enrich_err:
                 # A failure here must never take the scan down with it -- the
                 # deterministic remediation text every finding already has is a
