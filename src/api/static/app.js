@@ -6863,6 +6863,23 @@ async function restoreDocToFinding(findingId, docName) {
 }
 
 function openEditFindingModal(finding) {
+
+    // ── Policy has no meaning on a technical finding ──────────────────────────
+    // A VAPT/PQC finding comes from a deterministic scanner: it has a CVE, a
+    // severity and a control mapping, and no policy dimension whatsoever. The
+    // editor still offered "Policy Present? -> Not Found (Document Missing)",
+    // which invites the auditor to record a policy gap against a port scan and
+    // makes a PQC finding read like a half-finished ISO one.
+    //
+    // Read from the FINDING, not the sidebar dropdown: the auditor may have
+    // switched the dropdown since the scan, but a finding's own control id
+    // ("PQC-2", "VAPT-3") is fixed at the moment it was produced.
+    const _fwHint = [finding.control_id, finding.category, finding.control_name]
+        .map(v => String(v || "").toUpperCase()).join(" ");
+    const _isTechnicalFinding = _fwHint.includes("VAPT") || _fwHint.includes("PQC");
+    const _polGroup = document.getElementById("edit-policy-group");
+    if (_polGroup) _polGroup.style.display = _isTechnicalFinding ? "none" : "";
+
     document.getElementById("edit-finding-id").value = finding.id;
 
     // Custom Heading: populate for both VAPT and ISO
