@@ -6877,8 +6877,16 @@ function openEditFindingModal(finding) {
     const _fwHint = [finding.control_id, finding.category, finding.control_name]
         .map(v => String(v || "").toUpperCase()).join(" ");
     const _isTechnicalFinding = _fwHint.includes("VAPT") || _fwHint.includes("PQC");
-    const _polGroup = document.getElementById("edit-policy-group");
-    if (_polGroup) _polGroup.style.display = _isTechnicalFinding ? "none" : "";
+    // Evidence goes too, not just policy. Both selects offer the ISO vocabulary
+    // ("Compliant (Evidence Satisfies Control)" / "Not Found (Evidence Missing)")
+    // and every technical finding in the database stores the bare value "No",
+    // which app.js normalises to "Not Found" -- so the editor announced
+    // "Evidence: Not Found (Evidence Missing)" on findings that carry an
+    // evidence snippet. Measured: 400 of 400 VAPT findings have a snippet while
+    // 365 of them read "No". The field was not merely irrelevant here, it
+    // contradicted the evidence displayed beside it.
+    const _polEvRow = document.getElementById("edit-policy-evidence-row");
+    if (_polEvRow) _polEvRow.style.display = _isTechnicalFinding ? "none" : "";
 
     document.getElementById("edit-finding-id").value = finding.id;
 
