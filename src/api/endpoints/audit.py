@@ -1589,6 +1589,26 @@ def api_start_audit(req: StartAuditRequest, request: Request):
 
             report_framework = report.framework or ""
 
+            # ── Licensed frameworks ──────────────────────────────────────────
+            # Enforced HERE, at the API boundary, not only where the UI builds
+            # its dropdown: a filtered dropdown is a convenience, this is the
+            # boundary. /audit/start can be called directly.
+            #
+            # Off unless the installation was built with entitlement enforcement
+            # on, so existing deployments -- which carry no entitlement licence --
+            # behave exactly as before instead of locking out on upgrade.
+            try:
+                from src.core.licence_entitlements import (
+                    assert_framework_allowed, EntitlementError,
+                )
+                assert_framework_allowed(req.current_framework or report_framework)
+            except EntitlementError as _lic_err:
+                log_system_event("LICENCE_DENIED", "WARNING", str(_lic_err),
+                                 session_id=req.session_id, actor=req.username)
+                raise HTTPException(status_code=403, detail=str(_lic_err))
+            except ImportError:
+                pass          # entitlements module absent: behave as before
+
             # ── FRESH SCAN VS RESUME CHECKPOINT CLEANUP ───────────────────────
             # If starting a FRESH scan (is_resume=False):
             # 1. Purge unverified draft findings from previous runs on this session
