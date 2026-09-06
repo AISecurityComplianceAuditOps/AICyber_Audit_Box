@@ -127,6 +127,28 @@ def stamp(text, version, size_label, disk_label=""):
                 .replace("__DISK__", disk_label))
 
 
+def apply_runtime_env(text, values):
+    """Pin the runtime limits this customer was sized for into their compose.
+
+    The values were computed per customer and then not shipped: the compose
+    carries them commented out, so every installation fell back to whatever
+    the container detected. That is a safe default and a poor answer when a
+    site was deliberately limited -- the sizing decided for them had no way
+    to reach them.
+
+    Each key is uncommented in place, keeping the explanation around it.
+    """
+    if not values:
+        return text
+    for key, value in values.items():
+        line = "      - %s=%s" % (key, value)
+        pat = r"^\s*#?\s*-\s*%s=.*$" % re.escape(key)
+        rx = re.compile(pat, re.M)
+        if rx.search(text):
+            text = rx.sub(line, text, count=1)
+    return text
+
+
 def retag_compose(text, version):
     """Points the shipped compose file at THIS bundle's image tags.
 
@@ -192,6 +214,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--version", help="target version, e.g. 3.22 (default: current + 1)")
     ap.add_argument("--skip-build", action="store_true", help="package only; reuse existing images")
+    ap.add_argument("--runtime", action="append", default=[], metavar="KEY=VALUE",
+                    help="pin a runtime limit into the shipped compose, e.g. "
+                         "--runtime MAX_CONCURRENT_AUDITS=8. Repeatable. Without "
+                         "these the customer container detects its own.")
     ap.add_argument("--full", action="store_true",
                     help="ONE tar with every image, for a from-scratch air-gapped install")
     ap.add_argument("--out", metavar="DIR",
@@ -372,9 +398,14 @@ def main():
         # own tar, and a compose file naming images the customer does not have.
         compose = open(os.path.join(PROJECT, "docker-compose.customer.yml"),
                        encoding="utf-8").read()
+        _runtime = {}
+        for _pair in (getattr(args, "runtime", None) or []):
+            if "=" in _pair:
+                _k, _v = _pair.split("=", 1)
+                _runtime[_k.strip()] = _v.strip()
         with open(os.path.join(stage, "docker-compose.yml"), "w",
                   encoding="utf-8", newline="\n") as f:
-            f.write(retag_compose(compose, version))
+            f.write(apply_runtime_env(retag_compose(compose, version), _runtime))
         print(f"     + docker-compose.yml  (images pinned to {version})")
 
         for name, newline in (("install.sh", "\n"), ("install.bat", "\r\n")):
