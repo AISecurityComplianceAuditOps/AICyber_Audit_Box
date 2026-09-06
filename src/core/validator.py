@@ -2194,10 +2194,19 @@ def _fix_contradicted_answer_opener(text):
 
 
 _REC_DEMANDS_MISSING_RE = re.compile(
+    # "a policy should be established", "must be implemented"
     r"\b(?:should|shall|must|needs?\s+to|ought\s+to|is\s+required\s+to)\s+be\s+"
     r"(?:established|developed|created|implemented|formali[sz]ed|documented|"
     r"defined|drafted|introduced|put\s+in\s+place)\b"
-    r"|\bshould\s+(?:establish|develop|create|implement|formali[sz]e|document|define)\b",
+    # "the organisation should establish ..."
+    r"|\bshould\s+(?:establish|develop|create|implement|formali[sz]e|document|define)\b"
+    # A bare imperative, which is how the seed recommendation is phrased:
+    # "Establish, document, and implement procedures to satisfy 8.17". This was
+    # missed for a while -- the guard only knew the "should be" forms, so a
+    # COMPLIANT finding carried an instruction to build the control it had just
+    # confirmed was working, directly under a green badge.
+    r"|^\s*(?:establish|implement|develop|create|define|document|formali[sz]e|"
+    r"draft|introduce|deploy|configure)\b",
     re.I)
 
 

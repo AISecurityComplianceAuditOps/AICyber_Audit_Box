@@ -3701,7 +3701,17 @@ def api_export_pdf(
                 else:
                     c_sev, sev_score = "MEDIUM", 5.5
                     
-                pol_pres = f.policy_present or ("Compliant" if (f.final_result or f.status or "").upper() == "COMPLIANT" else "No")
+                # A question-based (Customize) row has its policy fields deliberately
+                # BLANKED by post_process, so the card draws no policy badge -- the
+                # auditor scoped a question and evidence, and no policy document.
+                # Falling back on the empty string undid exactly that: a COMPLIANT
+                # row came out "Policy Found: Compliant" beside a panel reading NO
+                # DOCUMENTED POLICY IDENTIFIED, because "" is falsy and the fallback
+                # could not tell "cleared on purpose" from "never populated".
+                # policy_status is blank only on those rows, so it is the signal.
+                _policy_cleared = not str(f.policy_status or "").strip()
+                pol_pres = f.policy_present or ("" if _policy_cleared else (
+                    "Compliant" if (f.final_result or f.status or "").upper() == "COMPLIANT" else "No"))
                 ev_pres = f.evidence_present or ("Compliant" if (f.final_result or f.status or "").upper() == "COMPLIANT" else "No")
                 # final_result is the single source of truth for COMPLIANT vs NON_COMPLIANT
                 is_comp = (f.final_result or f.status or "").strip().upper() == "COMPLIANT"
