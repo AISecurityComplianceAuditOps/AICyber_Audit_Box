@@ -56,6 +56,23 @@ class Entitlements:
     customer: Optional[str] = None
     expires: Optional[date] = None
     reason: str = ""
+    # How many audits this site may run at once. None means the licence names no
+    # figure, which is every licence issued before seats were enforced -- those
+    # installations keep running on hardware capacity alone rather than being
+    # retroactively limited by a field nobody had read.
+    seats: Optional[int] = None
+
+    def concurrent_limit(self, hardware_limit: int) -> int:
+        """The lower of what the hardware can do and what was paid for.
+
+        Both are real limits and neither replaces the other: a licence for
+        sixteen simultaneous audits on a four-core box still cannot finish more
+        than the box can, and a thirty-two core box may not run more than was
+        bought.
+        """
+        if not self.enforcing or not self.seats:
+            return hardware_limit
+        return min(hardware_limit, int(self.seats))
 
     def permits(self, framework: str) -> bool:
         """Whether this installation may audit the named framework.
@@ -132,6 +149,13 @@ def _verify(licence_key: str, public_pem: bytes) -> Entitlements:
         expires = date.fromisoformat(payload["expires"])
         frameworks = {_normalise(f) for f in payload["frameworks"]}
         customer = payload.get("customer")
+        # Absent, zero or unreadable all mean "no seat limit stated", which is
+        # every licence issued before this was enforced. Those keep running on
+        # hardware capacity rather than being retroactively capped.
+        try:
+            seats = int(payload.get("seats") or 0) or None
+        except (TypeError, ValueError):
+            seats = None
     except (KeyError, ValueError) as exc:
         return Entitlements(True, set(), reason=f"licence payload incomplete: {exc}")
 
@@ -140,7 +164,7 @@ def _verify(licence_key: str, public_pem: bytes) -> Entitlements:
                             reason=f"licence expired on {expires.isoformat()}")
 
     return Entitlements(True, frameworks, customer=customer, expires=expires,
-                        reason="licence verified")
+                        reason="licence verified", seats=seats)
 
 
 def load_entitlements(refresh: bool = False) -> Entitlements:

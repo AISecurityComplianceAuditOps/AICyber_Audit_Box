@@ -1534,12 +1534,28 @@ def api_start_audit(req: StartAuditRequest, request: Request):
         # request timeout can fire before its turn ever comes. Reject here with a
         # clear message instead of letting that happen invisibly.
         global_active_count = len(_bg_running)
-        if global_active_count >= MAX_CONCURRENT_AUDITS:
+        # Two limits, and the lower one wins. The hardware figure above says what
+        # this machine can finish; the licence says how many were bought. Neither
+        # replaces the other: sixteen bought on a four-core box still cannot
+        # finish more than four, and a large box may not exceed what was sold.
+        try:
+            from src.core.licence_entitlements import load_entitlements
+            _ent = load_entitlements()
+            _effective_limit = _ent.concurrent_limit(MAX_CONCURRENT_AUDITS)
+            _licensed = bool(_ent.enforcing and _ent.seats
+                             and _ent.seats <= MAX_CONCURRENT_AUDITS)
+        except Exception:
+            # A licensing fault must not take audits down; the hardware limit
+            # still applies and the framework gate has already run by here.
+            _effective_limit, _licensed = MAX_CONCURRENT_AUDITS, False
+        if global_active_count >= _effective_limit:
+            _why = (f"this installation is licensed for {_effective_limit} simultaneous audit(s)"
+                    if _licensed else
+                    f"the system is at capacity (limit {_effective_limit})")
             raise HTTPException(
                 status_code=429,
-                detail=f"The system is at capacity: {global_active_count} audits are currently running or "
-                       f"queued across all auditors (limit {MAX_CONCURRENT_AUDITS}). Please wait for one to "
-                       f"finish before starting a new one."
+                detail=f"{global_active_count} audits are currently running or queued across all "
+                       f"auditors and {_why}. Please wait for one to finish before starting a new one."
             )
         # ─────────────────────────────────────────────────────────────────────────
 
