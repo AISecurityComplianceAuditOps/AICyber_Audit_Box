@@ -1,5 +1,17 @@
 @echo off
 cd /d "%~dp0"
+:: The console decodes whatever Python writes using its codepage, and the
+:: default is a legacy one. Control names carry an em-dash from the auditor
+:: checklist, Python writes it as the three UTF-8 bytes E2 80 94, and the
+:: console rendered those as three separate characters, mid-word:
+::
+::     [VALIDATOR DEBUG] Control: 8.17 Clock Synchronization ... Wheather NTP
+::
+:: 65001 is UTF-8. >nul because chcp announces itself and this launcher owns
+:: its own output. PYTHONIOENCODING pins the writing side of the same
+:: agreement, so a child process cannot choose differently.
+chcp 65001 >nul
+set "PYTHONIOENCODING=utf-8"
 set "PYTHONPATH=%~dp0;%PYTHONPATH%"
 title AISecurityAudit - Start All Local Services
 echo ==================================================
