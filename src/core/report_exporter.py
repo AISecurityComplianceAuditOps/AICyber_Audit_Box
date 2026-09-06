@@ -4741,7 +4741,11 @@ def export_docx_report(session_title, findings, resolved_list, status, comments=
             mapped_risk = "Accepted"
             risk_text = "Acceptable"
         else:
-            sev = f.get("severity", "N/A")
+            # str() before upper(): a finding whose severity is None, a list or a
+            # number crashed the whole export here with AttributeError, losing the
+            # entire report rather than one malformed row. Severity arrives from
+            # parsers, the LLM and hand-edits, so it is not reliably a string.
+            sev = str(f.get("severity") or "N/A")
             # Same P1-P4 mapping the DOCX template exporter uses. This previously
             # read any "1" as critical and any "2" as medium -- so a P2 finding came
             # out "Medium" in one export and "High" in the other for the same report.
@@ -4767,7 +4771,11 @@ def export_docx_report(session_title, findings, resolved_list, status, comments=
         # Collapse the repeat -- control_id and control routinely hold the same text
         # (the checklist question), so joining them printed the control point twice.
         row_cells[1].paragraphs[0].add_run(
-            _dedupe_repeated_phrase((f.get("control_id", "") + " " + f.get("control", "")).strip())
+            # str() on both: control_id and control are not reliably strings. They
+            # come from parsers, the LLM and hand-edits, and a None or an int here
+            # raised TypeError mid-table, losing the whole export rather than one row.
+            _dedupe_repeated_phrase(
+                (str(f.get("control_id") or "") + " " + str(f.get("control") or "")).strip())
         )
         # Policy Reference is an AUDITOR-SUPPLIED field. It used to fall back to a
         # generated "<framework> Annex A" label, stamping every row with a reference the
