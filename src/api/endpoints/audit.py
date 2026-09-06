@@ -2135,6 +2135,11 @@ def api_get_findings(request: Request, session_id: str, saved_only: bool = False
                 "is_saved_to_shakthi": bool(f.is_saved_to_shakthi or f.human_verified),
                 "human_verified": bool(f.human_verified),
                 "review_note": f.review_note or "",
+                # The validator can hold a finding -- most often because the quoted
+                # value contradicts the evidence it was drawn from (Gate 4). That
+                # decision was being made, stored, and then never sent, so the card
+                # rendered a held finding as a confident verdict.
+                "requires_human_review": bool(f.requires_human_review),
                 # Policy vs Evidence split (RAG accuracy overhaul, Phase 5/6/7)
                 "policy_status": f.policy_status,
                 "policy_assessment": f.policy_assessment,
