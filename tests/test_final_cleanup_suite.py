@@ -689,3 +689,31 @@ def test_excel_and_manual_answers_are_left_alone():
                "evidence_quote": "checked on 172.16.32.18"}
     _clean_finding_narrative_fields(finding)
     assert finding["justification"] == text
+
+
+def test_an_intact_address_beats_an_ocr_truncated_hostname():
+    """OCR read "dcauaweivmlhe" for a host actually called dcauaweivmlhcip.
+
+    The quote the model returned carried that truncation and no address; the
+    full chunk carried 172.16.32.18 intact. Publishing the truncated name would
+    state a wrong fact confidently, so the source is searched too.
+    """
+    from src.core.validator import _clean_finding_narrative_fields
+    finding = {
+        "justification": "Yes -- NTP is enabled and synchronized on the host.",
+        "customize_mode": True,
+        "evidence_quote": "[root@dcauaweivmlhe ~]# timedatectl status",
+    }
+    _clean_finding_narrative_fields(
+        finding, "S3 172.16.32.18 (root) [root@dcauaweivmlhcip ~]# timedatectl status")
+    assert finding["justification"] == (
+        "Yes -- NTP is enabled and synchronized on 172.16.32.18.")
+
+
+def test_the_cleaner_still_works_without_a_source_text():
+    """document_text is optional -- callers outside post_process pass nothing."""
+    from src.core.validator import _clean_finding_narrative_fields
+    finding = {"justification": "Yes -- NTP is synchronized on the host.",
+               "customize_mode": True}
+    _clean_finding_narrative_fields(finding)
+    assert finding["justification"] == "Yes -- NTP is synchronized on the host."

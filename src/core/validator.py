@@ -2559,7 +2559,7 @@ def _name_the_host(text, evidence_text):
     return _GENERIC_HOST_RE.sub(lambda m: m.group(0).split()[0] + " " + host, str(text))
 
 
-def _clean_finding_narrative_fields(finding):
+def _clean_finding_narrative_fields(finding, document_text=None):
     """Applied once, right after validate_only() has computed the VERIFIED
     evidence/policy quotes, so every downstream copy (the compliant-path
     description, the "no gap identified" fallback description, and the raw
@@ -2603,8 +2603,14 @@ def _clean_finding_narrative_fields(finding):
         # boilerplate closer as the final sentence.
         if _question_based:
             val = _tighten_justification(val)
-            # "on the host" -> "on 172.16.32.18", taken from the cited evidence.
-            val = _name_the_host(val, " ".join(quote_sources))
+            # "on the host" -> "on 172.16.32.18". The model's quote is searched
+            # first, then the full source: an address the model dropped is still
+            # the auditor's best identifier, and preferring it matters because
+            # OCR truncates hostnames. It read "dcauaweivmlhe" for a machine
+            # actually called dcauaweivmlhcip, and publishing that as the host
+            # is a wrong fact stated confidently -- the IP on the same screen
+            # was intact.
+            val = _name_the_host(val, " ".join(quote_sources) + " " + str(document_text or ""))
         finding[_field] = val
 
 
@@ -2618,12 +2624,12 @@ def post_process(finding, document_text, expected_evidence_map=None, db_chunks=N
     # Respect BLOCK override (if overridden by human or system rules)
     if finding.get("post_process_override") == "BLOCK":
         finding = validate_only(finding, document_text, expected_evidence_map, db_chunks)
-        _clean_finding_narrative_fields(finding)
+        _clean_finding_narrative_fields(finding, document_text)
         return finding
 
     # Run normal validation check
     finding = validate_only(finding, document_text, expected_evidence_map, db_chunks)
-    _clean_finding_narrative_fields(finding)
+    _clean_finding_narrative_fields(finding, document_text)
 
     # Skip potential evidence check if prompt leak
     if finding.get("hallucination_check") == "PROMPT_LEAK":
