@@ -2288,9 +2288,15 @@ _BOILERPLATE_CLOSER_RE = re.compile(
     r"evidences|verifies|validates|supports)\b",
     re.I)
 
+# "The control is not met" is the same boilerplate as "The control is met":
+# the badge on the card already says which. Both halves are matched, including
+# "has not been satisfied" -- an earlier version handled only the positive form,
+# so a No answer kept a closing sentence a Yes answer had trimmed.
 _CONTROL_IS_MET_RE = re.compile(
-    r"^\s*the\s+(?:control|requirement|objective)\s+(?:is|has\s+been|was)\s+"
-    r"(?:therefore\s+)?(?:met|satisfied|fulfilled|addressed|demonstrated)\b",
+    r"^\s*the\s+(?:control|requirement|objective)\s+"
+    r"(?:is|has\s+(?:not\s+)?been|was)\s+"
+    r"(?:therefore\s+)?(?:not\s+)?(?:therefore\s+)?"
+    r"(?:met|satisfied|fulfilled|addressed|demonstrated)\b",
     re.I)
 
 _EVIDENCE_RESTATEMENT_RE = re.compile(
@@ -2298,18 +2304,56 @@ _EVIDENCE_RESTATEMENT_RE = re.compile(
     r"s?\s+(?:reports?|shows?|states?|indicates?|confirms?|displays?|contains?)\b",
     re.I)
 
+# The pattern above lists the nouns a model actually used, which left real
+# phrasings through -- "The log record shows ...", "The configuration file
+# contains ...". Rather than keep growing that list, this one takes any short
+# noun phrase and reporting verb, but ONLY when the sentence wraps a quoted
+# fragment. The quote is the whole reason a restatement is droppable: it is
+# already captured in its own field and rendered directly below the answer.
+# Requiring it keeps a sentence that carries a fact of its own, which a wider
+# verb list on its own would have started eating.
+_QUOTED_RESTATEMENT_RE = re.compile(
+    r"^\s*(?:the\s+|this\s+|its\s+)?"
+    r"(?:\w+\s+){0,2}"
+    r"(?:reports?|shows?|states?|indicates?|confirms?|displays?|contains?|reads?|"
+    r"lists?|records?|notes?|returns?|includes?|outputs?)\s"
+    r"[^\"']*[\"'\u2018\u201c]",
+    re.I)
+
+
+# A sentence ends at .!? -- but only where one really ends. Splitting on every
+# full stop tore "OpenSSL 1.1.1f" and "10.4.2.31" into fragments, and once a
+# later sentence was dropped the surviving fragments were glued back onto the
+# answer as "...end of life.1.1f'." A terminator only counts when whitespace and
+# a fresh capital follow it, which no version number, IP address or decimal has.
+_SENTENCE_END_RE = re.compile(
+    r"[.!?][\"\')\]\u201d\u2019]*"
+    r"(?=\s+[\"\'(\[\u201c\u2018]*[A-Z])")
+_ABBREVIATIONS = (
+    "e.g.", "i.e.", "etc.", "vs.", "no.", "fig.", "approx.", "cf.",
+    "mr.", "ms.", "mrs.", "dr.", "inc.", "ltd.", "co.", "vol.", "sr.", "jr.",
+)
+
 
 def _sentences(text):
-    """Split on sentence ends, keeping the terminator with its sentence."""
-    parts, buf = [], ""
-    for ch in text:
-        buf += ch
-        if ch in ".!?":
-            parts.append(buf)
-            buf = ""
-    if buf.strip():
-        parts.append(buf)
-    return parts
+    """Split on sentence ends, keeping the terminator with its sentence.
+
+    Whitespace between sentences stays attached to the FOLLOWING one, so
+    "".join() of the parts reproduces the input exactly -- _tighten_justification
+    rebuilds the text from whichever parts it kept, and a splitter that dropped
+    or moved the spacing would silently reflow the auditor's answer.
+    """
+    parts, start = [], 0
+    for m in _SENTENCE_END_RE.finditer(text):
+        end = m.end()
+        tail = text[start:end].strip().lower()
+        if any(tail.endswith(a) for a in _ABBREVIATIONS):
+            continue                      # "e.g." is not the end of a sentence
+        parts.append(text[start:end])
+        start = end
+    if text[start:].strip():
+        parts.append(text[start:])
+    return parts or ([text] if text else [])
 
 
 def _tighten_justification(text):
@@ -2342,7 +2386,8 @@ def _tighten_justification(text):
             continue
         if (_BOILERPLATE_CLOSER_RE.match(body)
                 or _CONTROL_IS_MET_RE.match(body)
-                or _EVIDENCE_RESTATEMENT_RE.match(body)):
+                or _EVIDENCE_RESTATEMENT_RE.match(body)
+                or _QUOTED_RESTATEMENT_RE.match(body)):
             continue
         kept.append(sent)
     out = "".join(kept).strip()

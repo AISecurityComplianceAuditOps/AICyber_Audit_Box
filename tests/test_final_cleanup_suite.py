@@ -553,3 +553,90 @@ def test_tightening_never_empties_a_finding():
     finding = {"justification": "This satisfies the requirement.", "customize_mode": True}
     _clean_finding_narrative_fields(finding)
     assert finding["justification"] == "This satisfies the requirement."
+
+
+# ── the trimming has to hold for any question, not just the NTP one ──────────
+# These were found by running the shipped rules against other question types.
+# Each was a real failure: the first corrupted text on screen, the second left
+# No answers wordier than Yes answers, the third only fired for the handful of
+# nouns that happened to appear in the original sample.
+
+def _crisp(text):
+    from src.core.validator import _clean_finding_narrative_fields
+    finding = {"justification": text, "customize_mode": True}
+    _clean_finding_narrative_fields(finding)
+    return finding["justification"]
+
+
+def test_version_numbers_and_ips_are_not_torn_apart():
+    """A full stop inside 1.1.1f or 10.4.2.31 does not end a sentence.
+
+    Splitting on every '.' broke the answer into fragments; dropping a later
+    sentence then glued the survivors back on, and the card read
+    "...end of life.1.1f'. The objective has not been satisfied."
+    """
+    out = _crisp(
+        "No -- the host 10.4.2.31 is running OpenSSL 1.1.1f, which is end of life. "
+        "The evidence contains 'openssl version: 1.1.1f'. "
+        "The objective has not been satisfied.")
+    assert out == ("No -- the host 10.4.2.31 is running OpenSSL 1.1.1f, "
+                   "which is end of life.")
+
+
+def test_negative_closer_is_dropped_like_the_positive_one():
+    """"The control is not met" is boilerplate too -- the badge already says so."""
+    assert _crisp("No -- MFA is not enabled for the domain administrator account. "
+                  "The output states 'MFA status: disabled'. "
+                  "The control is therefore not met.") == (
+        "No -- MFA is not enabled for the domain administrator account.")
+    assert _crisp("No -- failed logons are not retained for 90 days. "
+                  "The audit log lists 'retention: 30 days'. "
+                  "The requirement is not met.") == (
+        "No -- failed logons are not retained for 90 days.")
+
+
+def test_restatement_is_matched_by_shape_not_by_noun():
+    """"The log record shows '...'", "The configuration file contains '...'".
+
+    The original rule listed the nouns that appeared in one sample, so real
+    phrasings walked straight through it.
+    """
+    assert _crisp("Yes -- daily backups of ShaktiDB are running. "
+                  "The log record shows 'backup_status=SUCCESS'. "
+                  "This demonstrates compliance.") == (
+        "Yes -- daily backups of ShaktiDB are running.")
+    assert _crisp("Yes -- TLS 1.2 is the minimum on the load balancer. "
+                  "The configuration file contains 'ssl_protocols TLSv1.2;'. "
+                  "This meets the control objective.") == (
+        "Yes -- TLS 1.2 is the minimum on the load balancer.")
+
+
+def test_a_sentence_carrying_its_own_fact_is_kept():
+    """The quote is what makes a restatement droppable -- it renders separately.
+
+    Without a quote the sentence is carrying information the auditor would
+    otherwise lose, so a wider verb list must not start eating it.
+    """
+    text = ("Yes -- backups run nightly on SRV-DB-02. "
+            "The last restore test was performed on 2026-08-19 and completed without error.")
+    assert _crisp(text) == text
+
+    reasoning = ("Yes -- inbound RDP is blocked at the perimeter firewall for 172.16.32.0/24. "
+                 "Port 3389 remains open internally between the two application servers, "
+                 "which the auditor accepted as a scoped exception.")
+    assert _crisp(reasoning) == reasoning
+
+
+def test_abbreviations_do_not_end_a_sentence():
+    text = "Yes -- several controls, e.g. logging and alerting, are enabled on the SIEM."
+    assert _crisp(text) == text
+
+
+def test_splitting_is_lossless():
+    """Whatever is kept must reassemble into the original spacing."""
+    from src.core.validator import _sentences
+    for text in ("One. Two. Three.",
+                 "Host 10.4.2.31 failed. The check ran at 09.30. Done!",
+                 "Single sentence with no terminator",
+                 ""):
+        assert "".join(_sentences(text)) == text
