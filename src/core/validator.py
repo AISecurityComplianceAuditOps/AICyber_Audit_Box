@@ -2512,6 +2512,53 @@ def _tighten_justification(text):
     return out or text
 
 
+# Naming the machine is done here, from the evidence, rather than by asking the
+# model for it. An earlier attempt put "name the actual host, IP or service" in
+# the prompt alongside "write ONE sentence, do not restate the evidence", and
+# that combination inverted a verdict: the restatement being suppressed was also
+# the model re-reading the evidence before committing. Substituting the host
+# afterwards cannot change a verdict, only the words describing it.
+_IPV4_RE = re.compile(r"\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}"
+                      r"(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\b")
+_SHELL_HOST_RE = re.compile(r"root@([A-Za-z0-9][A-Za-z0-9._-]{2,40})")
+_GENERIC_HOST_RE = re.compile(
+    r"\b(?:on|for|of)\s+the\s+(host|system|server|machine|device|node)\b", re.I)
+
+
+def _host_from_evidence(evidence_text):
+    """The one machine this evidence is about, or None if it is not obvious.
+
+    Returns nothing when the evidence names several machines: an audit that
+    guesses which host a finding refers to is worse than one that says "the
+    host". The auditor's own evidence set here holds two different servers.
+    """
+    if not evidence_text:
+        return None
+    text = str(evidence_text)
+    ips = {ip for ip in _IPV4_RE.findall(text)
+           if not ip.startswith(("0.", "255.")) and ip.count(".") == 3}
+    # OCR splits an address on the space it hallucinates ("172.16.32 18"), which
+    # yields a 3-octet fragment; those are dropped by the pattern already.
+    if len(ips) == 1:
+        return ips.pop()
+    hosts = set(_SHELL_HOST_RE.findall(text))
+    if len(hosts) == 1:
+        return hosts.pop()
+    return None
+
+
+def _name_the_host(text, evidence_text):
+    """Replace "on the host" with the machine the evidence actually names."""
+    if not text:
+        return text
+    host = _host_from_evidence(evidence_text)
+    if not host:
+        return text
+    if host in str(text):
+        return text                     # already named; do not say it twice
+    return _GENERIC_HOST_RE.sub(lambda m: m.group(0).split()[0] + " " + host, str(text))
+
+
 def _clean_finding_narrative_fields(finding):
     """Applied once, right after validate_only() has computed the VERIFIED
     evidence/policy quotes, so every downstream copy (the compliant-path
@@ -2556,6 +2603,8 @@ def _clean_finding_narrative_fields(finding):
         # boilerplate closer as the final sentence.
         if _question_based:
             val = _tighten_justification(val)
+            # "on the host" -> "on 172.16.32.18", taken from the cited evidence.
+            val = _name_the_host(val, " ".join(quote_sources))
         finding[_field] = val
 
 

@@ -640,3 +640,52 @@ def test_splitting_is_lossless():
                  "Single sentence with no terminator",
                  ""):
         assert "".join(_sentences(text)) == text
+
+
+# -- naming the machine, from the evidence rather than from the model --------
+# "Yes -- NTP is enabled and synchronized on the host" is a weaker answer than
+# one that names 172.16.32.18. The prompt was asked for this once, bundled with
+# "write ONE sentence, do not restate the evidence", and that combination
+# inverted a verdict on a compliant host. Substituting the name afterwards
+# cannot change a verdict, only the words describing it.
+
+def test_the_host_is_named_from_the_cited_evidence():
+    from src.core.validator import _clean_finding_narrative_fields
+    finding = {
+        "justification": "Yes -- NTP is enabled and synchronized on the host.",
+        "customize_mode": True,
+        "evidence_quote": "[root@dcauaweivmlhcip ~]# timedatectl status on 172.16.32.18",
+    }
+    _clean_finding_narrative_fields(finding)
+    assert finding["justification"] == (
+        "Yes -- NTP is enabled and synchronized on 172.16.32.18.")
+
+
+def test_several_machines_in_the_evidence_means_no_guess():
+    """Naming the wrong host is worse than naming none.
+
+    The auditor's own evidence set holds two different servers.
+    """
+    from src.core.validator import _host_from_evidence
+    assert _host_from_evidence("172.16.32.18 and 172.27.0.32 both checked") is None
+
+
+def test_a_hostname_is_used_when_there_is_no_address():
+    from src.core.validator import _host_from_evidence
+    assert _host_from_evidence("[root@dcauaweivmlhcip ~]#") == "dcauaweivmlhcip"
+
+
+def test_an_already_named_host_is_not_repeated():
+    from src.core.validator import _name_the_host
+    text = "Yes -- NTP is synchronized on 172.16.32.18 for the host."
+    assert _name_the_host(text, "172.16.32.18") == text
+
+
+def test_excel_and_manual_answers_are_left_alone():
+    """Host substitution rides with the question-based trimming, not everything."""
+    from src.core.validator import _clean_finding_narrative_fields
+    text = "Yes -- NTP is enabled and synchronized on the host."
+    finding = {"justification": text, "customize_mode": False,
+               "evidence_quote": "checked on 172.16.32.18"}
+    _clean_finding_narrative_fields(finding)
+    assert finding["justification"] == text
