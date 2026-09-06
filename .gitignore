@@ -25,6 +25,11 @@ data/
 *.dll
 *.exe
 *.pem
+# ...except the licence VERIFYING key. It ships with the product on purpose:
+# it can check a licence and never mint one, and without it an installation
+# with AUDITBOX_ENFORCE_ENTITLEMENTS=1 fails closed and refuses every
+# framework. The blanket *.pem above kept it out of the image entirely.
+!config/licence_public.pem
 .tmp-*
 backups/
 logs/
