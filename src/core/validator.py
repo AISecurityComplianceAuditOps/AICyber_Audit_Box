@@ -2282,6 +2282,73 @@ def _align_customize_answer(finding, is_compliant):
         finding[field] = new_text
 
 
+_BOILERPLATE_CLOSER_RE = re.compile(
+    r"^\s*(?:this|that|the\s+above|these)\s+(?:"
+    r"satisfies|confirms|demonstrates|establishes|meets|fulfil?s|indicates|shows|"
+    r"evidences|verifies|validates|supports)\b",
+    re.I)
+
+_CONTROL_IS_MET_RE = re.compile(
+    r"^\s*the\s+(?:control|requirement|objective)\s+(?:is|has\s+been|was)\s+"
+    r"(?:therefore\s+)?(?:met|satisfied|fulfilled|addressed|demonstrated)\b",
+    re.I)
+
+_EVIDENCE_RESTATEMENT_RE = re.compile(
+    r"^\s*(?:the\s+)?(?:system|output|evidence|screenshot|document|command|log|record)"
+    r"s?\s+(?:reports?|shows?|states?|indicates?|confirms?|displays?|contains?)\b",
+    re.I)
+
+
+def _sentences(text):
+    """Split on sentence ends, keeping the terminator with its sentence."""
+    parts, buf = [], ""
+    for ch in text:
+        buf += ch
+        if ch in ".!?":
+            parts.append(buf)
+            buf = ""
+    if buf.strip():
+        parts.append(buf)
+    return parts
+
+
+def _tighten_justification(text):
+    """Drop sentences that add nothing to the auditor's answer.
+
+    An auditor reads the first sentence and needs it to be the answer. What
+    followed was usually two kinds of filler, both of which the prompt already
+    forbids and the model writes anyway:
+
+      restatement   "The system reports 'NTP enabled: yes' and 'NTP
+                    synchronized: yes'." -- the evidence quote is captured in
+                    its own field and rendered right below, so repeating it
+                    here is the same text twice on one card.
+
+      boilerplate   "This satisfies the requirement for clock synchronization."
+                    -- the COMPLIANT badge already says that.
+
+    The first sentence is never removed, whatever it looks like: it carries the
+    answer, and a finding trimmed to nothing is worse than one carrying filler.
+    """
+    if not text:
+        return text
+    sents = _sentences(str(text))
+    if len(sents) <= 1:
+        return text
+    kept = [sents[0]]
+    for sent in sents[1:]:
+        body = sent.strip()
+        if not body:
+            continue
+        if (_BOILERPLATE_CLOSER_RE.match(body)
+                or _CONTROL_IS_MET_RE.match(body)
+                or _EVIDENCE_RESTATEMENT_RE.match(body)):
+            continue
+        kept.append(sent)
+    out = "".join(kept).strip()
+    return out or text
+
+
 def _clean_finding_narrative_fields(finding):
     """Applied once, right after validate_only() has computed the VERIFIED
     evidence/policy quotes, so every downstream copy (the compliant-path
@@ -2289,12 +2356,14 @@ def _clean_finding_narrative_fields(finding):
     justification/reasoning the frontend falls back to directly) inherits the
     cleaned text instead of each needing its own cleanup.
 
-    Two passes, in order: first strip a clause that just quotes the recorded
+    Passes run in order: first strip a clause that just quotes the recorded
     evidence inline (nothing to compare between sentences yet -- this only
     depends on the finding's own quote fields), then drop any sentence left
     redundant with an earlier one now that the quote-heavy wrapper is gone --
     trimming a quote clause can itself expose a plain restatement sentence
     that was previously "different" only because of the words around the quote.
+    A third pass, tightening to a single answer sentence, runs for question-based
+    (CUSTOMIZE) rows only -- see the comment on _question_based below.
     """
     quote_sources = [
         finding.get("evidence_quote"), finding.get("evidence_snippet"),
@@ -2302,6 +2371,14 @@ def _clean_finding_narrative_fields(finding):
     ]
     quote_sources = [str(q) for q in quote_sources
                      if q and str(q).strip().upper() not in ("NOT_FOUND", "N/A", "NONE")]
+    # Tightening is for question-based rows only. In CUSTOMIZE the auditor typed
+    # a question and wants it answered -- a line, not a paragraph. In EXCEL and
+    # MANUAL the justification IS the audit narrative that ends up in the report,
+    # and its later sentences are the reasoning behind the verdict, so cutting
+    # them there would remove the finding's substance rather than filler.
+    _question_based = (bool(finding.get("customize_mode"))
+                       or str(finding.get("scoping_mode") or "").upper().startswith("CUSTOM"))
+
     for _field in ("justification", "reasoning", "final_reason"):
         val = finding.get(_field)
         if not val:
@@ -2311,7 +2388,12 @@ def _clean_finding_narrative_fields(finding):
             val = _trim_literal_evidence_quote(val, quote_sources)
         # Opener last: trimming a quote clause or a duplicate sentence can
         # change which sentence the answer word is actually introducing.
-        finding[_field] = _fix_contradicted_answer_opener(_dedupe_repeated_facts(val))
+        val = _fix_contradicted_answer_opener(_dedupe_repeated_facts(val))
+        # Tighten after that: trimming a quote clause or a duplicate can leave a
+        # boilerplate closer as the final sentence.
+        if _question_based:
+            val = _tighten_justification(val)
+        finding[_field] = val
 
 
 def post_process(finding, document_text, expected_evidence_map=None, db_chunks=None):

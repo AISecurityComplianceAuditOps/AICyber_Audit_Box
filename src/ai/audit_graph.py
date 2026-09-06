@@ -357,6 +357,15 @@ def generate_node(state: AuditState) -> Dict[str, Any]:
                 "on the evidence side. POLICY_STATUS / POLICY_ASSESSMENT are inert for this "
                 "mode: they are discarded downstream and must not influence your assessment "
                 "or your wording.\n"
+                "ANSWER SHAPE: the auditor asked a question and wants it answered, not a "
+                "paragraph about it. Write ONE sentence. Open with Yes or No, then state "
+                "the finding, naming the actual host, IP, account, service or system the "
+                "evidence identifies rather than saying 'the host' or 'the system'. Do "
+                "not add a second sentence restating the evidence -- the quote is captured "
+                "separately and shown directly beneath your answer. Do not close with "
+                "'This satisfies the requirement' or 'The control is met'; the compliance "
+                "result already says that. Good: 'Yes -- NTP synchronization is enabled "
+                "and active on 172.16.32.18.'\n"
             )
 
         result_holder = {}

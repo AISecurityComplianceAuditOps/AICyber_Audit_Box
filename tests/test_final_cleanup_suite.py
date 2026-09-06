@@ -485,3 +485,71 @@ def test_scoping_hint_does_not_auto_grant_compliance():
     assert result["evidence_assessment"] == "NON_COMPLIANT"
 
 
+
+
+# ── crisp answers, question-based scope only ─────────────────────────────────
+# The auditor's complaint was a Customize card whose answer ran to a paragraph:
+# the answer, then the evidence quoted again, then "This satisfies the
+# requirement" -- while the quote already renders in its own field directly
+# beneath and the COMPLIANT badge already says the requirement is met. In a
+# question-based audit the auditor typed a question and wants it answered.
+#
+# Excel and Manual must NOT be trimmed the same way. There the justification is
+# the audit narrative that goes into the report, and its later sentences carry
+# the reasoning behind the verdict rather than filler.
+
+_PARAGRAPH_ANSWER = (
+    "Yes -- NTP synchronization is enabled and active on 172.16.32.18. "
+    "The system reports 'NTP enabled: yes' and 'NTP synchronized: yes'. "
+    "This satisfies the requirement for clock synchronization."
+)
+
+
+def test_customize_answer_is_trimmed_to_one_sentence():
+    """Question-based row: keep the answer, drop the restatement and the closer."""
+    from src.core.validator import _clean_finding_narrative_fields
+    finding = {
+        "justification": _PARAGRAPH_ANSWER,
+        "evidence_snippet": "NTP sync active.",
+        "customize_mode": True,
+    }
+    _clean_finding_narrative_fields(finding)
+    assert finding["justification"] == (
+        "Yes -- NTP synchronization is enabled and active on 172.16.32.18.")
+
+
+def test_customize_detected_from_scoping_mode_too():
+    """customize_mode is set by audit_graph; scoping_mode is what the API carries."""
+    from src.core.validator import _clean_finding_narrative_fields
+    finding = {"justification": _PARAGRAPH_ANSWER, "scoping_mode": "CUSTOMIZE"}
+    _clean_finding_narrative_fields(finding)
+    assert finding["justification"] == (
+        "Yes -- NTP synchronization is enabled and active on 172.16.32.18.")
+
+
+def test_excel_and_manual_keep_the_full_narrative():
+    """Not question-based: every sentence survives, filler included.
+
+    Trimming here would delete audit reasoning from the report, which is a
+    worse failure than a wordy card.
+    """
+    from src.core.validator import _clean_finding_narrative_fields
+    finding = {
+        "justification": _PARAGRAPH_ANSWER,
+        "evidence_snippet": "NTP sync active.",
+        "customize_mode": False,
+    }
+    _clean_finding_narrative_fields(finding)
+    assert finding["justification"] == _PARAGRAPH_ANSWER
+
+
+def test_tightening_never_empties_a_finding():
+    """A one-sentence justification that looks like filler is still kept.
+
+    The first sentence is never dropped: a finding trimmed to nothing is worse
+    than one carrying a boilerplate line.
+    """
+    from src.core.validator import _clean_finding_narrative_fields
+    finding = {"justification": "This satisfies the requirement.", "customize_mode": True}
+    _clean_finding_narrative_fields(finding)
+    assert finding["justification"] == "This satisfies the requirement."
