@@ -5,6 +5,7 @@ Configures prompt templates and LangChain chains using ChatOllama.
 """
 
 import json
+import re
 try:
     import ollama
 except ImportError:
@@ -986,6 +987,12 @@ def get_num_ctx(model_name: str) -> int:
     return 16384
 
 
+# A tag name must start with a letter or underscore; Gemma's <|channel> does not.
+_XML_TAG_START_RE = re.compile(r"<[A-Za-z_]")
+# The markers come in both orders: <|channel> ... <channel|>.
+_CHANNEL_MARKER_RE = re.compile(r"<\|[^<>]*>|<[^<>]*\|>")
+
+
 class NativeOllamaChain:
     """
     A drop-in replacement wrapper for LangChain's PromptTemplate + ChatOllama.
@@ -1286,9 +1293,19 @@ class NativeOllamaChain:
                 
             # Wrap in single root tag to parse with ElementTree
             xml_body = repaired_text
-            first_tag_idx = xml_body.find("<")
-            if first_tag_idx != -1:
-                xml_body = xml_body[first_tag_idx:]
+            # Gemma prefixes its reply with channel markers:
+            #
+            #     <|channel>thought <channel|><status>NON_COMPLIANT</status>
+            #
+            # find("<") landed on "<|channel>", and "|" cannot start an XML name,
+            # so ElementTree failed at column 7 on EVERY call and the regex
+            # fallback silently ran the whole audit. Confirmed against the live
+            # model, not inferred. Skip to the first tag that could actually be
+            # one, and drop any marker left further in.
+            xml_body = _CHANNEL_MARKER_RE.sub("", xml_body)
+            first_tag = _XML_TAG_START_RE.search(xml_body)
+            if first_tag:
+                xml_body = xml_body[first_tag.start():]
             last_tag_idx = xml_body.rfind(">")
             if last_tag_idx != -1:
                 xml_body = xml_body[:last_tag_idx+1]
