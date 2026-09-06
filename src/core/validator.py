@@ -918,6 +918,86 @@ def evaluate_nist_risk_and_severity(finding, control_id=None):
     return finding
 
 
+# ── Value-level grounding ────────────────────────────────────────────────────
+# The grounding gates compare bags of words, so they cannot tell a finding from
+# its opposite. Proven on real data: an OCR chunk reading "NTP synchronized:
+# yes" scored 100% against a quote claiming "NTP synchronized: no", because the
+# chunk also contains "no" (for "RTC in local TZ") and set intersection has no
+# idea which field a value belongs to. Dropping yes/no from the stopword list
+# does not help for the same reason -- it was tried and still scored 100%.
+#
+# So values are bound to their own label and compared field by field. That is
+# the only way to catch a model that faithfully reproduces every word of the
+# source while inverting the one that decides the verdict.
+_FIELD_VALUE_RE = re.compile(
+    r"([A-Za-z][A-Za-z /_-]{2,40}?)\s*[:=]\s*"
+    r"(yes|no|true|false|enabled|disabled|active|inactive|on|off|present|absent|n/a)\b",
+    re.I)
+
+# OCR glues neighbouring UI text onto the start of a label -- a screenshot with a
+# file browser open produced "cache NTP synchronized" and ".config RTC in local
+# TZ". Stripping these keeps the label comparable without loosening the match.
+_OCR_LABEL_NOISE_RE = re.compile(
+    r"^(?:a|the|cache|config|dbus|db|local|java|root|tmp|var|etc|usr|bin)\s+", re.I)
+
+# Values that mean the same thing must not read as a contradiction.
+_VALUE_SYNONYMS = {
+    "true": "yes", "false": "no", "on": "yes", "off": "no",
+    "enabled": "yes", "disabled": "no", "active": "yes", "inactive": "no",
+    "present": "yes", "absent": "no",
+}
+
+
+def _normalise_label(label):
+    key = re.sub(r"[^a-z ]", " ", str(label).lower())
+    key = re.sub(r"\s+", " ", key).strip()
+    prev = None
+    while key != prev:                       # OCR can glue on more than one token
+        prev = key
+        key = _OCR_LABEL_NOISE_RE.sub("", key).strip()
+    return key
+
+
+def _normalise_value(value):
+    v = str(value).strip().lower()
+    return _VALUE_SYNONYMS.get(v, v)
+
+
+def _field_value_pairs(text):
+    """Every "label: value" pair in the text, keyed by a normalised label.
+
+    First occurrence wins: OCR often repeats a panel, and the first reading is
+    the one nearest the label it belongs to.
+    """
+    pairs = {}
+    if not text:
+        return pairs
+    flat = re.sub(r"\s+", " ", str(text))
+    for label, value in _FIELD_VALUE_RE.findall(flat):
+        key = _normalise_label(label)
+        if len(key) < 3:
+            continue
+        pairs.setdefault(key, _normalise_value(value))
+    return pairs
+
+
+def _quote_contradicts_source(quote, source_text):
+    """Fields the quote states differently from the source it was drawn from.
+
+    Only fields present in BOTH are compared, so a quote that adds context or
+    omits a line is never penalised -- the finding has to actually assert
+    something the source denies.
+    """
+    said = _field_value_pairs(quote)
+    if not said:
+        return []
+    truth = _field_value_pairs(source_text)
+    if not truth:
+        return []
+    return [(k, said[k], truth[k]) for k in said
+            if k in truth and said[k] != truth[k]]
+
+
 def validate_only(finding, document_text, expected_evidence_map, db_chunks=None):
     """
     Runs core validation rules on a single finding without triggering requires_human_review.
@@ -1438,6 +1518,30 @@ def validate_only(finding, document_text, expected_evidence_map, db_chunks=None)
                             pass
                     break
 
+    # GATE 4: the quote is made of the right words -- does it say the right thing?
+    # Gates 2, 3 and 3.5 all compare word overlap, which cannot separate a claim
+    # from its opposite: a chunk reading "NTP synchronized: yes" scores 100%
+    # against a quote claiming "no", because the chunk also contains "no" for a
+    # different field. That is not hypothetical -- it shipped a NON_COMPLIANT
+    # verdict for a host whose evidence plainly read yes. This binds each value
+    # to its own label and compares them field by field.
+    value_conflicts = []
+    if grounded_state in ("GROUNDED", "GROUNDED_WITH_OCR_WARNING"):
+        _source_text = ""
+        if matched_chunk_id and db_chunks:
+            for _vc_chunk in db_chunks:
+                if getattr(_vc_chunk, "id", None) == matched_chunk_id:
+                    _source_text = _vc_chunk.content or ""
+                    break
+        if not _source_text:
+            _source_text = document_text or ""
+        value_conflicts = _quote_contradicts_source(evidence_clean, _source_text)
+        if value_conflicts:
+            grounded_state = "VALUE_CONTRADICTION"
+            print(f"[VALIDATOR DEBUG] GATE 4 (Value) FAIL for {control_id}: "
+                  + "; ".join(f"{k} quoted as '{q}' but source says '{t}'"
+                              for k, q, t in value_conflicts), flush=True)
+
     finding["chunk_id"] = matched_chunk_id
     finding["hallucination_check"] = grounded_state
 
@@ -1469,6 +1573,20 @@ def validate_only(finding, document_text, expected_evidence_map, db_chunks=None)
             finding["evidence_quote"] = "NOT_FOUND"
             finding["finding"] = f"Control requirements for {control_id} are completely missing from the policy document."
             finding = evaluate_nist_risk_and_severity(finding, control_id)
+    elif grounded_state == "VALUE_CONTRADICTION":
+        # Never publish this as a verdict. The words were all present, so the
+        # model was reading the right evidence -- it reported the value wrongly,
+        # and no downstream check would notice. A human decides.
+        _detail = "; ".join(f"'{k}' quoted as '{q}' but the evidence says '{t}'"
+                            for k, q, t in value_conflicts)
+        finding["requires_human_review"] = True
+        finding["requires_review"] = True
+        finding["value_contradiction"] = True
+        finding["validator_note"] = "Quoted value contradicts the cited evidence"
+        finding["review_note"] = (
+            "HELD FOR REVIEW - the finding states a value the evidence does not: "
+            + _detail + ". The verdict below was NOT confirmed against the source.")
+        print(f"[VALIDATOR DEBUG] [HOLD] {control_id}: {_detail}", flush=True)
     elif grounded_state == "GROUNDED_WITH_OCR_WARNING":
         finding["requires_human_review"] = True
         finding["requires_review"] = True
