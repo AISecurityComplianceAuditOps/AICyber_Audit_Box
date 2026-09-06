@@ -937,6 +937,13 @@ function _setRunLockedInputs(locked) {
         // (lockScopeDisplayToCheckpoint) ever disabled these; a normal scan start
         // never did.
         "btn-select-all-controls", "btn-clear-all-controls", "controls-search-input",
+        // The Excel scoping matrix, and the two ways in beside it. These stayed
+        // live while a scan ran: the dropzone is a div with its own onclick, so
+        // disabling the buttons around it left the box itself clickable, and
+        // dropping a new sheet mid-run re-scopes the audit underneath the run
+        // that is already going. The builder and template links go with it --
+        // both produce the same scope, so leaving either open reopens the hole.
+        "scoping-excel-dropzone", "scoping-excel-file", "scoping-builder-entry",
     ];
     ids.forEach(id => {
         const el = document.getElementById(id);
@@ -944,6 +951,11 @@ function _setRunLockedInputs(locked) {
         el.disabled = locked;
         el.style.opacity = locked ? "0.5" : "";
         el.style.pointerEvents = locked ? "none" : "";
+        // The dropzone sets cursor:pointer inline; without this it still reads
+        // as clickable while being inert, which is worse than looking disabled.
+        if (el.style.cursor === "pointer" || id === "scoping-excel-dropzone") {
+            el.style.cursor = locked ? "not-allowed" : "pointer";
+        }
     });
 
     // The control checkboxes themselves, and their container, so the whole list
