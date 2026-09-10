@@ -3533,6 +3533,13 @@ def _export_iso_template_docx(session_title, findings, resolved_list, status, co
 
     def _set_cell_bg(cell, hex_color):
         tcPr = cell._tc.get_or_add_tcPr()
+        # Remove any inherited fill before adding one. Observation rows are deep
+        # copies of the header row (see _add_obs_row), so every cell arrives
+        # carrying the header's blue w:shd -- appending a second fill on top of it
+        # left two on the same cell and the header colour could win, which is what
+        # made the whole observations table render as one block of header blue.
+        for _old in tcPr.findall(qn("w:shd")):
+            tcPr.remove(_old)
         shd = OxmlElement("w:shd")
         shd.set(qn("w:val"),   "clear")
         shd.set(qn("w:color"), "auto")
@@ -4077,6 +4084,9 @@ def _export_iso_template_docx(session_title, findings, resolved_list, status, co
         "Medium":   ("FFFF99", "7F6000"),  # yellow bg, dark text
         "Low":      ("E2EFDA", "375623"),  # light green bg, dark green text
         "Accepted": ("DDEEFF", "1F4E79"),  # blue-grey bg, navy text
+        # The compliant rows pass "Acceptable" (see the _add_obs_row call below),
+        # which matched no key here and so kept the header fill.
+        "Acceptable": ("DDEEFF", "1F4E79"),
     }
     SECTION_BG = "D9D9D9"
 
@@ -4101,10 +4111,13 @@ def _export_iso_template_docx(session_title, findings, resolved_list, status, co
         values = [xml_safe(v) for v in (sno, control_pt, policy_ref, observation,
                                         risk, impact, suggestion, evidence)]
         for ci, (cell, val) in enumerate(zip(cells, values)):
-            # Clear all runs
+            # Delete the cloned header's runs outright rather than blanking their
+            # text. This row is a deepcopy of row 0, so every cell arrives holding
+            # the header's bold 11pt runs; emptying them left them sitting in front
+            # of the real 9pt text, still contributing their own height and weight.
             for para in cell.paragraphs:
-                for run in para.runs:
-                    run.text = ""
+                for run in list(para.runs):
+                    run._element.getparent().remove(run._element)
             # Observations (3) and Impact (5) are the prose cells -- emphasise the
             # facts that decide the finding (dates, versions, filenames, quoted
             # evidence, outcome wording) so an auditor can pick them out without
@@ -4117,15 +4130,22 @@ def _export_iso_template_docx(session_title, findings, resolved_list, status, co
             else:
                 run = target_para.add_run(val)
                 run.font.size = Pt(9)
-                if is_section:
-                    run.bold = True
+                # Explicit either way: the paragraph came from the header row, so
+                # leaving this unset let the header's weight carry into data rows.
+                run.bold = bool(is_section)
 
-            # Apply background color
+            # Apply background color. The else branch is the fix that matters: a
+            # plain data row previously had no _set_cell_bg call at all, so it kept
+            # the header blue it was copied from -- every row in the observations
+            # table rendered as a header row, which is what made the finished
+            # report read as one unbroken block of colour rather than a table.
             if is_section:
                 _set_cell_bg(cell, SECTION_BG)
             elif risk in RISK_COLORS:
                 bg_hex, _ = RISK_COLORS[risk]
                 _set_cell_bg(cell, bg_hex)
+            else:
+                _set_cell_bg(cell, "FFFFFF")
 
     # Build grouped findings: group by VAPT control category
     section_counters = {}
@@ -4197,10 +4217,15 @@ def _export_iso_template_docx(session_title, findings, resolved_list, status, co
             # ── Observations ────────────────────────────────────────────────────
             # PII redacted before writing to exported document (this table previously
             # skipped redaction entirely, unlike the other export tables/functions).
+            # "description" sits between observation and finding, exactly as in the
+            # PDF exporter -- without it a finding whose text lives only in
+            # description exported with an empty Observations cell here and a full
+            # one there.
             obs = redact_pii(
                 _strip_reasoning_narrative(
                     str(f.get("gap_description") or f.get("reasoning")
-                        or f.get("observation") or f.get("finding") or ""),
+                        or f.get("observation") or f.get("description")
+                        or f.get("finding") or ""),
                     f.get("final_result") or f.get("status") or "",
                 )[:800]
             )
@@ -4223,8 +4248,15 @@ def _export_iso_template_docx(session_title, findings, resolved_list, status, co
                 ))
 
             risk_lbl   = _risk_level(f)
+            # business_impact FIRST -- it is the key both export endpoints actually
+            # send (audit.py builds "business_impact": f.reasoning or ...). This read
+            # "impact" or "risk_impact", neither of which exists in that payload, so
+            # the Impact column of every template DOCX report fell through to the
+            # "Business Risk" / "NIL" boilerplate while the PDF printed the real
+            # impact narrative from the same finding. Same document, same data, two
+            # different answers -- and the DOCX was the one that looked stale.
             impact     = redact_pii(_strip_reasoning_narrative(
-                str(f.get("impact") or f.get("risk_impact")
+                str(f.get("business_impact") or f.get("impact") or f.get("risk_impact")
                     or ("NIL" if _is_compliant_row else "Business Risk")),
                 f.get("final_result") or f.get("status") or "",
             ))
@@ -4718,7 +4750,10 @@ def export_docx_report(session_title, findings, resolved_list, status, comments=
     tbl_obs = doc.add_table(rows=1, cols=8)
     tbl_obs.style = 'Table Grid'
     hdr_obs = tbl_obs.rows[0].cells
-    hdr_obs_titles = ['S.No.', 'Control points', 'Policy Reference', 'Observations', 'Risk', 'Impact', 'Suggestion', 'Evidence']
+    # "Recommendation", not "Suggestion": both the PDF and the master DOCX template
+    # label this column Recommendation, and this fallback was the only one of the
+    # three saying anything else.
+    hdr_obs_titles = ['S.No.', 'Control points', 'Policy Reference', 'Observations', 'Risk', 'Impact', 'Recommendation', 'Evidence']
     for i, title in enumerate(hdr_obs_titles):
         _set_cell_bg(hdr_obs[i], "0F172A")
         _set_cell_borders(hdr_obs[i])
@@ -4768,15 +4803,12 @@ def export_docx_report(session_title, findings, resolved_list, status, comments=
 
         # Content — PII redacted before writing to exported document
         row_cells[0].paragraphs[0].add_run(str(f_idx))
-        # Collapse the repeat -- control_id and control routinely hold the same text
-        # (the checklist question), so joining them printed the control point twice.
-        row_cells[1].paragraphs[0].add_run(
-            # str() on both: control_id and control are not reliably strings. They
-            # come from parsers, the LLM and hand-edits, and a None or an int here
-            # raised TypeError mid-table, losing the whole export rather than one row.
-            _dedupe_repeated_phrase(
-                (str(f.get("control_id") or "") + " " + str(f.get("control") or "")).strip())
-        )
+        # _control_point_label, the same helper the PDF and the DOCX template use:
+        # on a question-based audit the question IS the control point, and joining
+        # control_id with control printed the control name instead -- so two rows
+        # under one control were indistinguishable here while the PDF told them
+        # apart. It already collapses the id/name repeat this used to handle.
+        row_cells[1].paragraphs[0].add_run(_control_point_label(f))
         # Policy Reference is an AUDITOR-SUPPLIED field. It used to fall back to a
         # generated "<framework> Annex A" label, stamping every row with a reference the
         # auditor never wrote and could not change. Left blank when not configured, so
