@@ -65,6 +65,11 @@ class AuditState(TypedDict):
     # mapped to any control or policy document, so the prompt drops its policy
     # framing and the verdict is decided on the evidence alone.
     customize_mode: Optional[bool]
+    # Customize scope runs as pure document Q&A: the question is answered from the
+    # cited file(s) and nothing else, with no control, no policy dimension and none
+    # of the standard's reasoning rules. Set only for Customize -- Excel Scoping and
+    # Manual scope never carry it, and take exactly the paths they always have.
+    rag_mode: Optional[bool]
     # Which of the locked files (if any) came from a Policy-named vs an
     # Evidence-named column on the sheet, so the LLM can be told the auditor's
     # own intent instead of re-deriving the policy/evidence split blind from
@@ -114,9 +119,14 @@ def _update_progress(state: AuditState, phase_text: str, phase_ratio: float):
         next_base_pct = int(((idx + 1) / total) * 100)
         current_pct = min(current_pct, next_base_pct - 1 if idx + 1 < total else 99)
         
+        # "control" is the wrong word for a Customize run, which audits the
+        # auditor's own questions and never resolves a control for them.
+        _unit = "question" if state.get("rag_mode") else "control"
+        _what = (state.get("control_label") if state.get("rag_mode")
+                 else state.get("control_id")) or ""
         with _bg_lock:
             _bg_store["progress"][bg_key] = {
-                "text": f"⚡ Auditing control {idx + 1}/{total}: {state.get('control_id','')} — {phase_text}...",
+                "text": f"⚡ Auditing {_unit} {idx + 1}/{total}: {_what} — {phase_text}...",
                 "percent": current_pct
             }
     except Exception as e:
@@ -311,8 +321,21 @@ def generate_node(state: AuditState) -> Dict[str, Any]:
         # ── Phase 2: Judge-only chain for Excel scoping mode ────────────────────
         locked_filenames = state.get("locked_filenames") or []
         checklist_question = state.get("checklist_question") or state["control_label"]
-        use_excel_judge_mode = bool(locked_filenames)
-        if use_excel_judge_mode:
+        # Customize is checked FIRST: its rows are locked to files too, so the
+        # bool(locked_filenames) test below would otherwise hand a question-only
+        # audit the ISO Lead Auditor judge prompt -- the exact control framing the
+        # mode exists to do without.
+        use_rag_qa_mode = bool(state.get("rag_mode"))
+        use_excel_judge_mode = bool(locked_filenames) and not use_rag_qa_mode
+        if use_rag_qa_mode:
+            from src.ai.audit_chains import get_rag_qa_chain
+            generator_chain = get_rag_qa_chain(state["llm_model"])
+            print(
+                f"[GENERATE NODE] Pure document Q&A (Customize) for {state['control_id']} "
+                f"(files: {locked_filenames or 'session evidence'})",
+                flush=True
+            )
+        elif use_excel_judge_mode:
             from src.ai.audit_chains import get_excel_scoping_chain
             generator_chain = get_excel_scoping_chain(state["llm_model"])
             print(
@@ -339,25 +362,14 @@ def generate_node(state: AuditState) -> Dict[str, Any]:
                 "supports the objective before marking COMPLIANT):\n" + " ".join(parts) + "\n"
             )
 
-        # Customize (question-only) scope. The auditor explicitly chose a mode with no
-        # control and no policy document, so instructing the model to demand a policy
-        # would have it write a policy gap for something that was never in scope. The
-        # deterministic layer already decides these on evidence alone
-        # (validator.post_process); this keeps the model's own narrative consistent with
-        # that instead of arguing the opposite in the justification text.
-        if state.get("customize_mode"):
-            column_source_hint += (
-                "\nQUESTION-BASED AUDIT (CUSTOMIZE SCOPE):\n"
-                "This item has NO policy requirement. The auditor supplied a question and "
-                "the evidence to answer it; a documented policy was deliberately not put in "
-                "scope. Judge it solely on whether the cited evidence affirmatively answers "
-                "the ORIGINAL AUDIT CHECK QUESTION. Do NOT report a missing policy as a gap "
-                "and do NOT require a documented policy for COMPLIANT. The control shown "
-                "above is the control this question maps to -- evaluate against it, but only "
-                "on the evidence side. POLICY_STATUS / POLICY_ASSESSMENT are inert for this "
-                "mode: they are discarded downstream and must not influence your assessment "
-                "or your wording.\n"
-            )
+        # NOTE: Customize used to reach this point on the judge prompt with a patch
+        # appended here telling the model to ignore the policy half of the very prompt
+        # it had just been given. It no longer does: Customize runs on
+        # RAG_QA_PROMPT_TEMPLATE (use_rag_qa_mode above), which never mentions policy,
+        # controls or the standard in the first place. Bolting a "disregard the
+        # previous instructions" paragraph onto an auditor prompt was always the weaker
+        # half of the fix -- the model obeyed it inconsistently, which is what
+        # _align_customize_answer in validator.py had to keep cleaning up after.
 
         result_holder = {}
         # Adaptive: scales with active session count (1800s floor, +360s per active
@@ -376,7 +388,19 @@ def generate_node(state: AuditState) -> Dict[str, Any]:
                 print(state.get("retrieved_context", ""), flush=True)
                 print("===== END EVIDENCE CONTEXT =====\n", flush=True)
 
-                if use_excel_judge_mode:
+                if use_rag_qa_mode:
+                    # Pure document Q&A: the question and the extracts, nothing else.
+                    # No control id, no expected evidence and no auditor feedback
+                    # few-shots -- each of those reintroduces control framing through
+                    # the back door, which is exactly what this mode is not.
+                    result_holder["draft"] = generator_chain.invoke({
+                        "locked_filenames": ", ".join(locked_filenames) or "the uploaded evidence",
+                        "checklist_question": checklist_question,
+                        "condensed_context": state["retrieved_context"],
+                        "session_id": state.get("bg_key"),
+                        "timeout": _timeout,
+                    })
+                elif use_excel_judge_mode:
                     # Judge-only mode: pass locked_filenames + checklist_question
                     result_holder["draft"] = generator_chain.invoke({
                         "locked_filenames": ", ".join(locked_filenames),
@@ -466,8 +490,13 @@ def validate_node(state: AuditState) -> Dict[str, Any]:
     draft = state["draft_finding"]
     
     if not draft:
-        if state.get("audit_mode") == "Quick" or state["retry_count"] >= 1:
-            mode_prefix = "Quick audit" if state.get("audit_mode") == "Quick" else "Self-correction"
+        # Customize is included unconditionally: it never routes to the reflection
+        # pass (see should_continue), so without this a question whose generation
+        # failed would end with final_finding=None and vanish from the report
+        # instead of being reported as unanswered.
+        if state.get("audit_mode") == "Quick" or state["retry_count"] >= 1 or state.get("rag_mode"):
+            mode_prefix = ("Customize Q&A" if state.get("rag_mode")
+                           else ("Quick audit" if state.get("audit_mode") == "Quick" else "Self-correction"))
             print(f"[LANGGRAPH] {mode_prefix} failed generation for control {state['control_id']}. Routing to fallback.", flush=True)
             retrieved = str(state.get("retrieved_context") or "").strip()
             has_retrieved = len(retrieved) > 40 and not any(kw in retrieved.lower() for kw in ["no relevant context found", "no evidence found"])
@@ -503,6 +532,14 @@ def validate_node(state: AuditState) -> Dict[str, Any]:
                 gap_text = f"Context identified for {ctrl_code}, but complete evidence verification requires auditor sign-off. Context excerpt: {ev_snippet[:200]}..."
                 rec_text = state.get("recommendation") or f"Formally document, review, and maintain operational evidence logs for Control {ctrl_code} ({ctrl_name})."
                 review_note = "Evaluated with control-specific governance synthesis."
+            elif state.get("rag_mode"):
+                # Question-only: there is no control objective to describe, and no
+                # policy to recommend establishing. Say what actually happened.
+                _q = state.get("checklist_question") or ctrl_name
+                finding_text = f"This question was not answered: no usable response was produced for \"{_q}\"."
+                gap_text = finding_text
+                rec_text = "Re-run this question. If it recurs, check that the cited document was uploaded and is readable."
+                review_note = "No answer was produced for this question -- re-run required."
             else:
                 finding_text = f"The control objective for Control {ctrl_code} ({ctrl_name}) requires documented policies and implementation evidence ({prompt_hint[:90]}...). No supporting evidence was identified in the uploaded package."
                 gap_text = f"No documentation or evidence identified for Control {ctrl_code}."
@@ -589,6 +626,15 @@ def validate_node(state: AuditState) -> Dict[str, Any]:
     # policy fields, so it has to be told. Without this the dual rule would apply and
     # every Customize row would fail on a policy the auditor never put in scope.
     draft_copy["customize_mode"] = bool(state.get("customize_mode"))
+    # Pure document Q&A. post_process returns straight after the grounding gate for
+    # these -- no control formula, no requirement decomposition, no NIST severity --
+    # and takes the verdict from the answer's own Yes/No opener. The question and the
+    # label travel with it because there is no control to look either of them up from.
+    draft_copy["rag_mode"] = bool(state.get("rag_mode"))
+    if state.get("rag_mode"):
+        draft_copy["requirement_question"] = (
+            state.get("checklist_question") or state.get("control_label") or "")
+        draft_copy["control_label"] = state.get("control_label") or ""
     
     validated_finding = post_process(
         finding=draft_copy,
@@ -609,6 +655,29 @@ def validate_node(state: AuditState) -> Dict[str, Any]:
     
     if is_failed:
         error_msg = validated_finding.get("review_note") or validated_finding.get("validator_note") or "Grounding check failed: Evidence quote was not verified in the document."
+
+        # Customize (pure Q&A): a grounding failure means the quote the model gave is
+        # not actually in the cited document. The answer is kept, downgraded and
+        # flagged for the auditor rather than handed to the reflection pass -- that
+        # pass is an adversarial compliance challenger written around a control, and
+        # running it here would put back the framing this mode exists to remove.
+        if state.get("rag_mode"):
+            if str(validated_finding.get("status") or "").upper() == "COMPLIANT":
+                validated_finding["status"] = "NON_COMPLIANT"
+                validated_finding["final_result"] = "NON_COMPLIANT"
+            validated_finding["requires_human_review"] = True
+            validated_finding["requires_review"] = True
+            validated_finding["review_note"] = (
+                f"The quoted text could not be verified in the cited document: {error_msg}")
+            validated_finding["control_id"] = state["control_id"]
+            validated_finding["control"] = state["control_label"]
+            print(f"[LANGGRAPH VALIDATOR] Customize Q&A grounding issue for "
+                  f"{state['control_id']}: kept and flagged for review.", flush=True)
+            _log_execution_event(state, validated_finding)
+            return {
+                "validation_error": None,
+                "final_finding": validated_finding
+            }
 
         if state.get("audit_mode") == "Quick":
             # FIX Q1: In Quick mode, don't blindly accept a hard-failed finding.
@@ -765,6 +834,13 @@ def should_continue(state: AuditState) -> str:
     while preserving 100% ground truth verification.
     """
     if state["validation_error"] is not None:
+        # Customize (pure Q&A) never reflects: reflection_node runs
+        # REFLECTION_PROMPT_TEMPLATE, an adversarial compliance challenger built
+        # around a control and a policy, which is precisely the framing this mode
+        # removes. validate_node returns a usable finding for these instead of a
+        # validation_error, so this is a backstop rather than the normal path.
+        if state.get("rag_mode"):
+            return "end"
         if state["retry_count"] < 1:
             return "reflect"
         return "end"

@@ -34,6 +34,15 @@ class AuditReport(Base):
     reviewed_at            = Column(DateTime, nullable=True)
     requires_scoping_review = Column(Boolean, default=False)
     scoping_note           = Column(Text, nullable=True)
+    # The scope mode this session's run was started in ("CUSTOMIZE" / "EXCEL" /
+    # "MANUAL" / "AI"). AuditCheckpoint carries the same value for the lifetime of
+    # a run so a resume keeps its shape; this one outlives the run, so a finished
+    # report still knows how it was produced -- the findings endpoint reads it to
+    # render a Customize run as questions and answers rather than as control
+    # findings with empty control fields. Nullable and no server_default, so
+    # reconcile_schemas() adds it to existing databases without touching saved rows
+    # (they read back as None, i.e. "unknown", and render exactly as before).
+    scoping_mode           = Column(String(50), nullable=True)
     # LLM-written executive summary / tactical recommendations for VAPT & PQC
     # reports, as JSON {"overview": ..., "recommendations": ...}. Persisted rather
     # than kept in _bg_store so exporting the same report a week later, or after a
@@ -143,6 +152,14 @@ class Finding(Base):
     requirements_coverage_json   = Column(Text, nullable=True)
     likelihood                   = Column(String(50), nullable=True)
     impact                       = Column(String(50), nullable=True)
+    # The narrative impact the model writes ("log timestamps cannot be correlated
+    # during an investigation"), as opposed to `impact` above, which is the NIST
+    # rating (High/Medium/Low). AuditFindingSchema has produced this since Phase 5
+    # and the save path dropped it every time, so the only place it ever surfaced
+    # was the exports -- and those substitute f.reasoning for it. Nullable, no
+    # server_default: reconcile_schemas() adds it to existing databases and old
+    # rows read back as None.
+    business_impact              = Column(Text, nullable=True)
     risk_level                   = Column(String(50), nullable=True)
     risk_rationale               = Column(Text, nullable=True)
     policy_items_json            = Column(Text, nullable=True)

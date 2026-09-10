@@ -609,10 +609,13 @@
                                 <div style="margin-bottom: 12px;">
                                     <div
                                         style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
-                                        <label
+                                        <label id="scope-method-label"
                                             style="font-size: 0.76rem; font-weight: 700; color: var(--text-main); margin: 0;">Scope
                                             Detection Method</label>
-                                        <button type="button" class="btn-primary" onclick="openScopeSelectorModal()"
+                                        <!-- Hidden in Customize (see _setControlScopeVisible in app.js):
+                                             that mode audits the auditor's questions, not controls, so a
+                                             control picker there offers a scope the run does not use. -->
+                                        <button type="button" id="btn-edit-scope" class="btn-primary" onclick="openScopeSelectorModal()"
                                             style="padding: 4px 10px; font-size: 0.72rem; background: linear-gradient(135deg, #2563eb, #1d4ed8); font-weight: 700;">
                                             <span id="sidebar-scope-count-badge">Edit Scope (108/108)</span>
                                         </button>
@@ -626,32 +629,40 @@
                                             style="flex: 1; padding: 7px 6px; font-size: 0.75rem; border-radius: 8px; border: none; cursor: pointer; display: none; align-items: center; justify-content: center; gap: 4px;">
                                             <span>AI Auto-Scoping</span>
                                         </button>
+                                        <!-- Order is Customize, Excel, Manual, by request. Presentation only:
+                                             every one of these is addressed by id (setScopingMode, the run-lock
+                                             and the framework-visibility code all use getElementById), and
+                                             nothing in app.js selects them by position, so moving the markup
+                                             changes what the auditor sees and nothing else. Which mode is
+                                             ACTIVE on load is still decided by the active-scope-mode class
+                                             below -- Excel Upload keeps it, exactly as before. -->
+                                        <!-- Customize: pure document Q&A. The checklist's questions ARE the
+                                             audit items -- no control is resolved for them, none is shown, and
+                                             none is reported against. Each question is answered from the
+                                             document cited on its own row, with no policy requirement and none
+                                             of the framework's reasoning rules applied. -->
+                                        <button type="button" class="scope-mode-btn" id="btn-customize-scoping"
+                                            onclick="setScopingMode('CUSTOMIZE')"
+                                            title="Document Q&amp;A: your questions are answered from the documents you cite for them. No controls, no policy requirement."
+                                            style="flex: 1; padding: 7px 6px; font-size: 0.75rem; border-radius: 8px; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 4px;">
+                                            <span>Checklist</span>
+                                        </button>
                                         <button type="button" class="scope-mode-btn active-scope-mode" id="btn-excel-scoping"
                                             onclick="setScopingMode('EXCEL')"
                                             style="flex: 1; padding: 7px 6px; font-size: 0.75rem; border-radius: 8px; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 4px;">
-                                            <span>Excel Upload</span>
+                                            <span>Control</span>
                                         </button>
                                         <button type="button" class="scope-mode-btn" id="btn-checklist-scoping"
                                             onclick="setScopingMode('MANUAL')"
                                             style="flex: 1; padding: 7px 6px; font-size: 0.75rem; border-radius: 8px; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 4px;">
-                                            <span>Manual Scope</span>
-                                        </button>
-                                        <!-- Customize: question-only audit. The uploaded checklist's questions
-                                             are the audit items and are NOT mapped to any ISO control or policy
-                                             document, so each is judged purely on whether the cited evidence
-                                             answers it. -->
-                                        <button type="button" class="scope-mode-btn" id="btn-customize-scoping"
-                                            onclick="setScopingMode('CUSTOMIZE')"
-                                            title="Question-only audit: your checklist questions are evaluated directly against the cited evidence, with no control or policy mapping."
-                                            style="flex: 1; padding: 7px 6px; font-size: 0.75rem; border-radius: 8px; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 4px;">
-                                            <span>Customize</span>
+                                            <span>Selective</span>
                                         </button>
                                     </div>
 
                                     <!-- Live Context Status Note -->
                                     <div id="scoping-mode-status-note"
                                         style="font-size: 0.72rem; color: var(--text-muted); padding: 0 2px;">
-                                        <span style="color:#10b981;font-weight:700;">🟢 Active:</span> <b>Excel Upload Scope</b> — Drag & drop or browse an Excel scoping matrix (.xlsx) below.
+                                        <span style="color:#10b981;font-weight:700;">🟢 Active:</span> <b>Control Scope</b> — Drag & drop or browse an Excel scoping matrix (.xlsx) below.
                                     </div>
 
                                     <!-- Confirms which checklist is actually in scope. app.js writes

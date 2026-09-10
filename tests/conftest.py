@@ -45,6 +45,8 @@ collect_ignore = [
 # set, so a stock CI runner stays fast while a self-hosted one can include them.
 _NEEDS_STACK = (
     "test_excel_row_level_scoping.py",
+    # Its Customize counterpart, same harness and same warm-up cost.
+    "test_customize_row_scoping.py",
     "test_pqc_real_docs.py",
     "test_vapt_real_docs.py",
 )

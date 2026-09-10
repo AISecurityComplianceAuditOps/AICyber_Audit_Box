@@ -2474,7 +2474,7 @@ def _sentences(text):
     return parts or ([text] if text else [])
 
 
-def _tighten_justification(text):
+def _tighten_justification(text, keep_detail=False):
     """Drop sentences that add nothing to the auditor's answer.
 
     An auditor reads the first sentence and needs it to be the answer. What
@@ -2502,10 +2502,20 @@ def _tighten_justification(text):
         body = sent.strip()
         if not body:
             continue
+        # Boilerplate always goes, and so does a sentence that pastes a QUOTED
+        # evidence line back into the answer ("The system reports 'NTP enabled:
+        # yes'.") -- that exact text is already rendered in its own block directly
+        # below the answer, so keeping it is the same line twice on one card.
         if (_BOILERPLATE_CLOSER_RE.match(body)
                 or _CONTROL_IS_MET_RE.match(body)
-                or _EVIDENCE_RESTATEMENT_RE.match(body)
                 or _QUOTED_RESTATEMENT_RE.match(body)):
+            continue
+        # keep_detail relaxes only the UNQUOTED restatement rule. "The system
+        # reports that the RTC is configured to UTC" is a fact in plain words, and
+        # on a question-based card those sentences are the detail the auditor asked
+        # for -- the host, the value, the setting. Dropping them left one-line
+        # answers with nothing after the first sentence for the card to highlight.
+        if not keep_detail and _EVIDENCE_RESTATEMENT_RE.match(body):
             continue
         kept.append(sent)
     out = "".join(kept).strip()
@@ -2602,7 +2612,10 @@ def _clean_finding_narrative_fields(finding, document_text=None):
         # Tighten after that: trimming a quote clause or a duplicate can leave a
         # boilerplate closer as the final sentence.
         if _question_based:
-            val = _tighten_justification(val)
+            # keep_detail: a question-based answer is the only thing the auditor
+            # reads on that card, so the supporting facts stay in it. Pure
+            # boilerplate closers are still dropped.
+            val = _tighten_justification(val, keep_detail=True)
             # "on the host" -> "on 172.16.32.18". The model's quote is searched
             # first, then the full source: an address the model dropped is still
             # the auditor's best identifier, and preferring it matters because
@@ -2612,6 +2625,157 @@ def _clean_finding_narrative_fields(finding, document_text=None):
             # was intact.
             val = _name_the_host(val, " ".join(quote_sources) + " " + str(document_text or ""))
         finding[_field] = val
+
+
+# ── Customize scope: pure document Q&A ───────────────────────────────────────
+# Everything below post_process's deterministic policy/evidence formula assumes an
+# audit against a control: a policy artifact to expect, atomic requirements to
+# decompose the control objective into, a NIST risk rating to derive from the gap.
+# A Customize row has none of those. The auditor typed a question, attached the
+# document that answers it, and the answer decides the outcome -- nothing else.
+_RAG_ANSWER_OPENER_RE = re.compile(
+    r"^\s*(yes|no|not\s+stated|not\s+specified|not\s+mentioned|not\s+addressed)\b", re.I)
+
+
+def _rag_answer_text(finding):
+    """The sentence the auditor actually reads, whichever field carries it."""
+    for field in ("justification", "reasoning", "description", "final_reason", "finding"):
+        val = str(finding.get(field) or "").strip()
+        if val:
+            return val
+    return ""
+
+
+def finalize_rag_answer(finding):
+    """Decide a Customize row from its own answer, then stop.
+
+    The rule is the whole mode: the answer is the verdict. "Yes" is COMPLIANT,
+    anything else is not. That is deliberately not the same thing as asking the
+    model for a compliance status and hoping its prose agrees -- the auditor reads
+    the sentence, so the sentence is what the badge has to follow. A card that
+    opens "Yes, NTP is enabled and synchronized" beside a red X is the failure this
+    replaces, and it was a real one.
+
+    Everything control-shaped is cleared rather than left at its default: an
+    untouched policy_status of NOT_FOUND renders a policy badge and prints a policy
+    gap in the export, which is a deficiency reported against a requirement the
+    auditor never put in scope.
+    """
+    status_now = str(finding.get("status") or "").strip().upper()
+
+    # A control that was never evaluated (LLM timeout) has no answer to read. It
+    # keeps its own status -- inventing a verdict here is exactly what the
+    # NOT_EVALUATED path exists to prevent.
+    if status_now in ("NOT_EVALUATED", "FALSE_POSITIVE"):
+        is_compliant = False
+        derived = "kept as-is (%s)" % status_now
+    else:
+        answer = _rag_answer_text(finding)
+        m = _RAG_ANSWER_OPENER_RE.match(answer)
+        opener = re.sub(r"\s+", " ", m.group(1)).lower() if m else ""
+        if opener == "yes":
+            is_compliant, derived = True, 'answer opens "Yes"'
+        elif opener == "no":
+            is_compliant, derived = False, 'answer opens "No"'
+        elif opener:
+            # "Not stated" -- the document simply does not address the question.
+            # Not an answer, so not a pass, and worth a human's eye rather than
+            # being filed alongside a genuine "No".
+            is_compliant, derived = False, 'answer opens "%s"' % opener
+            finding["requires_human_review"] = True
+            finding["requires_review"] = True
+            if not finding.get("review_note"):
+                finding["review_note"] = (
+                    "The cited document does not address this question.")
+        else:
+            # The model ignored the opener instruction. Its own status field is the
+            # only signal left; the answer text is still what gets displayed, so
+            # this is logged rather than silently resolved.
+            is_compliant = status_now == "COMPLIANT"
+            derived = "no Yes/No opener -- fell back to the model status %r" % status_now
+
+        # A quote that is not in the cited document cannot support a "Yes".
+        if is_compliant and finding.get("hallucination_check") in ("NOT_GROUNDED", "PROMPT_LEAK"):
+            is_compliant = False
+            derived += "; overridden -- quoted text not found in the cited document"
+            finding["requires_human_review"] = True
+            finding["requires_review"] = True
+
+        finding["status"] = "COMPLIANT" if is_compliant else "NON_COMPLIANT"
+        finding["final_result"] = finding["status"]
+
+    print("[VALIDATOR] Customize Q&A: %s -> %s" % (derived, finding.get("status")), flush=True)
+
+    # No control, so no policy dimension and no policy verdict to report.
+    finding["policy_status"] = ""
+    finding["policy_assessment"] = ""
+    finding["policy_present"] = ""
+    finding["policy_gap"] = ""
+    finding["policy_finding"] = ""
+    finding["policy_snippet"] = ""
+    finding["policy_required"] = False
+    finding["customize_mode"] = True
+    finding["rag_mode"] = True
+
+    _quote = str(finding.get("evidence_quote") or "").strip()
+    _has_quote = bool(_quote) and _quote.upper() != "NOT_FOUND"
+    finding["evidence_present"] = "Found" if _has_quote else "Not Found"
+
+    # The policy/evidence enum pair is cleared, not populated with an evidence-only
+    # half. report_exporter renders those enums as auditor prose -- "operational
+    # evidence was provided and supports the requirement" -- and prints
+    # "Relevance: IRRELEVANT" from the schema default whenever the model omits the
+    # field, which this prompt does because the field does not exist in it. Both
+    # describe an assessment against a requirement, and this row has a question.
+    # Left empty, every one of those helpers returns nothing and the answer itself
+    # is what the report carries.
+    finding["evidence_status"] = ""
+    finding["evidence_assessment"] = ""
+    finding["evidence_relevance"] = ""
+    finding["evidence_gap"] = ""
+    finding["evidence_finding"] = ""
+    finding["evidence_freshness"] = ""
+
+    # The answer is the finding. Without this the description falls back to
+    # gap_description, which for a compliant row reads "No gaps identified. The
+    # cited evidence satisfies the control requirement." -- control language on a
+    # mode that has no control.
+    _answer = _rag_answer_text(finding)
+    if _answer:
+        finding["description"] = _answer
+        finding["finding"] = _answer
+        finding["gap_description"] = _answer
+        finding["reasoning"] = finding.get("reasoning") or _answer
+        finding["final_reason"] = _answer
+
+    if finding.get("status") == "COMPLIANT":
+        finding["severity"] = "N/A"
+        # An answered-yes question has no adverse impact to describe. Cleared rather
+        # than left to the model, which will write one anyway if asked in the same
+        # breath as the answer.
+        finding["business_impact"] = ""
+        # Not left empty: bg_worker's save fills a blank recommendation with
+        # "Maintain current documented policies and verification procedures for
+        # <control>", which is control language on a mode that has no control.
+        finding["recommendation"] = "No action required."
+    else:
+        _rec = str(finding.get("recommendation") or "").strip()
+        # bg_worker fills an empty recommendation with "Establish formal policy
+        # documentation, access controls, and logging evidence for <control>" --
+        # so leaving it blank here would reintroduce control boilerplate at save
+        # time, on the one mode that has no control.
+        finding["recommendation"] = _rec or (
+            "Provide a document that answers this question, or confirm the position "
+            "with the auditee.")
+        # Same treatment as the recommendation: never blank, because a blank Impact
+        # cell on a finding that failed tells the reader nothing about why it matters.
+        _imp = str(finding.get("business_impact") or "").strip()
+        if _imp.upper() in ("NIL", "N/A", "NONE", "NOT APPLICABLE"):
+            _imp = ""
+        finding["business_impact"] = _imp or (
+            "The question could not be answered affirmatively from the document provided.")
+
+    return finding
 
 
 def post_process(finding, document_text, expected_evidence_map=None, db_chunks=None):
@@ -2634,6 +2798,17 @@ def post_process(finding, document_text, expected_evidence_map=None, db_chunks=N
     # Skip potential evidence check if prompt leak
     if finding.get("hallucination_check") == "PROMPT_LEAK":
         return finding
+
+    # ── Customize scope: pure document Q&A ────────────────────────────────────
+    # Stops here, one gate later than the leak check and one gate earlier than
+    # everything control-shaped. The grounding gate above still ran -- a quote the
+    # model invented is caught for a question exactly as it is for a control -- but
+    # the dual policy/evidence formula, the atomic requirement decomposition and the
+    # NIST risk rating below all describe an audit against a control objective, and
+    # this mode has no control and no objective to decompose.
+    if finding.get("rag_mode"):
+        return finalize_rag_answer(finding)
+
         
     # Trigger review flag for potential evidence (only if not already matched fuzzy/verbatim).
     if finding.get("status") == "NON_COMPLIANT" and finding.get("hallucination_check") not in ("GROUNDED", "GROUNDED_WITH_OCR_WARNING"):

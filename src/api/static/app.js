@@ -707,6 +707,20 @@ function filterRecentSessionsList() {
 
 window._sessionScopingCache = window._sessionScopingCache || {};
 
+// Which scope mode actually produced the findings currently on screen, as recorded
+// on the saved report by the server -- not the mode the sidebar happens to be in
+// now. A Customize run is rendered as questions and answers rather than as control
+// findings, and that has to follow the run, not the live UI: an auditor who reopens
+// a finished Excel session while the sidebar sits in Customize must still see their
+// Excel findings drawn as Excel findings. Runs saved before the server recorded the
+// mode leave this false and render exactly as they always did.
+window._sessionIsCustomizeRun = false;
+
+function _noteRunScopingMode(data) {
+    window._sessionIsCustomizeRun =
+        String((data && data.scoping_mode) || "").toUpperCase().startsWith("CUSTOM");
+}
+
 // The scope mode for the current session. Every caller must agree on this:
 // the server judges a control on evidence alone in Customize mode, and on policy
 // AND evidence otherwise, so a mode that goes missing turns a question-based
@@ -1351,6 +1365,9 @@ async function openChecklistBuilder() {
     };
     _show("bhdr-question", _isCustomize);
     _show("bhdr-policy", !_isCustomize);
+    // No control column: Customize resolves no control, so a value typed here
+    // would be collected, sent, and then dropped by the server.
+    _show("bhdr-control", !_isCustomize);
 
     // Read left-to-right in the same order as the sheet this mode reads, so the
     // builder and the downloaded template teach one layout rather than two:
@@ -1380,7 +1397,7 @@ async function openChecklistBuilder() {
     const _sub = document.getElementById("builder-subtitle");
     if (_sub) {
         _sub.innerText = _isCustomize
-            ? "Write each audit question and pick the evidence file(s) that answer it. No Excel needed."
+            ? "Write each question and pick the document that answers it. Each question is answered from that document alone -- no controls are applied."
             : "Name the control, its policy document(s) and the evidence that proves it is done. Add as many of each as the control needs. Both sides are assessed; a row passes only if both hold.";
     }
     const _hdrEv = document.getElementById("bhdr-evidence");
@@ -1481,9 +1498,9 @@ function addChecklistRow(question, file, controlId, policyFile) {
                 style="width:100%; ${fieldCss}">${fileOpts(isCustomize ? "evidence file" : "evidence document")}</select>
             <div class="builder-chips" style="display:flex; flex-wrap:wrap; gap:4px;">${chipsFor(file)}</div>
         </div>
-        <input type="text" class="builder-ctrl" maxlength="40" placeholder="${isCustomize ? "opt." : "e.g. A.6.5"}"
+        <input type="text" class="builder-ctrl" maxlength="40" placeholder="e.g. A.6.5"
             value="${escapeHtml(controlId || "")}"
-            style="width:130px; order:${isCustomize ? 3 : 1}; ${fieldCss}">
+            style="width:130px; order:1; ${fieldCss} ${isCustomize ? "display:none;" : ""}">
         <button type="button" title="Remove row" onclick="this.closest('.builder-row').remove()"
             style="width:28px; order:9; background:transparent; border:none; color:#f87171; cursor:pointer; font-size:1rem; line-height:1;">✕</button>`;
     wrap.appendChild(row);
@@ -1569,7 +1586,9 @@ async function applyChecklistBuilder() {
 
         closeChecklistBuilder();
         if (data.warning) showToast(data.warning, "error");
-        showToastBanner(`CHECKLIST APPLIED: ${rows.length} question(s), ${matched.size} control(s) matched`);
+        showToastBanner(isCustomize
+            ? `CHECKLIST APPLIED: ${rows.length} question(s) — each answered from the document cited on its row`
+            : `CHECKLIST APPLIED: ${rows.length} question(s), ${matched.size} control(s) matched`);
     } catch (err) {
         console.error("[Builder] apply failed:", err);
         showToast(`Could not apply checklist: ${err.message}`, "error");
@@ -2435,6 +2454,7 @@ async function pollAuditResults() {
 
             if (data.success && data.findings && data.findings.length > 0) {
                 if (window._resultsInterval) { clearInterval(window._resultsInterval); window._resultsInterval = null; }
+                _noteRunScopingMode(data);
                 findingsList = data.findings;
                 renderFindingsList();
                 updateKPICounters();
@@ -2473,6 +2493,20 @@ function _setBuilderEntryVisible(show) {
     if (el) el.style.display = show ? "block" : "none";
 }
 
+// The control scope panel: the clause accordions with their checkboxes, and the
+// "Edit Scope (108/108)" button that opens the same list in a modal. Shown in
+// every mode except Customize, which has no controls to show -- its audit items
+// are the auditor's own questions, answered from the documents they cited, and a
+// list of ISO controls beside them only describes an audit that is not running.
+function _setControlScopeVisible(show) {
+    const box = document.getElementById("target-controls-container-box");
+    if (box) box.style.display = show ? "block" : "none";
+    const editBtn = document.getElementById("btn-edit-scope");
+    if (editBtn) editBtn.style.display = show ? "" : "none";
+    const label = document.getElementById("scope-method-label");
+    if (label) label.innerText = show ? "Scope Detection Method" : "Scope Method";
+}
+
 function setScopingMode(mode) {
     const aiBtn = document.getElementById("btn-ai-scoping");
     const chkBtn = document.getElementById("btn-checklist-scoping");
@@ -2481,7 +2515,6 @@ function setScopingMode(mode) {
 
     const excelDropzone = document.getElementById("scoping-excel-dropzone");
     const statusNote = document.getElementById("scoping-mode-status-note");
-    const checklistBox = document.getElementById("target-controls-container-box");
 
     // Reset active class on all buttons
     [aiBtn, chkBtn, excelBtn, customBtn].forEach(b => { if (b) b.classList.remove("active-scope-mode"); });
@@ -2489,29 +2522,29 @@ function setScopingMode(mode) {
     const modeStr = String(mode || "").toUpperCase();
 
     if (modeStr === "CUSTOMIZE" || modeStr.includes("CUSTOM")) {
-        // Question-based audit. The uploaded checklist's questions ARE matched to their
-        // controls and those controls are shown ticked below and evaluated, exactly as
-        // in Excel Upload Scope -- so the controls box stays visible. What Customize
-        // drops is the policy requirement: the verdict rests on whether the cited
-        // evidence answers the question, rather than also demanding a policy document
-        // the auditor never put in scope.
+        // Pure document Q&A. Each checklist question is answered from the document
+        // cited beside it, the way it would be answered by someone who had just read
+        // that document -- no control, no policy requirement, and none of the
+        // framework's reasoning rules.
+        //
+        // The control list is hidden rather than merely ignored. It used to stay on
+        // screen with the matched controls ticked, which is a claim: it told the
+        // auditor this run was scoped to those controls and would report against
+        // them. It is not and does not. Nothing here selects a control, and the
+        // server resolves none for this mode.
         if (customBtn) customBtn.classList.add("active-scope-mode");
         if (excelDropzone) excelDropzone.style.display = "block";
         _setBuilderEntryVisible(true);
-        if (checklistBox) checklistBox.style.display = "block";
-        if (statusNote) statusNote.innerHTML = `<span style="color:#10b981;font-weight:700;">🟢 Active:</span> <b>Customize (Question-Based)</b> — Upload a checklist; each question is matched to its control and judged on the cited evidence. No policy document required.`;
+        _setControlScopeVisible(false);
+        if (statusNote) statusNote.innerHTML = `<span style="color:#10b981;font-weight:700;">🟢 Active:</span> <b>Checklist (Document Q&amp;A)</b> — Upload your questions; each is answered from the document you cite for it. No controls, no policy requirement.`;
         window.currentScopingMode = "CUSTOMIZE";
 
-        // Same as Excel scope: the uploaded checklist decides which controls are in
-        // scope, so start from nothing selected unless a checklist is already loaded.
-        const _hasChecklistC = !!(customEvidenceMappings
-            && customEvidenceMappings.excel_items
-            && customEvidenceMappings.excel_items.length > 0);
-        if (!_hasChecklistC) {
-            document.querySelectorAll("#controls-checkbox-container input[type='checkbox']")
-                .forEach(cb => { cb.checked = false; });
-            if (typeof updateSelectedScopeCount === "function") updateSelectedScopeCount();
-        }
+        // Any selection left ticked by a previous mode is cleared: it is invisible
+        // from here, and an invisible selection that still travels with the run is
+        // how a question-based audit ends up reported against controls again.
+        document.querySelectorAll("#controls-checkbox-container input[type='checkbox']")
+            .forEach(cb => { cb.checked = false; });
+        if (typeof updateSelectedScopeCount === "function") updateSelectedScopeCount();
         return;
     }
 
@@ -2519,15 +2552,15 @@ function setScopingMode(mode) {
         if (aiBtn) aiBtn.classList.add("active-scope-mode");
         if (excelDropzone) excelDropzone.style.display = "none";
         _setBuilderEntryVisible(false);
-        if (checklistBox) checklistBox.style.display = "block";
+        _setControlScopeVisible(true);
         if (statusNote) statusNote.innerHTML = `<span style="color:#10b981;font-weight:700;">🟢 Active:</span> <b>AI Auto-Scoping</b> — Automatically detects technical scan findings across VAPT / PQC assets.`;
         window.currentScopingMode = "AI";
     } else if (modeStr === "MANUAL" || modeStr.includes("MANUAL")) {
         if (chkBtn) chkBtn.classList.add("active-scope-mode");
         if (excelDropzone) excelDropzone.style.display = "none";
         _setBuilderEntryVisible(false);
-        if (checklistBox) checklistBox.style.display = "block";
-        if (statusNote) statusNote.innerHTML = `<span style="color:#10b981;font-weight:700;">🟢 Active:</span> <b>Manual Scope</b> — Select the specific controls to audit from the accordions below.`;
+        _setControlScopeVisible(true);
+        if (statusNote) statusNote.innerHTML = `<span style="color:#10b981;font-weight:700;">🟢 Active:</span> <b>Selective Scope</b> — Select the specific controls to audit from the accordions below.`;
         window.currentScopingMode = "MANUAL";
 
         // Manual scope starts from nothing selected -- the auditor chooses. This branch
@@ -2542,8 +2575,8 @@ function setScopingMode(mode) {
         if (excelBtn) excelBtn.classList.add("active-scope-mode");
         if (excelDropzone) excelDropzone.style.display = "block";
         _setBuilderEntryVisible(true);
-        if (checklistBox) checklistBox.style.display = "block";
-        if (statusNote) statusNote.innerHTML = `<span style="color:#10b981;font-weight:700;">🟢 Active:</span> <b>Excel Upload Scope</b> — Drag & drop or browse an Excel scoping matrix (.xlsx) below.`;
+        _setControlScopeVisible(true);
+        if (statusNote) statusNote.innerHTML = `<span style="color:#10b981;font-weight:700;">🟢 Active:</span> <b>Control Scope</b> — Drag & drop or browse an Excel scoping matrix (.xlsx) below.`;
         window.currentScopingMode = "EXCEL";
 
         // Entering Excel scope clears the selection so the uploaded checklist is the
@@ -2923,6 +2956,11 @@ function syncControlsScopeFromFindings(findings) {
     // state, which is why the panel stopped looking locked mid-run.
     if (window._scopeRunLocked) return;
 
+    // A Customize run evaluated questions, not controls: its findings carry row ids
+    // ("Q1"), not control ids. There is nothing to sync, and matching those against
+    // the control labels would tick controls the run never looked at.
+    if (window._sessionIsCustomizeRun) return;
+
     // An empty findings list means "the scan has not produced anything yet", which
     // is the normal state for the first minutes of every run -- it does NOT mean
     // "the auditor wants all 93 controls". Selecting everything here overwrote a
@@ -3301,6 +3339,12 @@ async function triggerAuditAnalysis() {
     const checkboxes = document.querySelectorAll("#controls-checkbox-container input[type='checkbox']");
     let selectedSls = Array.from(checkboxes).filter(cb => cb.checked).map(cb => parseInt(cb.value));
 
+    // Customize is scoped by its questions. No control is selected for it (the
+    // panel is hidden and the server resolves none), so anything still ticked here
+    // is left over from another mode and must not travel with the run.
+    const _isCustomizeRun = String(resolveScopingMode() || "").toUpperCase().startsWith("CUSTOM");
+    if (_isCustomizeRun) selectedSls = [];
+
     // STRICT SCOPING ENFORCEMENT: If Excel Scoping matrix is loaded, restrict audit ONLY to Excel controls
     if (customEvidenceMappings && customEvidenceMappings.excel_items && customEvidenceMappings.excel_items.length > 0) {
         const excelSLs = Array.from(new Set(customEvidenceMappings.excel_items.map(item => parseInt(item.sl_no)).filter(n => !isNaN(n))));
@@ -3342,7 +3386,18 @@ async function triggerAuditAnalysis() {
         }
     } catch (e) { /* never block a scan on the confirmation itself failing */ }
 
-    if (selectedSls.length === 0) {
+    // Customize needs questions, not controls -- its own guard.
+    if (_isCustomizeRun) {
+        const _qCount = (customEvidenceMappings && customEvidenceMappings.excel_items)
+            ? customEvidenceMappings.excel_items.length : 0;
+        if (_qCount === 0) {
+            alert("⚠️ Add at least one question before running. Upload a checklist, or build one with \"Build one here\".");
+            btn.disabled = false;
+            btn.innerText = "▶ Run Audit Scan"; if (typeof hidePipelineProgress === "function") hidePipelineProgress();
+            if (stopBtn) stopBtn.style.display = "none";
+            return;
+        }
+    } else if (selectedSls.length === 0) {
         alert("⚠️ Please select at least one control to analyze.");
         btn.disabled = false;
         btn.innerText = "▶ Run Audit Scan"; if (typeof hidePipelineProgress === "function") hidePipelineProgress();
@@ -3731,6 +3786,8 @@ async function loadFindings() {
 
         // Session guard: if active session changed while request was in-flight, ignore response
         if (activeSessionId !== requestSessionId) return;
+
+        _noteRunScopingMode(data);
 
         const banner = document.getElementById("shakti-commit-banner");
         const bannerText = document.getElementById("shakti-banner-text");
@@ -5381,6 +5438,47 @@ function buildEvidenceSnippetHtml(rawSnip, f_obj) {
     if (typeof snip !== "string") snip = String(snip || "");
     snip = snip.trim();
 
+    // ── Question-based checklist: the passage the answer came from ───────────
+    // The control version of this panel does not fit a question at all. It leads
+    // with DOCUMENTED POLICY STATEMENTS -- a dimension this mode does not have,
+    // so it always printed "NO DOCUMENTED POLICY IDENTIFIED" -- and it decides
+    // the evidence block from evidence_status/evidence_assessment, which are
+    // deliberately empty here. The defaults below read a missing status as
+    // NOT_FOUND, so a compliant answer with a verified quote sitting right there
+    // was captioned "NO RELEVANT EVIDENCE FOUND ... addressing this control
+    // objective", contradicting its own card.
+    //
+    // A question needs one thing: the sentence in the document that answers it.
+    if (window._sessionIsCustomizeRun) {
+        let qaItems = [];
+        if (f_obj && f_obj.evidence_items_json) {
+            try {
+                qaItems = typeof f_obj.evidence_items_json === "string"
+                    ? JSON.parse(f_obj.evidence_items_json) : f_obj.evidence_items_json;
+            } catch (e) { }
+        }
+        const qaSnip = (Array.isArray(qaItems) && qaItems.length
+                ? qaItems.map(it => it && it.extracted_text).filter(Boolean).join("\n\n") : "")
+            || snip || (f_obj && f_obj.evidence_snippet) || (f_obj && f_obj.evidence_quote) || "";
+        const qaText = String(qaSnip || "").trim();
+        const qaHas = qaText.length > 5
+            && !qaText.toUpperCase().includes("NOT_FOUND")
+            && !qaText.toUpperCase().includes("NO RELEVANT EVIDENCE");
+
+        if (qaHas) {
+            return `<div style="margin-bottom:8px;">
+                <div style="font-size:0.75rem; font-weight:700; color:#c084fc; letter-spacing:0.5px; margin-bottom:4px;">📄 FROM THE DOCUMENT</div>
+                <pre class="finding-snippet" style="${EVIDENCE_SNIPPET_PRE_STYLE.replace('rgba(59,130,246,0.3)', 'rgba(192,132,252,0.3)')}">${escapeHtml(formatEvidenceSnippet(qaText))}</pre>
+            </div>`;
+        }
+        // Nothing to quote. Say what is actually true -- the document does not
+        // answer the question -- rather than reporting a missing control artifact.
+        return `<div style="margin-bottom:8px;">
+            <div style="font-size:0.75rem; font-weight:700; color:#94a3b8; letter-spacing:0.5px; margin-bottom:4px;">📄 FROM THE DOCUMENT</div>
+            <div style="font-size:0.8rem; color:#64748b; font-style:italic; padding:8px 12px; background:rgba(148,163,184,0.12); border-radius:6px;">The cited document does not address this question, so there is no passage to quote.</div>
+        </div>`;
+    }
+
     const evStatus = (f_obj && f_obj.evidence_status) ? String(f_obj.evidence_status).toUpperCase() : "NOT_FOUND";
     const evAssess = (f_obj && f_obj.evidence_assessment) ? String(f_obj.evidence_assessment).toUpperCase() : "NON_COMPLIANT";
 
@@ -5996,7 +6094,16 @@ function renderFindingsList() {
         let displayHeaderTitle = "";
         let auditQuestionSubtext = (f.audit_question || f.question || f.checklist_question || "").trim();
 
-        if (ctrlNameStr) {
+        // Customize (document Q&A): the question IS the item, so it heads the card.
+        // Nothing is prefixed to it -- the row id ("Q3") is bookkeeping, and the
+        // control-name/control-id assembly below has no control to work with anyway.
+        const isQaFinding = !!window._sessionIsCustomizeRun;
+
+        if (isQaFinding) {
+            displayHeaderTitle = (f.requirement_question || ctrlNameStr
+                || auditQuestionSubtext || "Question").trim();
+            auditQuestionSubtext = "";
+        } else if (ctrlNameStr) {
             displayHeaderTitle = ctrlNameStr;
         } else if (titleStr) {
             displayHeaderTitle = titleStr;
@@ -6006,7 +6113,7 @@ function renderFindingsList() {
             displayHeaderTitle = "Audit Control";
         }
 
-        if (ctrlIdStr && displayHeaderTitle && !displayHeaderTitle.toLowerCase().startsWith(ctrlIdStr.toLowerCase()) && !displayHeaderTitle.toLowerCase().includes(ctrlIdStr.toLowerCase())) {
+        if (!isQaFinding && ctrlIdStr && displayHeaderTitle && !displayHeaderTitle.toLowerCase().startsWith(ctrlIdStr.toLowerCase()) && !displayHeaderTitle.toLowerCase().includes(ctrlIdStr.toLowerCase())) {
             displayHeaderTitle = `${ctrlIdStr} — ${displayHeaderTitle}`;
         }
 
@@ -6016,7 +6123,9 @@ function renderFindingsList() {
 
         // ── Clean Separation of Control Name and Audit Checklist Question ──
         // If displayHeaderTitle contains ' — ', separate control title and audit question!
-        if (displayHeaderTitle.includes(" — ")) {
+        // Not for Q&A cards: there is no control prefix to split off, and a question
+        // containing a dash of its own would be cut in half.
+        if (!isQaFinding && displayHeaderTitle.includes(" — ")) {
             const parts = displayHeaderTitle.split(" — ");
             if (parts.length > 1) {
                 displayHeaderTitle = parts[0].trim();
@@ -6058,7 +6167,12 @@ function renderFindingsList() {
 
         const isFp = backendFinalResult === "FALSE_POSITIVE" || String(f.status || "").toUpperCase() === "FALSE_POSITIVE";
 
-        const policyBadgeHtml = hasPolicyFields
+        // No policy badge on a Q&A card. Blank policy fields alone were not enough:
+        // the ternary below falls back to drawing "Policy: Not Found" (or "Policy
+        // Found: Compliant") from the overall verdict when the fields are absent, so
+        // a question the auditor asked about NTP still reported a policy deficiency
+        // against a policy requirement that was never part of this mode.
+        const policyBadgeHtml = isQaFinding ? "" : hasPolicyFields
             ? (policyStatusVal === "NOT_FOUND"
                 ? `<span class="badge badge-warning" style="background:rgba(245,158,11,0.15); color:#f59e0b; border:1px solid rgba(245,158,11,0.3); font-weight:700; padding:3px 8px; border-radius:4px; font-size:0.75rem;">⚠ Policy: Not Found</span>`
                 : (policyAssessVal === "COMPLIANT"
@@ -6068,7 +6182,15 @@ function renderFindingsList() {
                 ? `<span class="badge badge-success" style="background:rgba(16,185,129,0.15); color:#10b981; border:1px solid rgba(16,185,129,0.3); font-weight:700; padding:3px 8px; border-radius:4px; font-size:0.75rem;">✓ Policy Found: Compliant</span>`
                 : `<span class="badge badge-warning" style="background:rgba(245,158,11,0.15); color:#f59e0b; border:1px solid rgba(245,158,11,0.3); font-weight:700; padding:3px 8px; border-radius:4px; font-size:0.75rem;">⚠ Policy: Not Found</span>`);
 
-        const evidenceBadgeHtml = hasEvidenceFields
+        // On a Q&A card the verdict badge beside this one already says COMPLIANT or
+        // NON_COMPLIANT, so this one answers the other question an auditor has:
+        // is the answer backed by a passage from the document, or by nothing?
+        // "Evidence: Compliant" is the control vocabulary and says neither.
+        const evidenceBadgeHtml = isQaFinding
+            ? (hasValidQuote
+                ? `<span class="badge" style="background:rgba(192,132,252,0.15); color:#a855f7; border:1px solid rgba(192,132,252,0.35); font-weight:700; padding:3px 8px; border-radius:4px; font-size:0.75rem;">📄 Quoted from document</span>`
+                : `<span class="badge badge-warning" style="background:rgba(245,158,11,0.15); color:#f59e0b; border:1px solid rgba(245,158,11,0.3); font-weight:700; padding:3px 8px; border-radius:4px; font-size:0.75rem;">⚠ No passage found</span>`)
+            : hasEvidenceFields
             ? (evidenceAssessVal === "COMPLIANT"
                 ? `<span class="badge badge-success" style="background:rgba(16,185,129,0.15); color:#10b981; border:1px solid rgba(16,185,129,0.3); font-weight:700; padding:3px 8px; border-radius:4px; font-size:0.75rem;">✓ Evidence ${evidenceStatusVal === 'FOUND' ? 'Found' : 'Not Found'}: Compliant</span>`
                 : evidenceStatusVal === "FOUND"
@@ -6665,7 +6787,7 @@ function renderFindingsList() {
                 <div class="finding-header" style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; border-bottom:1px solid rgba(148,163,184,0.15); padding-bottom:10px; margin-bottom:12px;">
                     <div style="flex:1; min-width:0;">
                         <h3 style="margin:0; font-size:1.05rem; font-weight:700; color:var(--text-primary);">${escapeHtml(displayHeaderTitle)}</h3>
-                        ${buildQuestionSubtitleHtml(f)}
+                        ${isQaFinding ? "" : buildQuestionSubtitleHtml(f)}
                     </div>
                     <div class="badge-group" style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
                         ${policyBadgeHtml}
@@ -6683,15 +6805,21 @@ function renderFindingsList() {
                          here would now repeat the same sentence twice on one card. -->
 
                     <div class="finding-detail-row" style="margin-bottom: 12px;">
-                        <label style="font-weight:700; font-size:0.78rem; color:#94a3b8; text-transform:uppercase; letter-spacing:0.5px; display:block; margin-bottom:4px;">AUDITOR OBSERVATIONS</label>
+                        <label style="font-weight:700; font-size:0.78rem; color:#94a3b8; text-transform:uppercase; letter-spacing:0.5px; display:block; margin-bottom:4px;">${isQaFinding ? "ANSWER" : "AUDITOR OBSERVATIONS"}</label>
                         <p style="margin:0; font-size:0.86rem; color:var(--text-primary); line-height:1.5;">${renderFindingDescriptionHtml(f)}</p>
                     </div>
 
-                    ${buildRequirementsCoveragePanelHtml(f)}
+                    ${isQaFinding ? "" : buildRequirementsCoveragePanelHtml(f)}
 
                     <div class="finding-detail-row" style="margin-bottom: 12px;">
                         ${buildEvidenceSnippetHtml(singleSnip, f)}
                     </div>
+
+                    ${(isQaFinding && String(f.business_impact || "").trim()) ? `
+                    <div class="finding-detail-row" style="margin-bottom: 12px;">
+                        <label style="font-weight:700; font-size:0.78rem; color:#94a3b8; text-transform:uppercase; letter-spacing:0.5px; display:block; margin-bottom:4px;">IMPACT</label>
+                        <p style="margin:0; font-size:0.86rem; color:var(--text-primary); line-height:1.5;">${escapeHtml(String(f.business_impact).trim())}</p>
+                    </div>` : ""}
 
                     <div class="finding-detail-row" style="margin-bottom: 12px;">
                         <label style="font-weight:700; font-size:0.78rem; color:#94a3b8; text-transform:uppercase; letter-spacing:0.5px; display:block; margin-bottom:4px;">LEAD AUDITOR RECOMMENDATIONS</label>
@@ -6700,7 +6828,7 @@ function renderFindingsList() {
 
                     <div class="finding-actions" style="display:flex; justify-content:space-between; align-items:center; margin-top:14px; padding-top:10px; border-top:1px solid rgba(148,163,184,0.15);">
                         <div style="font-size:0.78rem; color:#2563eb; font-weight:600; display:flex; align-items:center; gap:6px;">
-                            <span>📁 Evidence Source Location: <i style="color:var(--text-muted); font-weight:400; font-style:italic;">${safeDoc}</i></span>
+                            <span>📁 ${isQaFinding ? "Answered from" : "Evidence Source Location"}: <i style="color:var(--text-muted); font-weight:400; font-style:italic;">${safeDoc}</i></span>
                         </div>
                         <div class="btn-card-group" style="display:flex; gap:8px;">
                             <button class="btn-secondary" style="color:#10b981; font-weight:700; border-color:rgba(16,185,129,0.4); padding:4px 12px; border-radius:5px; cursor:pointer;" onclick="updateFindingWorkflowStatus(${f.id}, 'Accepted')">✓ Accept</button>
@@ -9345,7 +9473,31 @@ async function handleScopingExcelUpload(event) {
 
         const data = await res.json();
 
-        if (data.success && data.matched_sls && data.matched_sls.length > 0) {
+        if (data.success && data.rag_mode) {
+            // Customize: the questions ARE the scope, so matched_sls is empty by
+            // design. Without this branch the upload fell into the "no ISO controls
+            // could be matched" case below -- which is about a sheet that failed to
+            // resolve -- and threw the auditor's checklist away on the one mode that
+            // never resolves a control in the first place.
+            customEvidenceMappings = data.custom_evidence || null;
+            customControlDocuments = data.custom_documents || null;
+            selectAllCheckboxes(false);
+            updateSelectedScopeCount();
+            setScopingMode('CUSTOMIZE');
+            if (typeof saveSessionScopingCache === "function") {
+                saveSessionScopingCache(activeSessionId, data.custom_evidence, 'CUSTOMIZE');
+            }
+            const _qCount = (data.custom_evidence && data.custom_evidence.excel_items)
+                ? data.custom_evidence.excel_items.length : (data.total_rows || 0);
+            const _banner = document.getElementById("excel-scope-banner");
+            if (_banner) _banner.style.display = "flex";
+            const _bLabel = document.getElementById("excel-scope-label");
+            if (_bLabel) _bLabel.innerText = `${_qCount} question(s) loaded`;
+            showToastBanner(`CHECKLIST (DOCUMENT Q&A) APPLIED: ${_qCount} question(s) from "${file.name}" — each answered from the document cited on its row`);
+            if (data.warning) {
+                setTimeout(() => alert(`⚠️ ${data.warning}`), 600);
+            }
+        } else if (data.success && data.matched_sls && data.matched_sls.length > 0) {
             // Uncheck all first
             selectAllCheckboxes(false);
 
@@ -9384,7 +9536,7 @@ async function handleScopingExcelUpload(event) {
             }
 
             const totalExcelItems = (data.custom_evidence && data.custom_evidence.excel_items) ? data.custom_evidence.excel_items.length : data.matched_sls.length;
-            showToastBanner(`${_wasCustomize ? 'CUSTOMIZE (QUESTION-BASED) SCOPING APPLIED' : 'EXCEL SCOPING APPLIED'}: ${totalExcelItems} Checklist Items Scoped from Excel ("${file.name}")`);
+            showToastBanner(`${_wasCustomize ? 'CHECKLIST (QUESTION-BASED) SCOPING APPLIED' : 'CONTROL SCOPING APPLIED'}: ${totalExcelItems} Checklist Items Scoped from Excel ("${file.name}")`);
 
             // Surface any partial-match warning (e.g. some rows could not be resolved)
             if (data.warning) {
@@ -9454,7 +9606,7 @@ function parseClientSideCsvScope(file) {
         // Customize just because their checklist finished uploading.
         const _wasCustomizeCsv = String(window.currentScopingMode || "").toUpperCase().startsWith("CUSTOM");
         setScopingMode(_wasCustomizeCsv ? 'CUSTOMIZE' : 'Excel Scoping');
-        showToastBanner(`${_wasCustomizeCsv ? 'CUSTOMIZE (QUESTION-BASED) SCOPING APPLIED' : 'EXCEL SCOPING APPLIED'}: ${count} Controls Scoped from "${file.name}"`);
+        showToastBanner(`${_wasCustomizeCsv ? 'CHECKLIST (QUESTION-BASED) SCOPING APPLIED' : 'CONTROL SCOPING APPLIED'}: ${count} Controls Scoped from "${file.name}"`);
     };
     reader.readAsText(file);
 }

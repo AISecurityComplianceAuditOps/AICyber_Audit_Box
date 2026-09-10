@@ -472,6 +472,51 @@ def _build_controls_for_audit(selected_sls=None, custom_evidence=None, scoping_m
         if excel_items and isinstance(excel_items, list):
             controls = []
             for item in excel_items:
+                # ── Customize: the question IS the audit item ────────────────
+                # No control is resolved, none is displayed and none is
+                # evaluated against. The row carries a question and the file the
+                # auditor cited to answer it, and that is the whole item. Every
+                # control-derived field below (the ISO label, the expected
+                # evidence, the "Establish, document and implement procedures to
+                # satisfy <control>" recommendation, the control keywords that
+                # steer retrieval) is deliberately absent rather than empty-ish:
+                # each one is a route by which control framing gets back into a
+                # mode whose entire point is not having any.
+                if bool(item.get("customize_mode")) or _session_customize:
+                    _q = (item.get("requirement_question") or item.get("question") or "").strip()
+                    _row_i = item.get("row_index")
+                    _q_id = "Q%s" % _row_i if _row_i else "Q%d" % (len(controls) + 1)
+                    _files = item.get("files") or item.get("raw_file_refs") or []
+                    _files_str = ", ".join(_files) if isinstance(_files, list) else str(_files)
+                    _primary = _files[0] if (isinstance(_files, list) and _files) else _files_str
+                    controls.append({
+                        "control": _q_id,
+                        "control_id": _q_id,
+                        "label": _q or _q_id,
+                        "checklist_question": _q,
+                        "requirement_question": _q,
+                        "requirement_question_source": "customize",
+                        "requirement_question_status": "RESOLVED" if _q else "UNRESOLVED",
+                        "row_index": _row_i,
+                        "expected": "",
+                        "prompt_hint": "",
+                        "severity": item.get("severity", "MEDIUM"),
+                        "standard": "",
+                        "recommendation": "",
+                        "keywords": {},
+                        "evidence_location": _primary,
+                        "evidence_source_file": _primary,
+                        "evidence_source_files_all": _files_str,
+                        # Customize has no policy dimension, so a row can never
+                        # produce a policy-column file to split off.
+                        "policy_source_files_all": "",
+                        "evidence_only_source_files_all": "",
+                        "customize_mode": True,
+                        "rag_mode": True,
+                        "policy_required": False,
+                    })
+                    continue
+
                 ctrl_id = item.get("control_id", "UNKNOWN")
                 # control_label is the official ISO name resolved by excel_scoping_parser
                 # (e.g. "5.15 Access Control"), not the raw checklist question. Without it,
@@ -558,6 +603,11 @@ def _build_controls_for_audit(selected_sls=None, custom_evidence=None, scoping_m
                 # was judged under the policy+evidence rule and failed every
                 # question-based row on a missing policy document.
                 "customize_mode": _session_customize,
+                # customize_mode and rag_mode are set together everywhere, so the
+                # two can never disagree about which pipeline a row belongs in --
+                # a Customize session is a pure-Q&A session, including on this
+                # no-checklist fallback path.
+                "rag_mode": _session_customize,
                 "policy_required": not _session_customize,
             })
     return controls
@@ -1414,7 +1464,27 @@ Return format: ["topic1", "topic2", ...]"""
         #
         # An unmapped control reported as such is honest; one silently audited
         # against everything is not.
-        if is_excel_mode and is_ambiguous and not has_tier1_explicit_assignment:
+        if c.get("rag_mode") and not has_tier1_explicit_assignment:
+            # Customize answers a question from the document cited on its own row
+            # and from nothing else. With no document cited there is nothing to
+            # answer from, and the Tier 2/3/4 cascade below would quietly widen
+            # the search to every uploaded file -- the opposite of what a locked
+            # scope means, and it would answer the auditor's question out of a
+            # document they never pointed at.
+            control_file_names = []
+            target_evidence_files = []
+            excel_no_evidence_mapped = True
+            excel_scope_block_reason = (
+                "No document was cited for this question in the checklist, so there "
+                "was nothing to answer it from."
+            )
+            control_context = ""
+            print(
+                f"[CONTROL FILE SCOPE] {c['control']}: no document cited on this "
+                f"Customize row -- left unanswered rather than searching unrelated files.",
+                flush=True
+            )
+        elif is_excel_mode and is_ambiguous and not has_tier1_explicit_assignment:
             control_file_names = []
             target_evidence_files = []
             excel_no_evidence_mapped = True
@@ -1611,6 +1681,10 @@ Return format: ["topic1", "topic2", ...]"""
             # dimension. generate_node uses this to drop the policy framing from the
             # prompt, and validator.post_process uses it to judge on evidence alone.
             "customize_mode": bool(c.get("customize_mode")),
+            # Pure document Q&A: selects RAG_QA_PROMPT_TEMPLATE in generate_node and
+            # the answer-driven verdict in validator.post_process, and keeps the row
+            # away from the reflection pass. Never set for Excel or Manual scope.
+            "rag_mode": bool(c.get("rag_mode")),
         }
         
         if excel_no_evidence_mapped:
@@ -1621,7 +1695,12 @@ Return format: ["topic1", "topic2", ...]"""
             # without the risk of the LLM being handed unrelated session files)
             # to arrive at the same place.
             ctrl_duration = time.time() - control_start_time
-            _no_evidence_msg = excel_scope_block_reason or "No evidence file was mapped to this control in the uploaded Excel checklist."
+            _rag_row = bool(c.get("rag_mode"))
+            _no_evidence_msg = excel_scope_block_reason or (
+                "No document was cited for this question in the checklist."
+                if _rag_row else
+                "No evidence file was mapped to this control in the uploaded Excel checklist."
+            )
             result = {
                 "control_id": c["control"],
                 "control_label": c["label"],
@@ -1635,14 +1714,30 @@ Return format: ["topic1", "topic2", ...]"""
                 "evidence_snippet": "",
                 "source_files": "",
                 "evidence_location": "",
-                "recommendation": f"Map and upload evidence for {c['label']} in the audit checklist, then re-run this control.",
+                "recommendation": (
+                    "Name the document that answers this question on its checklist row, "
+                    "upload it as evidence, and re-run."
+                    if _rag_row else
+                    f"Map and upload evidence for {c['label']} in the audit checklist, then re-run this control."
+                ),
                 "reasoning": (
                     "This checklist row had no evidence file mapped to it, so no retrieval or "
                     "LLM evaluation was performed -- flagged for human review instead of "
                     "searching other, unrelated files in this session."
                 ),
-                "policy_status": "NOT_FOUND",
-                "policy_assessment": "NON_COMPLIANT",
+                # Customize has no policy dimension: leaving these at NOT_FOUND draws a
+                # policy badge in the UI and prints a policy gap in the export, against a
+                # requirement the auditor never put in scope.
+                "policy_status": "" if _rag_row else "NOT_FOUND",
+                "policy_assessment": "" if _rag_row else "NON_COMPLIANT",
+                "policy_present": "" if _rag_row else "No",
+                "policy_required": False if _rag_row else None,
+                "customize_mode": _rag_row,
+                "rag_mode": _rag_row,
+                # Only for Customize: control_label is already set above, and an
+                # Excel row reaching this branch must save exactly the fields it
+                # saved before -- requirement_question included (absent, i.e. NULL).
+                **({"requirement_question": c.get("checklist_question") or ""} if _rag_row else {}),
                 "evidence_status": "NOT_FOUND",
                 "evidence_assessment": "NON_COMPLIANT",
                 "final_result": "NON_COMPLIANT",
@@ -1659,7 +1754,10 @@ Return format: ["topic1", "topic2", ...]"""
                 if result:
                     # ── Excel Scoping Safety Gate (Phase 2 final correction) ─────────────
                     # Overrides N/A evidence and wrong-file citations structurally.
-                    if target_evidence_files:
+                    # Skipped for Customize: apply_excel_scoping_safety_gate is written
+                    # around the Excel judge output (control objectives, policy/evidence
+                    # citations) and would re-impose that shape on a plain answer.
+                    if target_evidence_files and not c.get("rag_mode"):
                         try:
                             from src.core.validator import apply_excel_scoping_safety_gate
                             retrieved_ctx = state_output.get("retrieved_context", "")
@@ -2245,6 +2343,7 @@ def _run_ollama_bg(bg_key, files_data, selected_sls_copy, ai_model, session_id=N
                         requirements_coverage_json=f.get("requirements_coverage_json"),
                         likelihood=f.get("likelihood"),
                         impact=f.get("impact"),
+                        business_impact=f.get("business_impact"),
                         risk_level=f.get("risk_level"),
                         risk_rationale=f.get("risk_rationale"),
                         policy_items_json=f.get("policy_items_json") if "policy_items_json" in f else "[]",

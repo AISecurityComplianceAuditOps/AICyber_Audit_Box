@@ -1603,6 +1603,21 @@ def api_start_audit(req: StartAuditRequest, request: Request):
                     except Exception:
                         db.rollback()
 
+            # ── Record the scope mode this run was started in ─────────────────
+            # AuditReport.scoping_mode has existed since the column was added but
+            # nothing ever wrote it, so once a scan finished there was no way to
+            # tell from the saved report which mode produced it. The findings
+            # endpoint reads it back so the UI can render a Customize run as the
+            # question-and-answer sheet it is, rather than as control findings with
+            # blank control fields. Written for every mode; only Customize is read.
+            _req_mode = (req.scoping_mode or "").strip()
+            if _req_mode and (getattr(report, "scoping_mode", None) or "") != _req_mode:
+                report.scoping_mode = _req_mode[:50]
+                try:
+                    db.commit()
+                except Exception:
+                    db.rollback()
+
             report_framework = report.framework or ""
 
             # ── Licensed frameworks ──────────────────────────────────────────
@@ -2181,6 +2196,10 @@ def api_get_findings(request: Request, session_id: str, saved_only: bool = False
                 "evidence_items_json": e_val,
                 "requirement_question": getattr(f, "requirement_question", None) or "Requirement question not provided",
                 "policy_required": bool(getattr(f, "policy_required", False)),
+                # The narrative impact, for the card's IMPACT section. getattr for the
+                # same reason as scoping_mode above: an unreconciled database must not
+                # turn a display field into a 500 on the entire findings page.
+                "business_impact": getattr(f, "business_impact", None) or "",
                 # VAPT enrichment fields (src/core/parsers/control_mapper.py) -- populated
                 # for findings saved from a scanner-parsed VAPT session; empty for ISO
                 # findings, which don't go through that enrichment pipeline.
@@ -2215,7 +2234,17 @@ def api_get_findings(request: Request, session_id: str, saved_only: bool = False
             "success": True, 
             "findings": result, 
             "session_title": report.session_title,
-            "session_status": report.status
+            "session_status": report.status,
+            # The scope mode the run was started in. The UI renders a Customize run
+            # as questions and answers -- no control id, no policy badges -- and
+            # every other mode exactly as before.
+            #
+            # getattr, not attribute access: this field was added to AuditReport
+            # after the fact, and a database that has not been reconciled yet (or a
+            # rolled-back deployment) turns a plain report.scoping_mode into an
+            # AttributeError -- which is a 500 on the findings endpoint, i.e. the
+            # entire Audit Records page failing to load over a display hint.
+            "scoping_mode": getattr(report, "scoping_mode", None) or ""
         }
     finally:
         db.close()
@@ -3428,13 +3457,22 @@ def api_export_docx(
 
             # Determine DOCX template type: PQC gets its own template, not VAPT
             _is_pqc_docx = "PQC" in (report.framework or "").upper()
+            # The cover title is the AUDIT's name, not the standard it was run
+            # against. This passed report.framework, so every ISO report -- whatever
+            # the auditor called the session, whichever client it was for -- opened
+            # with the words "ISO 27001" and nothing identifying it. The standard is
+            # already stated in the Document Control table and throughout the body.
+            # Falls back to the framework only when a session was never named.
             docx_bytes = export_docx_report(
-                session_title=report.framework or "Audit Report",
+                session_title=(report.session_title or report.framework or "Audit Report"),
                 findings=findings_mapped,
                 resolved_list=resolved_list,
                 status=report.status or "Draft",
                 comments="Lead auditor generated report",
-                audit_type=("pqc" if _is_pqc_docx else "vapt" if is_vapt else None),
+                # "iso" rather than None: with the title now carrying auditor-typed
+                # text, leaving this unset would let a session named e.g. "VAPT
+                # follow-up for ISO scope" re-infer itself into the VAPT template.
+                audit_type=("pqc" if _is_pqc_docx else "vapt" if is_vapt else "iso"),
                 metadata=meta_dict
             )
             
@@ -3922,12 +3960,19 @@ def api_export_pdf(
                     )
             else:
                 from src.core.report_exporter import export_pdf_report
+                # Same as the DOCX above: the session's own name heads the report,
+                # with the framework as the fallback for an unnamed session. Both
+                # formats have to agree here -- they are the same report.
                 pdf_bytes = export_pdf_report(
-                    session_title=report.framework or "ISO 27001 Audit Report",
+                    session_title=(report.session_title or report.framework or "ISO 27001 Audit Report"),
                     findings=findings_mapped,
                     resolved_list=resolved_list,
                     status=report.status or "Draft",
                     comments="Lead auditor generated report",
+                    # Explicit, for the same reason as the DOCX call: this branch has
+                    # already decided the report is not VAPT/PQC, so the exporter must
+                    # not second-guess it from a title the auditor typed.
+                    audit_type="iso",
                     metadata=meta_dict
                 )
             

@@ -259,7 +259,7 @@ def api_get_framework_controls(request: Request):
         raise HTTPException(status_code=500, detail="Failed to load framework controls.")
 
 
-def _build_scope_payload(items):
+def _build_scope_payload(items, rag_mode=False):
     """Resolve parsed checklist rows to ISO controls and build the scope payload.
 
     Shared by the Excel upload endpoint and the in-app checklist builder so both
@@ -267,7 +267,44 @@ def _build_scope_payload(items):
     label prefix, keyword map, name match, word overlap) runs AFTER the parser and
     is what actually decides which controls a checklist maps to. Duplicating it for
     the builder would have let the two paths drift apart silently.
+
+    `rag_mode` is Customize, and it skips all of that. Customize used to run the
+    same five resolution passes as Excel: every question was matched to a control,
+    the control was ticked in the scope panel, and the audit was reported against
+    it. That is a control-based audit wearing a different label. In Customize the
+    question is the audit item and there is no control -- so none is resolved, none
+    is returned, and the panel has nothing to tick. Default False: Excel Scoping and
+    Manual scope reach this function exactly as they always did.
     """
+    if rag_mode:
+        for _idx, _item in enumerate(items or []):
+            # Blanked rather than left as the parser found them: a resolved control
+            # id sitting on the row is enough for the worker, the UI and the export
+            # to start describing this as an audit of that control.
+            _item["control_id"] = ""
+            _item["control_name"] = ""
+            _item["control_label"] = ""
+            _item["expected_evidence"] = ""
+            _item["prompt_hint"] = ""
+            _item["customize_mode"] = True
+            _item["rag_mode"] = True
+            _item["policy_required"] = False
+            _item.setdefault("row_index", _idx + 1)
+        return {
+            "success": True,
+            # Nothing to select: no control is in scope, because the questions are.
+            "matched_sls": [],
+            "custom_evidence": {"excel_items": items},
+            "custom_documents": {},
+            "total_rows": len(items),
+            "rag_mode": True,
+            "warning": None,
+            "message": (
+                f"Loaded {len(items)} question(s). Each is answered from the document "
+                f"cited on its row -- no controls are applied."
+            ),
+        }
+
     # Imported here rather than at module scope: this used to live inside the
     # upload endpoint, which imported it locally, and controls_data pulls in the
     # full 217-control table that not every route in this file needs.
@@ -513,7 +550,15 @@ def api_build_scope_checklist(request: Request, req: BuildChecklistRequest):
     items = []
     for idx, r in enumerate(rows):
         q = (r.question or "").strip()
-        _cid, _clabel, _cexpected = _canonical_control(r.control_id)
+        # Customize resolves nothing: no control id is looked up, so none can be
+        # displayed, ticked or reported against. A control id typed into a
+        # Customize row is dropped for the same reason a policy file is (below) --
+        # the mode does not have that dimension, and half-honouring it produces a
+        # row that is question-based in the verdict and control-based everywhere else.
+        if customize:
+            _cid, _clabel, _cexpected = "", "", ""
+        else:
+            _cid, _clabel, _cexpected = _canonical_control(r.control_id)
         evidence_files = list(r.files or [])
         # Customize has no policy dimension by design; anything sent for one in
         # that mode is dropped rather than quietly reintroducing the policy rule
@@ -543,7 +588,7 @@ def api_build_scope_checklist(request: Request, req: BuildChecklistRequest):
             "policy_required": not customize,
         })
 
-    payload = _build_scope_payload(items)
+    payload = _build_scope_payload(items, rag_mode=customize)
     _shape = "question" if customize else "policy/evidence"
     payload["message"] = (
         f"Built {len(items)} {_shape} checklist item(s) from the in-app builder "
@@ -583,29 +628,40 @@ def api_scope_template(request: Request, mode: str = Query("EXCEL")):
         _customize = str(mode or "").strip().upper().startswith("CUSTOM")
 
         if _customize:
-            headers = ["Audit check", "File name", "File type", "Control ID (optional)"]
+            # No Control ID column. It used to be here as "optional", which was true
+            # of the cell and not of the mode: whether the auditor filled it in or
+            # left it blank, the question was matched to a control and the audit was
+            # reported against that control. Customize does not use controls at all,
+            # so offering a column for one only invites the misunderstanding.
+            headers = ["Audit check", "File name", "File type"]
             samples = [
-                ["Whether NTP is enabled and synchronized?", "121_NTP_Server_Clock_Sync.jpg", "JPG", ""],
-                ["How is authentication implemented?", "Authentication_remark.txt", "TXT", "8.5"],
-                ["Whether log archival is done?", "117_Log_Archived_Prod.jpg", "JPG", ""],
+                ["Whether NTP is enabled and synchronized?", "121_NTP_Server_Clock_Sync.jpg", "JPG"],
+                ["How is authentication implemented?", "Authentication_remark.txt", "TXT"],
+                ["Whether log archival is done?", "117_Log_Archived_Prod.jpg", "JPG"],
             ]
-            widths = (58, 38, 12, 22)
+            widths = (58, 38, 12)
             notes_lines = [
                 ["CUSTOMIZE (QUESTION-BASED) CHECKLIST TEMPLATE"],
                 [""],
                 ["1. 'Audit check'  - your question, one per row. Required."],
-                ["2. 'File name'    - the evidence file that answers it. Must match a file"],
-                ["                    you upload as evidence. Separate several with a comma."],
+                ["2. 'File name'    - the document that answers it. Must match a file you"],
+                ["                    upload as evidence. Separate several with a comma."],
                 ["3. 'File type'    - optional, for your own reference only."],
-                ["4. 'Control ID'   - optional. Leave blank and the question is matched to a"],
-                ["                    control automatically; fill it in to pin the row."],
                 [""],
-                ["This is the CUSTOMIZE sheet. Each row is judged on whether the cited"],
-                ["evidence answers the question. No policy document is required, and a row"],
-                ["is never failed for missing one."],
+                ["This is the CUSTOMIZE sheet. Each question is answered from the document"],
+                ["named beside it and from nothing else -- no control is applied, no policy"],
+                ["is required, and no framework rules are used to judge the answer."],
+                [""],
+                ["The answer decides the result: an affirmative answer is reported as"],
+                ["compliant, and a negative one, or a document that does not address the"],
+                ["question at all, as non-compliant."],
+                [""],
+                ["Name a document on every row. A row with no document named cannot be"],
+                ["answered and is reported as such -- other files are never searched for it."],
                 [""],
                 ["For Excel Scoping, download the template again with Excel Scoping"],
-                ["selected -- that mode reads a different sheet (policy + evidence)."],
+                ["selected -- that mode reads a different sheet (policy + evidence) and"],
+                ["assesses controls."],
             ]
         else:
             headers = ["Control ID (ISO)", "Policy Document Name", "Evidence Document Name"]
@@ -720,9 +776,11 @@ async def api_parse_scope_excel(request: Request, file: UploadFile = File(...),
             tmp_path = tmp.name
 
         try:
-            # Customize scope = question-based audit. Control resolution still runs
-            # (the matched control is shown and evaluated); the flag only removes the
-            # policy requirement from the verdict downstream.
+            # Customize scope = pure document Q&A. The parser is shared with Excel
+            # Scoping and still resolves what it can from the sheet -- that is left
+            # alone rather than forked -- but _build_scope_payload(rag_mode=True)
+            # below discards the resolved control on every row, so nothing
+            # downstream ever sees one.
             _customize = str(scoping_mode or "").strip().upper().startswith("CUSTOM")
             items = parse_excel_scoping_checklist(
                 tmp_path, framework=framework, customize_mode=_customize
@@ -735,7 +793,7 @@ async def api_parse_scope_excel(request: Request, file: UploadFile = File(...),
                 pass
 
 
-        return _build_scope_payload(items)
+        return _build_scope_payload(items, rag_mode=_customize)
     except HTTPException:
         raise
     except Exception as e:

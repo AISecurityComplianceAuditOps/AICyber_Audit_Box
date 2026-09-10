@@ -573,6 +573,101 @@ field values never contain a literal < or > character. Ensure the output contain
 and no surrounding text.
 """
 
+# ── Customize scope: pure document Q&A (no control framing at all) ───────────
+# EXCEL_SCOPING_JUDGE_PROMPT_TEMPLATE above is a Lead Auditor prompt: it names a
+# control, splits policy from evidence, runs an applicability check and applies
+# the standard's own reasoning rules. Customize deliberately has none of that --
+# the auditor typed a question and attached the document that answers it, and
+# wants the answer the document actually gives, the way ChatGPT would answer it
+# with the file attached.
+#
+# Running the judge prompt there produced control-shaped findings for an audit
+# that never had a control: policy gaps for policies nobody put in scope, and
+# "evaluate only against the specific ISO 27001 control" reasoning applied to a
+# question that maps to no control. This template asks one thing and asks it
+# plainly. It is only ever selected for Customize (rag_mode); Excel Scoping and
+# Manual scope keep the judge prompt above, unchanged.
+RAG_QA_PROMPT_TEMPLATE = """You are answering an auditor's question using ONLY the document extracts provided below.
+
+Answer it the way a knowledgeable colleague would if asked out loud, having just read
+these extracts. There is no control, no framework, no policy requirement and no
+compliance rulebook involved here -- do not introduce one, do not mention ISO, clauses,
+controls or policies unless the extracts themselves talk about them, and never fault the
+documents for failing to be something they were never meant to be.
+
+════════════════════════════════════════
+THE QUESTION
+════════════════════════════════════════
+{checklist_question}
+
+════════════════════════════════════════
+DOCUMENT EXTRACTS (from: {locked_filenames})
+════════════════════════════════════════
+\"\"\"
+{condensed_context}
+\"\"\"
+
+════════════════════════════════════════
+HOW TO ANSWER
+════════════════════════════════════════
+1. Read the extracts and answer the question from what they actually say. Nothing else
+   is a source: not your own knowledge, not what a document like this usually contains,
+   not what would be good practice.
+2. Begin your answer with one of exactly three openers, and nothing else:
+   - "Yes," -- the extracts affirmatively answer the question.
+   - "No," -- the extracts show the opposite, or show it failing, disabled or absent.
+   - "Not stated," -- the extracts simply do not address the question. Say so plainly;
+     do not answer around it, do not guess, and do not treat silence as either a yes
+     or a no.
+3. After the opener, give the fact that settles it, in your own words and in plain
+   language. If the question asks for a value ("which version?", "what is the CPU
+   utilization?"), give the value itself. If it asks for several things at once, answer
+   each one by name, in the order asked -- do not answer only the easiest one.
+4. Then give the supporting detail, in two or three more sentences. Say WHICH system,
+   host, account or component the extracts are about; WHAT exact value, setting or
+   state they report; and any version, date or identifier they state. If the extracts
+   cover part of the question but not all of it, say which part is not covered. Only
+   stop after the first sentence if the extracts genuinely contain nothing further --
+   an answer of one short line, when the document holds more, is an answer that makes
+   the auditor go and read the document themselves.
+5. Never state the same fact twice, reworded. Never describe the document itself ("the
+   screenshot shows...", "this document contains..."); state what is true, since the file
+   name and the exact quote are recorded separately.
+6. Do not paste raw command output, config lines or log lines into the answer -- the
+   verbatim source text is captured on its own as the quote below and shown beside it.
+7. Quote at least one COMPLETE verbatim sentence or line from the extracts as your
+   evidence, exactly as it is written there, whenever the extracts address the question
+   at all. Never invent, paraphrase or reassemble a quote: it is checked against the
+   source, and a quote that is not really there will fail that check.
+
+<status> follows directly from your opener, with no other consideration:
+  "Yes,"        -> COMPLIANT
+  "No,"         -> NON_COMPLIANT
+  "Not stated," -> NON_COMPLIANT
+
+You MUST respond with ONLY the XML tags below, no surrounding text:
+<status>COMPLIANT | NON_COMPLIANT</status>
+<justification>Your answer, beginning with "Yes," / "No," / "Not stated," exactly as described above.</justification>
+<business_impact>If the answer is "No," or "Not stated," one sentence on what that means in practice for the organisation -- the consequence of the thing being as the document shows it, in plain terms (e.g. "log timestamps cannot be correlated across systems during an investigation"). Do not cite any standard, clause or control, and do not restate the answer. If the answer is "Yes," leave this empty.</business_impact>
+<recommendation>If the answer is "No," or "Not stated," say in one sentence what would need to be provided or done to answer the question affirmatively. If the answer is "Yes," leave this empty.</recommendation>
+<evidence_items>
+  <evidence_item>
+    <source>Exact file name the quote came from</source>
+    <page>Page or section, or empty</page>
+    <excerpt>Complete verbatim sentence or line from the extracts above</excerpt>
+  </evidence_item>
+</evidence_items>
+
+Include one <evidence_item> per distinct fact you relied on -- if the question asked for
+several values, quote each one separately rather than composing a sentence that combines
+them, because a composed sentence appears nowhere in the extracts and cannot be verified.
+If the extracts contain nothing relevant, omit the evidence items entirely and answer
+"Not stated,".
+
+Every opening tag needs exactly one matching closing tag, and no field value may contain
+a literal < or > character.
+"""
+
 VAPT_GENERATOR_PROMPT_TEMPLATE = """You are a Senior Penetration Tester and VAPT Security Auditor.
 
 Your task is to evaluate the provided scan logs, pentest findings, or configuration outputs against the specified VAPT control.
@@ -1668,6 +1763,15 @@ def get_reflection_chain(model_name: str, url: str = None):
     Returns a native Ollama chain for critique and self-correction reflection.
     """
     return NativeOllamaChain(model_name, REFLECTION_PROMPT_TEMPLATE, url)
+
+def get_rag_qa_chain(model_name: str, url: str = None):
+    """Customize scope only: plain document Q&A, no control/policy framing.
+
+    Uses RAG_QA_PROMPT_TEMPLATE. Nothing else selects this chain -- Excel Scoping
+    still gets get_excel_scoping_chain() and Manual scope still gets
+    get_generator_chain(), both unchanged.
+    """
+    return NativeOllamaChain(model_name, RAG_QA_PROMPT_TEMPLATE, url)
 
 def get_excel_scoping_chain(model_name: str, url: str = None):
     """
