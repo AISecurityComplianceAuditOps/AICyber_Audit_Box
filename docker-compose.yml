@@ -4,7 +4,9 @@
     image: aicyberauditbox-shakthidb:3.10
     container_name: shakthidb_service
     environment:
-      - POSTGRES_PASSWORD=ShakthiDB@2026
+      # From .env (see .env.example). The :? form stops `docker compose up`
+      # with this message when it is missing, before anything starts.
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env - see .env.example}
       - POSTGRES_DB=shakthidb
     ports:
       - "15234:15234"
@@ -134,6 +136,9 @@
       # Every containerized deployment must use ShaktiDB -- never silently fall
       # back to the container-local SQLite file (see database.py's except branch).
       - REQUIRE_POSTGRES=1
+      # The app logs in to ShaktiDB with the same password the database was
+      # created with, so it reads the same variable.
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env - see .env.example}
       # JWT_SECRET intentionally NOT set here -- docker/generate_secrets.sh
       # auto-generates and persists a unique one to the app-data volume on
       # first boot if this isn't provided. Set it explicitly here (or via a

@@ -903,23 +903,61 @@ def _resolve_bootstrap_admin_credentials():
     return pw_hash, totp_secret
 
 
+def _shakthidb_password():
+    """The ShaktiDB superuser password, from POSTGRES_PASSWORD.
+
+    It used to be written into this file -- four connection strings -- and into
+    the Dockerfile, both compose files and run_all.bat. Every copy of the source
+    therefore carried the one password every customer database was created with,
+    while docker-compose.customer.yml publishes that database on host port 15234.
+    POSTGRES_PASSWORD is the variable the Postgres container itself reads, so the
+    value now lives in one place per deployment (.env) and in no source file.
+    """
+    return os.environ.get("POSTGRES_PASSWORD", "")
+
+
+def _shakthidb_url(db_name):
+    """postgresql:// URL for one ShaktiDB database on the local instance.
+
+    localhost:15234 is right in both deployment shapes: natively Postgres is
+    published there, and in Docker the app shares the shakthidb container's
+    network namespace (network_mode: "service:shakthidb"). The password is
+    percent-encoded, so a value containing @, : or / cannot corrupt the URL.
+    """
+    from urllib.parse import quote_plus
+    return "postgresql://postgres:%s@localhost:15234/%s" % (
+        quote_plus(_shakthidb_password()), db_name)
+
+
 def init_db():
     global engine_master, engine_slave1, engine_slave2, db_label
     
     try:
+        # No password configured is a configuration error, not an outage, so it is
+        # reported as one: raised here, it lands in the except branch below, which
+        # FAILS the start when REQUIRE_POSTGRES is set (every container deployment)
+        # and otherwise falls back to SQLite with this message as the reason --
+        # instead of eight connection retries and an authentication error that
+        # never mentions the variable.
+        if not _shakthidb_password():
+            raise RuntimeError(
+                "POSTGRES_PASSWORD is not set, so the app cannot log in to ShaktiDB. "
+                "Set it in .env (see .env.example) to the password the database was "
+                "created with, then restart.")
+
         # Initialize connection engines for the master and slave databases first (lazy connections)
         eng_m = create_engine(
-            "postgresql://postgres:ShakthiDB%402026@localhost:15234/shakthidb_master",
+            _shakthidb_url("shakthidb_master"),
             connect_args={"connect_timeout": 3},
             pool_pre_ping=True
         )
         eng_s1 = create_engine(
-            "postgresql://postgres:ShakthiDB%402026@localhost:15234/shakthidb_slave1",
+            _shakthidb_url("shakthidb_slave1"),
             connect_args={"connect_timeout": 3},
             pool_pre_ping=True
         )
         eng_s2 = create_engine(
-            "postgresql://postgres:ShakthiDB%402026@localhost:15234/shakthidb_slave2",
+            _shakthidb_url("shakthidb_slave2"),
             connect_args={"connect_timeout": 3},
             pool_pre_ping=True
         )
@@ -977,7 +1015,7 @@ def init_db():
         # Connect to the default 'shakthidb' database on port 15234 to bootstrap databases if they do not exist
         try:
             bootstrap_eng = create_engine(
-                "postgresql://postgres:ShakthiDB%402026@localhost:15234/shakthidb",
+                _shakthidb_url("shakthidb"),
                 connect_args={"connect_timeout": 3},
                 pool_pre_ping=True
             )

@@ -13,6 +13,15 @@ cd /d "%~dp0"
 chcp 65001 >nul
 set "PYTHONIOENCODING=utf-8"
 set "PYTHONPATH=%~dp0;%PYTHONPATH%"
+
+:: ShaktiDB password, from .env (see .env.example). It used to be written into
+:: this script. Loaded here, before anything starts, so the Postgres container
+:: below AND the uvicorn process started at the end both inherit it.
+if exist "%~dp0.env" (
+    for /f "usebackq eol=# tokens=1,* delims==" %%A in ("%~dp0.env") do (
+        if /i "%%A"=="POSTGRES_PASSWORD" set "POSTGRES_PASSWORD=%%B"
+    )
+)
 title AISecurityAudit - Start All Local Services
 echo ==================================================
 echo   AISecurityAudit: Unified Single-Click Launcher
@@ -187,11 +196,19 @@ if exist "%~dp0tools\redis\redis-server.exe" (
 docker ps > nul 2>&1
 if %errorlevel% equ 0 (
     echo [v] Docker detected. Starting ShaktiDB PostgreSQL container (port 15234 only -- port 8000 stays for native uvicorn^)...
+    if not defined POSTGRES_PASSWORD (
+        echo.
+        echo [!] POSTGRES_PASSWORD is not set, so the app cannot log in to ShaktiDB
+        echo     and will run on the local SQLite fallback instead of your data.
+        echo     Copy .env.example to .env and set POSTGRES_PASSWORD to the password
+        echo     the database was created with, then run this again.
+        echo.
+    )
     docker start shakthidb_service > nul 2>&1
     if errorlevel 1 (
         docker stop shakthidb_service > nul 2>&1
         docker rm   shakthidb_service > nul 2>&1
-        docker run -d --name shakthidb_service -e POSTGRES_PASSWORD=ShakthiDB@2026 -e POSTGRES_DB=shakthidb -p 15234:5432 -v audittest_box_pgdata:/var/lib/postgresql/data --restart always aicyberauditbox-shakthidb:2.1 > nul 2>&1
+        docker run -d --name shakthidb_service -e "POSTGRES_PASSWORD=%POSTGRES_PASSWORD%" -e POSTGRES_DB=shakthidb -p 15234:5432 -v audittest_box_pgdata:/var/lib/postgresql/data --restart always aicyberauditbox-shakthidb:2.1 > nul 2>&1
     )
     call :DoBackup
 ) else (

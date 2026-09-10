@@ -4,7 +4,11 @@ from sqlalchemy import create_engine, text
 def run_query(query_str, db_name="shakthidb_master"):
     # Connect directly to specified PostgreSQL database
     try:
-        url = f"postgresql://postgres:ShakthiDB%402026@localhost:15234/{db_name}"
+        # Password from POSTGRES_PASSWORD, never from this file.
+        import os
+        from urllib.parse import quote_plus
+        url = "postgresql://postgres:%s@localhost:15234/%s" % (
+            quote_plus(os.environ.get("POSTGRES_PASSWORD", "")), db_name)
         engine = create_engine(url, connect_args={"connect_timeout": 2})
         with engine.connect() as conn:
             print(f"Connected to PostgreSQL ({db_name})")

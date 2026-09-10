@@ -1,8 +1,15 @@
 import sqlalchemy
 from sqlalchemy import create_engine
 
-# ShakthiDB Connection URL (Workshop Port: 15234)
-DB_URL = "postgresql://postgres:ShakthiDB%402026@localhost:15234/shakthidb"
+# ShakthiDB Connection URL (Workshop Port: 15234). The password comes from
+# POSTGRES_PASSWORD -- it is no longer written into any source file. Built
+# inline rather than imported from database.py, so this diagnostic stays a
+# standalone script with none of that module's import-time setup.
+import os
+from urllib.parse import quote_plus
+
+DB_URL = "postgresql://postgres:%s@localhost:15234/shakthidb" % quote_plus(
+    os.environ.get("POSTGRES_PASSWORD", ""))
 
 def test_connection():
     print(f"Attempting to connect to ShakthiDB at: {DB_URL}")
