@@ -1,0 +1,424 @@
+<title>AuditBox Release Pipeline</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600;700&family=IBM+Plex+Sans:wght@400;450;600&display=swap">
+
+<style>
+  :root{
+    --paper:#F2F4F6;      --surface:#FFFFFF;    --sunken:#E7EBEF;
+    --ink:#14202B;        --steel:#3E5C76;      --faint:#7C93A6;
+    --rule:#D3DBE2;
+    --copper:#B45B25;     --copper-soft:#F0E0D4;
+    --pass:#1F7A5C;       --stop:#B03A32;       --hold:#8A6D1F;
+    --display:"IBM Plex Sans Condensed","Arial Narrow",system-ui,sans-serif;
+    --body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+    --mono:"IBM Plex Mono",ui-monospace,Consolas,monospace;
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --paper:#0E1620;    --surface:#16212D;    --sunken:#101A24;
+      --ink:#DDE6ED;      --steel:#9DB4C6;      --faint:#6E8598;
+      --rule:#25333F;
+      --copper:#DC8449;   --copper-soft:#33241B;
+      --pass:#4FB88C;     --stop:#E0736A;       --hold:#C6A344;
+    }
+  }
+  :root[data-theme="dark"]{
+    --paper:#0E1620;      --surface:#16212D;    --sunken:#101A24;
+    --ink:#DDE6ED;        --steel:#9DB4C6;      --faint:#6E8598;
+    --rule:#25333F;
+    --copper:#DC8449;     --copper-soft:#33241B;
+    --pass:#4FB88C;       --stop:#E0736A;       --hold:#C6A344;
+  }
+
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--paper); color:var(--ink);
+    font-family:var(--body); font-size:16px; line-height:1.62;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:980px; margin:0 auto; padding:0 28px 96px}
+
+  /* ── masthead ─────────────────────────────────────────────── */
+  header{
+    border-bottom:2px solid var(--ink); margin-bottom:38px;
+    padding:44px 0 18px;
+    display:flex; align-items:flex-end; justify-content:space-between;
+    gap:28px; flex-wrap:wrap;
+  }
+  .mast h1{
+    font-family:var(--display); font-weight:700; font-size:clamp(34px,5.4vw,52px);
+    line-height:1.02; margin:0 0 8px; letter-spacing:-.015em; text-wrap:balance;
+  }
+  .mast p{margin:0; color:var(--steel); font-size:16.5px; max-width:56ch}
+  .stamp{
+    font-family:var(--mono); font-size:11.5px; line-height:1.75;
+    color:var(--steel); text-align:right; white-space:nowrap;
+  }
+  .stamp b{color:var(--ink); font-weight:600}
+
+  h2{
+    font-family:var(--display); font-weight:700; font-size:26px;
+    margin:52px 0 4px; letter-spacing:-.01em; text-wrap:balance;
+  }
+  .sub{color:var(--steel); margin:0 0 20px; max-width:68ch}
+  h3{font-family:var(--display); font-weight:600; font-size:18px; margin:26px 0 8px}
+  p{max-width:68ch}
+  a{color:var(--copper)}
+
+  .eyebrow{
+    font-family:var(--mono); font-size:11px; letter-spacing:.14em;
+    text-transform:uppercase; color:var(--copper); font-weight:600;
+    display:block; margin-bottom:6px;
+  }
+
+  code{font-family:var(--mono); font-size:.9em; background:var(--sunken);
+       padding:1px 5px; border-radius:3px}
+
+  /* ── two repos ────────────────────────────────────────────── */
+  .repos{display:grid; grid-template-columns:1fr auto 1fr; gap:0; align-items:stretch;
+         border:1px solid var(--rule); border-radius:4px; overflow:hidden; margin-top:8px}
+  .repo{background:var(--surface); padding:22px 24px}
+  .repo:last-child{border-left:1px solid var(--rule)}
+  .repo h4{font-family:var(--display); font-size:17px; margin:0 0 2px; font-weight:600}
+  .repo .path{font-family:var(--mono); font-size:11.5px; color:var(--faint); margin-bottom:14px}
+  .repo ul{margin:0; padding-left:17px; font-size:14.5px; color:var(--steel)}
+  .repo li{margin-bottom:5px}
+  .repo li b{color:var(--ink); font-weight:600}
+  .joint{
+    background:var(--copper-soft); display:flex; flex-direction:column;
+    align-items:center; justify-content:center; padding:0 20px; min-width:132px;
+    border-left:1px solid var(--rule); border-right:1px solid var(--rule);
+  }
+  .joint .arrow{font-family:var(--mono); font-size:22px; color:var(--copper); line-height:1}
+  .joint .label{font-family:var(--mono); font-size:10.5px; letter-spacing:.09em;
+                text-transform:uppercase; color:var(--copper); text-align:center;
+                margin-top:8px; font-weight:600; line-height:1.5}
+  @media (max-width:720px){
+    .repos{grid-template-columns:1fr}
+    .repo:last-child{border-left:0; border-top:1px solid var(--rule)}
+    .joint{border:0; border-top:1px solid var(--rule); border-bottom:1px solid var(--rule);
+           flex-direction:row; gap:12px; padding:12px}
+    .joint .label{margin-top:0; text-align:left}
+  }
+
+  /* ── the connection list ──────────────────────────────────── */
+  .conn{list-style:none; margin:22px 0 0; padding:0; display:grid; gap:0}
+  .conn li{
+    display:grid; grid-template-columns:180px 1fr; gap:22px;
+    padding:13px 0; border-top:1px solid var(--rule); align-items:baseline;
+  }
+  .conn li:last-child{border-bottom:1px solid var(--rule)}
+  .conn .what{font-family:var(--mono); font-size:12.5px; color:var(--copper); font-weight:500}
+  .conn .how{color:var(--steel); font-size:14.5px}
+  .conn .how b{color:var(--ink); font-weight:600}
+  @media (max-width:620px){
+    .conn li{grid-template-columns:1fr; gap:3px}
+  }
+
+  /* ── stack ────────────────────────────────────────────────── */
+  .stack{display:grid; grid-template-columns:repeat(auto-fit,minmax(232px,1fr)); gap:1px;
+         background:var(--rule); border:1px solid var(--rule); border-radius:4px;
+         overflow:hidden; margin-top:8px}
+  .layer{background:var(--surface); padding:18px 20px}
+  .layer .role{font-family:var(--mono); font-size:10.5px; letter-spacing:.11em;
+               text-transform:uppercase; color:var(--faint); margin-bottom:9px}
+  .layer .tech{font-family:var(--display); font-size:17px; font-weight:600; margin-bottom:3px}
+  .layer .note{font-size:13.5px; color:var(--steel); line-height:1.5}
+
+  /* ── the gate spine ───────────────────────────────────────── */
+  .spine{margin-top:10px; border-top:1px solid var(--rule)}
+  .gate{
+    display:grid; grid-template-columns:38px 158px 1fr;
+    gap:18px; padding:12px 0 12px 2px;
+    border-bottom:1px solid var(--rule); align-items:baseline;
+  }
+  .gate .n{
+    font-family:var(--mono); font-size:12px; color:var(--faint);
+    font-variant-numeric:tabular-nums; padding-top:2px;
+  }
+  .gate .name{font-family:var(--display); font-weight:600; font-size:16px}
+  .gate .does{color:var(--steel); font-size:14.5px}
+  .gate .does b{color:var(--ink); font-weight:600}
+  .gate.keystone{background:var(--copper-soft); margin:0 -14px; padding-left:16px;
+                 padding-right:14px; border-bottom-color:var(--rule)}
+  .gate.keystone .n{color:var(--copper); font-weight:600}
+  @media (max-width:680px){
+    .gate{grid-template-columns:30px 1fr; gap:4px 12px}
+    .gate .does{grid-column:2}
+  }
+
+  .stopnote{
+    margin-top:18px; padding:15px 18px; background:var(--surface);
+    border-left:3px solid var(--stop); border-radius:0 4px 4px 0;
+    font-size:14.5px; color:var(--steel);
+  }
+  .stopnote b{color:var(--ink)}
+
+  /* ── output ───────────────────────────────────────────────── */
+  .tree{
+    font-family:var(--mono); font-size:13px; line-height:1.85;
+    background:var(--surface); border:1px solid var(--rule); border-radius:4px;
+    padding:20px 22px; overflow-x:auto; color:var(--steel); margin-top:8px;
+  }
+  .tree b{color:var(--ink); font-weight:600}
+  .tree .dim{color:var(--faint)}
+  .tree .cu{color:var(--copper)}
+
+  table{border-collapse:collapse; width:100%; margin-top:8px; font-size:14.5px}
+  th{font-family:var(--mono); font-size:10.5px; letter-spacing:.1em; text-transform:uppercase;
+     color:var(--faint); text-align:left; font-weight:600; padding:0 14px 8px 0;
+     border-bottom:1px solid var(--ink)}
+  td{padding:10px 14px 10px 0; border-bottom:1px solid var(--rule); color:var(--steel);
+     vertical-align:top}
+  td:first-child{color:var(--ink); font-weight:600; white-space:nowrap}
+  td.num{font-family:var(--mono); font-variant-numeric:tabular-nums; color:var(--ink)}
+
+  .run{
+    font-family:var(--mono); font-size:13px; background:var(--sunken);
+    border:1px solid var(--rule); border-radius:4px; padding:16px 18px;
+    overflow-x:auto; margin-top:10px; line-height:1.8;
+  }
+  .run .c{color:var(--faint)}
+
+  footer{margin-top:64px; padding-top:18px; border-top:1px solid var(--rule);
+         font-family:var(--mono); font-size:11.5px; color:var(--faint)}
+
+  @media print{
+    body{background:#fff; color:#000; font-size:11pt}
+    .wrap{max-width:none; padding:0}
+    header{padding-top:0}
+    h2{page-break-after:avoid; margin-top:26px}
+    .gate,.repo,.layer,.conn li{page-break-inside:avoid}
+    .repos,.stack,.tree,.run{page-break-inside:avoid}
+  }
+</style>
+
+<div class="wrap">
+
+  <header>
+    <div class="mast">
+      <h1>AuditBox Release Pipeline</h1>
+      <p>How a commit on the Developer branch becomes a signed, encrypted,
+         air-gapped bundle a customer can install.</p>
+    </div>
+    <div class="stamp">
+      <b>AICyberAuditBox</b><br>
+      product &nbsp;267 tests<br>
+      studio &nbsp;&nbsp;196 tests<br>
+      baseline&nbsp;<b>v3.24</b>
+    </div>
+  </header>
+
+  <p>The product is an offline ISO&nbsp;27001 / VAPT / PQC audit appliance: it ships to sites
+  with no internet, so every dependency, model weight and byte of reference data has to be
+  inside the file we hand over. The release studio is a separate tool that turns the
+  repository into that file, refusing to produce one whenever a check fails.</p>
+
+  <h2><span class="eyebrow">The two halves</span>How your source code connects to the tool</h2>
+  <p class="sub">The studio is deliberately not part of the product. It never ships to a
+  customer, and keeping it in its own repository makes that structurally true rather than a
+  rule somebody has to remember.</p>
+
+  <div class="repos">
+    <div class="repo">
+      <h4>The product</h4>
+      <div class="path">AICyber_Audit_Box &nbsp;·&nbsp; branch Developer</div>
+      <ul>
+        <li><b>src/</b> — FastAPI app, LangGraph audit engine, validator gates</li>
+        <li><b>Dockerfile.app / .llm</b> — how the images are built</li>
+        <li><b>build_customer_bundle.py</b> — produces the tar</li>
+        <li><b>config/licence_public.pem</b> — verifies licences, cannot mint them</li>
+      </ul>
+    </div>
+    <div class="joint">
+      <div class="arrow">&#8594;</div>
+      <div class="label">--repo<br>points here</div>
+    </div>
+    <div class="repo">
+      <h4>The release studio</h4>
+      <div class="path">AICyber_Audit_Box_Studio &nbsp;·&nbsp; branch main</div>
+      <ul>
+        <li><b>profiles/*.yaml</b> — one per customer: what they bought, their hardware</li>
+        <li><b>chain.py</b> — the 16 gates, in order</li>
+        <li><b>licensing.py</b> — Ed25519 signing</li>
+        <li><b>web.py</b> — the local page an operator uses</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>The five things the studio reads or runs in your repository</h3>
+  <ul class="conn">
+    <li><span class="what">git tag / git diff</span>
+        <span class="how">Compares the customer's version with yours to decide
+        <b>patch or full</b>. Only <code>src/</code> and <code>config/</code> changed means a
+        patch; anything beneath that layer forces a full bundle.</span></li>
+    <li><span class="what">git status</span>
+        <span class="how">Refuses to build from a dirty tree. The decision reads git, but
+        <b>docker build reads the disk</b> — an uncommitted file would ship without ever
+        being considered.</span></li>
+    <li><span class="what">pytest</span>
+        <span class="how">Runs the product's own suite inside your repo. A failure stops
+        the release.</span></li>
+    <li><span class="what">python -m nuitka</span>
+        <span class="how">Compiles <code>src/</code> to a single native <code>.so</code>
+        <b>inside python:3.11-slim</b>, then imports it to prove it loads.</span></li>
+    <li><span class="what">build_customer_bundle.py</span>
+        <span class="how">Your own bundler, invoked with <code>--version</code>,
+        <code>--out</code> and the runtime limits this customer was sized for.</span></li>
+    <li><span class="what">docker inspect / run</span>
+        <span class="how">Opens the built images to confirm the <b>model weights and every
+        runtime asset</b> are actually inside them.</span></li>
+  </ul>
+
+  <h2><span class="eyebrow">Materials</span>Technology in each layer</h2>
+  <p class="sub">The studio carries three dependencies on purpose: every one has to install
+  on a build machine that may itself be offline.</p>
+
+  <div class="stack">
+    <div class="layer">
+      <div class="role">Release studio</div>
+      <div class="tech">Python 3 · stdlib</div>
+      <div class="note">pydantic for profile validation, PyYAML, cryptography for Ed25519.
+      The operator page is <code>http.server</code> — no web framework, no CDN.</div>
+    </div>
+    <div class="layer">
+      <div class="role">Application</div>
+      <div class="tech">FastAPI · LangGraph</div>
+      <div class="note">The audit state machine: retrieve → generate → validate → reflect,
+      with five grounding gates before a finding is written.</div>
+    </div>
+    <div class="layer">
+      <div class="role">Inference</div>
+      <div class="tech">llama.cpp</div>
+      <div class="note">Gemma 12B Q8 writes findings; nomic-embed turns documents into
+      vectors for retrieval. One image, two containers, different model each.</div>
+    </div>
+    <div class="layer">
+      <div class="role">State</div>
+      <div class="tech">PostgreSQL · Redis</div>
+      <div class="note">ShaktiDB holds audits, findings and evidence chunks. Redis carries
+      the job queue and slot leases.</div>
+    </div>
+    <div class="layer">
+      <div class="role">Packaging</div>
+      <div class="tech">Docker · Nuitka</div>
+      <div class="note">Five images saved into one tar. Nuitka compiles the Python so no
+      readable source reaches the customer.</div>
+    </div>
+    <div class="layer">
+      <div class="role">Protection</div>
+      <div class="tech">Ed25519 · AES-256-GCM</div>
+      <div class="note">The licence names frameworks, expiry and seats, signed. The bundle
+      is encrypted with a key derived from that licence.</div>
+    </div>
+  </div>
+
+  <h2><span class="eyebrow">Sequence</span>The sixteen gates</h2>
+  <p class="sub">Ordered deliberately: the cheap checks that can fail run before the ones that
+  take twenty minutes. The chain stops at the first failure and nothing is produced.</p>
+
+  <div class="spine">
+    <div class="gate"><span class="n">01</span><span class="name">resolve shape</span>
+      <span class="does">Diffs the two versions. Decides <b>patch or full</b>, and names the
+      file that forced a full bundle.</span></div>
+    <div class="gate"><span class="n">02</span><span class="name">working tree</span>
+      <span class="does">Refuses uncommitted changes, which would be built but were never
+      compared.</span></div>
+    <div class="gate"><span class="n">03</span><span class="name">licence key</span>
+      <span class="does">The verifying key must be in the repo. Without it a customer's
+      install <b>refuses every framework</b>.</span></div>
+    <div class="gate"><span class="n">04</span><span class="name">sizing</span>
+      <span class="does">Turns cores and RAM into <code>-np</code>, the shared KV pool, and a
+      concurrent-audit figure.</span></div>
+    <div class="gate"><span class="n">05</span><span class="name">tests</span>
+      <span class="does">The product's own suite. 267 must pass.</span></div>
+    <div class="gate"><span class="n">06</span><span class="name">compile</span>
+      <span class="does">Nuitka, inside the target image, then <b>imports what it built</b> —
+      compiling is not evidence of working.</span></div>
+    <div class="gate"><span class="n">07</span><span class="name">sca</span>
+      <span class="does">Dependency scan. A HIGH finding stops the release.</span></div>
+    <div class="gate"><span class="n">08</span><span class="name">bundle</span>
+      <span class="does">Calls your bundler. The result is looked for only where it was told
+      to write it.</span></div>
+    <div class="gate"><span class="n">09</span><span class="name">verify</span>
+      <span class="does">The tar must hold the images tar, compose, both installers and the
+      guide.</span></div>
+    <div class="gate keystone"><span class="n">10</span><span class="name">verify models</span>
+      <span class="does">Starts the LLM image and lists <code>/models</code>. Three weights,
+      each a plausible size — <b>a 133-byte .gguf is an LFS pointer, not a model</b>.</span></div>
+    <div class="gate keystone"><span class="n">11</span><span class="name">app contents</span>
+      <span class="does">Six paths the running app opens: the web UI, knowledge files, report
+      template, licence key, OCR cache, code.</span></div>
+    <div class="gate"><span class="n">12</span><span class="name">llm contents</span>
+      <span class="does">The inference binary and the entrypoint that selects which model to
+      serve.</span></div>
+    <div class="gate"><span class="n">13</span><span class="name">licence</span>
+      <span class="does">Signs frameworks, expiry and seats for this customer.</span></div>
+    <div class="gate"><span class="n">14</span><span class="name">encrypt</span>
+      <span class="does">AES-256-GCM, keyed from that licence. The wrong licence cannot open
+      it.</span></div>
+    <div class="gate"><span class="n">15</span><span class="name">checksum</span>
+      <span class="does">sha256 beside the artifact. A truncated transfer usually still opens
+      as a tar.</span></div>
+    <div class="gate"><span class="n">16</span><span class="name">publish</span>
+      <span class="does">Artifactory, or left locally and said so.</span></div>
+  </div>
+
+  <div class="stopnote"><b>Why gates 10 and 11 are highlighted.</b> Every other check reads
+  metadata. These two open the built image and look. <code>docker build</code> reports success
+  per instruction, not per file — a <code>COPY</code> whose source moved copies nothing and
+  still exits&nbsp;0, producing an image that loads and then fails at the customer site.</div>
+
+  <h2><span class="eyebrow">Result</span>What the customer receives</h2>
+
+  <div class="tree">
+<b>AICyberAuditBox-3.25-complete.tar</b> <span class="dim">— 20.5 GB measured</span>
+├── <b>aicyberauditbox-images-3.25.tar</b> <span class="dim">— docker save of five images</span>
+│   ├── aicyberauditbox-app <span class="dim">— the application and every Python library</span>
+│   ├── aicyberauditbox-llm <span class="dim">— llama.cpp + three .gguf model weights</span>
+│   ├── aicyberauditbox-llm-embed <span class="dim">— same image, embedding mode</span>
+│   ├── aicyberauditbox-shakthidb <span class="dim">— PostgreSQL with the audit schema</span>
+│   └── redis:7-alpine <span class="dim">— queue and session cache</span>
+├── docker-compose.yml <span class="cu">— image tags and runtime limits pinned to this build</span>
+├── install.sh / install.bat <span class="dim">— docker load, verify five tags, compose up</span>
+└── INSTALL_v3.25.md
+  </div>
+
+  <table>
+    <thead><tr><th>Shape</th><th class="num">Size</th><th>Carries</th><th>Customer data</th></tr></thead>
+    <tbody>
+      <tr><td>Full</td><td class="num">~20.5 GB</td>
+          <td>Every image, including model weights</td><td>First install</td></tr>
+      <tr><td>Patch</td><td class="num">~2 GB</td>
+          <td>Application layer only, rebased on the images they already have</td>
+          <td>Database, evidence and past audits untouched</td></tr>
+    </tbody>
+  </table>
+
+  <h2><span class="eyebrow">Operation</span>Running it</h2>
+  <p class="sub">Two front ends over one chain, so the command line and the page cannot
+  drift into checking different things.</p>
+
+  <div class="run">
+<span class="c"># 1. tag the release — patch-vs-full is decided by diffing tags</span>
+git tag -a v3.25 -m "v3.25" &amp;&amp; git push testing v3.25
+
+<span class="c"># 2. the operator page, for whoever does not live in a terminal</span>
+python -m studio.cli ui --repo "…\audit test_box"
+
+<span class="c"># 3. or the command line, same gates, same order</span>
+python -m studio.cli build profiles/stpi.yaml --version v3.25 --previous v3.24
+  </div>
+
+  <p style="margin-top:22px">A customer is a YAML profile: what they were sold, when it
+  expires, how many simultaneous audits, and the machine it runs on. Changing what a site is
+  licensed for is therefore a reviewable commit with an author and a date, not an edit
+  somebody made once.</p>
+
+  <footer>
+    AICyberAuditBox · Dhiware Technologies · release pipeline as built, September 2026 ·
+    figures measured on the build machine, not estimated
+  </footer>
+
+</div>
