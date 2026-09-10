@@ -93,21 +93,16 @@ class NoCacheMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(NoCacheMiddleware)
 
-# CORS: restrict to localhost/127.0.0.1 only (no wildcard -- "*" + allow_credentials=True
-# is an invalid CORS combination that browsers reject with a network error)
+# CORS: allow all origins so remote users (e.g. mentor accessing via Azure IP) can
+# use the full app including Run Audit. "*" + allow_credentials=True is an invalid
+# combination browsers reject, so allow_credentials=False is used here -- the app
+# uses JWT tokens in the Authorization header / localStorage, not cookies.
+_cors_origins_env = os.environ.get("CORS_ALLOWED_ORIGINS", "").strip()
+_cors_origins = [o.strip() for o in _cors_origins_env.split(",") if o.strip()] if _cors_origins_env else ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost",
-        "https://localhost",
-        "http://127.0.0.1",
-        "https://127.0.0.1",
-        "http://localhost:8000",
-        "http://127.0.0.1:8000",
-        "https://localhost:443",
-        "https://127.0.0.1:443",
-    ],
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=False,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "X-Requested-With"],
 )
