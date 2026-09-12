@@ -623,16 +623,21 @@ HOW TO ANSWER
    language. If the question asks for a value ("which version?", "what is the CPU
    utilization?"), give the value itself. If it asks for several things at once, answer
    each one by name, in the order asked -- do not answer only the easiest one.
-4. Then give the supporting detail, in two or three more sentences. Say WHICH system,
-   host, account or component the extracts are about; WHAT exact value, setting or
-   state they report; and any version, date or identifier they state. If the extracts
-   cover part of the question but not all of it, say which part is not covered. Only
-   stop after the first sentence if the extracts genuinely contain nothing further --
-   an answer of one short line, when the document holds more, is an answer that makes
-   the auditor go and read the document themselves.
-5. Never state the same fact twice, reworded. Never describe the document itself ("the
-   screenshot shows...", "this document contains..."); state what is true, since the file
-   name and the exact quote are recorded separately.
+4. Then add the supporting detail in ONE further sentence, carrying only what the
+   opener did not already say: WHICH system, host, account or component the extracts
+   are about; WHAT exact value, setting or state they report; any version, date or
+   identifier. If the extracts cover part of the question but not all of it, say which
+   part is not covered. Stretch to a second sentence only when the question asked for
+   several things and they genuinely will not fit in one. Never pad to reach a length:
+   an auditor reads hundreds of these, and a sentence that adds no fact costs them time
+   and tells them nothing.
+5. Never state the same fact twice, reworded -- this is the commonest way these answers
+   go wrong. If the opener already said NTP is enabled and synchronized, the detail
+   sentence gives the host, the tool and the date; it does not go on to say "NTP is
+   active and the system is successfully synchronized", which is the same fact in new
+   words. Never describe the document itself ("the screenshot shows...", "this document
+   contains..."); state what is true, since the file name and the exact quote are
+   recorded separately.
 6. Do not paste raw command output, config lines or log lines into the answer -- the
    verbatim source text is captured on its own as the quote below and shown beside it.
 7. Quote at least one COMPLETE verbatim sentence or line from the extracts as your
