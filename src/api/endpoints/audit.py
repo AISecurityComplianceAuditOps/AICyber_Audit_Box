@@ -36,6 +36,10 @@ from src.core.retrieval import save_document_chunks
 from src.core.llm_client import query_llm
 from src.api.endpoints.auth import _require_auth
 from src.core.pii_redactor import redact_pii
+# One vocabulary for the statuses a finding can be moved to. Three layers have
+# to agree on it -- this endpoint, src/ai/knowledge_loop.py, and the mirror in
+# app.js -- and they did not; see that module for what the disagreement cost.
+from src.core.finding_status import derive_final_result as _derive_final_result
 
 def retrieve_chat_context(db, session_id: str, query_text: str, top_k: int = 5) -> str:
     """Retrieves pointwise RAG context chunks from ShaktiDB document chunks."""
@@ -2268,11 +2272,12 @@ def api_update_finding(finding_id: int, req: UpdateFindingRequest, request: Requ
             if report:
                 _assert_session_access(db, report, auth_user)
 
+            _previous_final_result = finding.final_result
             finding.status = req.status
             # Derive final_result from the incoming status so the DB stays in sync
             # with what the auditor chose in the UI.  validator.py uses the exact
             # values "COMPLIANT" and "NON_COMPLIANT" — mirror that here.
-            derived_final_result = "COMPLIANT" if req.status.strip().upper() == "COMPLIANT" else "NON_COMPLIANT"
+            derived_final_result = _derive_final_result(req.status, _previous_final_result)
             finding.final_result = derived_final_result
 
             # NIST Severity rule (single source of truth = final_result):

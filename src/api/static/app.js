@@ -6494,278 +6494,16 @@ function renderFindingsList() {
                 </div>
             `;
         } else {
-            // ── NIST / ISO Severity badge (P1–P4 scale) — only for non-compliant findings ──
-            let nistSevBadgeHtml = "";
-            if (!isComp && !isFp) {
-                const rawSev = String(f.severity || "").trim().toUpperCase();
-                if (rawSev.includes("P1") || rawSev.includes("CRITICAL")) {
-                    nistSevBadgeHtml = `<span class="badge" style="background:rgba(239,68,68,0.18); color:#ef4444; border:1px solid rgba(239,68,68,0.45); font-weight:800; padding:3px 9px; border-radius:4px; font-size:0.75rem;">🔴 P1 Critical</span>`;
-                } else if (rawSev.includes("P2") || rawSev.includes("HIGH")) {
-                    nistSevBadgeHtml = `<span class="badge" style="background:rgba(249,115,22,0.18); color:#f97316; border:1px solid rgba(249,115,22,0.45); font-weight:800; padding:3px 9px; border-radius:4px; font-size:0.75rem;">🟠 P2 High</span>`;
-                } else if (rawSev.includes("P3") || rawSev.includes("MEDIUM")) {
-                    nistSevBadgeHtml = `<span class="badge" style="background:rgba(245,158,11,0.18); color:#f59e0b; border:1px solid rgba(245,158,11,0.45); font-weight:800; padding:3px 9px; border-radius:4px; font-size:0.75rem;">🟡 P3 Medium</span>`;
-                } else if (rawSev.includes("P4") || rawSev.includes("LOW")) {
-                    nistSevBadgeHtml = `<span class="badge" style="background:rgba(59,130,246,0.18); color:#3b82f6; border:1px solid rgba(59,130,246,0.45); font-weight:800; padding:3px 9px; border-radius:4px; font-size:0.75rem;">🔵 P4 Low</span>`;
-                } else if (rawSev && rawSev !== "N/A" && rawSev !== "NIL") {
-                    // Unknown severity value — show as-is
-                    nistSevBadgeHtml = `<span class="badge" style="background:rgba(148,163,184,0.18); color:#94a3b8; border:1px solid rgba(148,163,184,0.35); font-weight:800; padding:3px 9px; border-radius:4px; font-size:0.75rem;">⚪ ${escapeHtml(f.severity)}</span>`;
-                }
-            }
-
-
-
-        if (isVapt) {
-            let _target = f.target_host || f.host || f.ip || "";
-            let _cves = f.cves || f.cve_list || [];
-            if (typeof _cves === "string") {
-                _cves = _cves.split(",").map(s => s.trim()).filter(Boolean);
-            }
-            let _pluginId = f.plugin_id || "";
-            let _tool = f.tool || f.scanner || "";
-            let _cvssVec = f.cvss_vector || f.cvss || "";
-            const _poc = String(singleSnip || f.evidence_snippet || f.evidence || "").trim();
-            const _desc = String(getCleanFindingDescription(f)).trim();
-            const _remed = String(getCleanRecommendation(f)).trim();
-            const _riskCategory = String(f.category || "").trim();
-            const _ciaImpact = String(f.cia_impact || "").trim();
-            const _isPii = !!f.is_pii_exposed;
-            const _remedActionable = String(f.remediation_actionable || f.actionable_remediation || "").trim();
-
-            // PQC (Post-Quantum Cryptography Readiness) extra fields -- empty for
-            // plain VAPT findings, only populated when this session was PQC-scanned.
-            const isPqc = isPqcFinding(f);
-            const _quantumStatus = String(f.quantum_status || "").trim().toUpperCase();
-            const _assetName = String(f.asset_name || "").trim();
-            const _assetCat = String(f.asset_category || f.assetCategory || "").trim();
-            const _caAlgo = String(f.ca_algorithm || "").trim();
-            const _keyAlgo = String(f.key_algorithm || "").trim();
-            const _protocolVer = String(f.protocol_version || "").trim();
-            const _exposureCtx = String(f.exposure_context || "").trim();
-            const _pqcPort = String(f.port || "").trim();
-            const _pqcEnv = String(f.environment || "").trim();
-            const _riskScore = (f.risk_score === null || f.risk_score === undefined || f.risk_score === "") ? null : Number(f.risk_score);
-            const _riskBand = String(f.risk_band || "").trim().toUpperCase();
-            const _businessPriority = String(f.business_priority || "").trim();
-            const _oemProduct = String(f.oem_product || "").trim();
-            const _oemReadiness = String(f.oem_readiness_status || "").trim();
-            const _migrationDepFlag = !!f.migration_dependency_flag;
-            const _dependencyChain = String(f.dependency_chain || "").trim();
-
-            if (_poc) {
-                if (!_target) {
-                    const m = _poc.match(/Target Host:\s*(.+)/);
-                    if (m) _target = m[1].trim();
-                }
-            }
-            if (!_cves.length) {
-                const extracted = (_poc + " " + _desc).match(/CVE-\d{4}-\d{4,7}/gi);
-                if (extracted) {
-                    _cves = Array.from(new Set(extracted.map(c => c.toUpperCase())));
-                }
-            }
-
-            if (!_tool) _tool = "Scanner";
-
-            let _cleanPoc = formatStructuredPoc(_poc);
-
-            const cveBadges = _cves.length
-                ? _cves.map(cve => `<a href="https://nvd.nist.gov/vuln/detail/${encodeURIComponent(cve)}" target="_blank"
-                    style="font-size:0.72rem; padding:2px 7px; border-radius:4px;
-                           background:rgba(239,68,68,0.12); color:#f87171;
-                           border:1px solid rgba(239,68,68,0.3); font-weight:700;
-                           text-decoration:none; margin-right:4px;" title="View on NVD">${escapeHtml(cve)} ↗</a>`).join("")
-                : `<span style="font-size:0.74rem; padding:2px 8px; border-radius:4px; background:rgba(148,163,184,0.12); color:var(--text-muted); border:1px solid rgba(148,163,184,0.25); font-weight:600;">N/A — Vendor Security Advisory / End-of-Life Notice</span>`;
-
-            let vectorHint = "";
-            if (_cvssVec) {
-                const isNetwork = _cvssVec.includes("AV:N");
-                const noAuth = _cvssVec.includes("PR:N");
-                const noUI = _cvssVec.includes("UI:N");
-                const hints = [];
-                if (isNetwork) hints.push("🌐 Exploitable Remotely");
-                if (noAuth) hints.push("🔓 No Auth Required");
-                if (noUI) hints.push("👤 No User Interaction");
-                vectorHint = hints.length
-                    ? `<span style="font-size:0.72rem; color:#fbbf24; margin-left:8px;">${hints.join(" · ")}</span>`
-                    : "";
-            }
-
-            // Determine OWASP Top 10 Category
-            let owaspCat = f.owasp_category || f.owasp_top_10 || "";
-            if (!owaspCat) {
-                const combined = `${f.control_name || ''} ${f.title || ''} ${safeCtrlId} ${_desc} ${_poc}`.toLowerCase();
-                if (combined.includes("xss") || combined.includes("sqli") || combined.includes("injection")) owaspCat = "A03:2021 Injection";
-                else if (combined.includes("access control") || combined.includes("traversal") || combined.includes("idor") || combined.includes("cors")) owaspCat = "A01:2021 Broken Access Control";
-                else if (combined.includes("ssl") || combined.includes("tls") || combined.includes("cipher") || combined.includes("hsts") || combined.includes("crypto")) owaspCat = "A02:2021 Cryptographic Failures";
-                else if (combined.includes("end of life") || combined.includes("eol") || combined.includes("outdated") || combined.includes("unmaintained") || combined.includes("seol") || combined.includes("unpatched")) owaspCat = "A06:2021 Vulnerable and Outdated Components";
-                else if (combined.includes("auth") || combined.includes("password") || combined.includes("token") || combined.includes("session")) owaspCat = "A07:2021 Identification & Auth Failures";
-                else if (combined.includes("ssrf")) owaspCat = "A10:2021 Server-Side Request Forgery (SSRF)";
-                else owaspCat = "A05:2021 Security Misconfiguration";
-            }
-
-            const sevText = f.severity || "N/A";
-            let sevBadgeHtml = "";
-            const sUpper = sevText.toUpperCase();
-            if (isPqc) {
-                if (sUpper.includes("CRITICAL") || sUpper.includes("P1")) {
-                    sevBadgeHtml = `<span class="badge" style="background:rgba(239,68,68,0.2); color:#ef4444; border:1px solid rgba(239,68,68,0.4); font-weight:800; padding:3px 8px; border-radius:4px; font-size:0.75rem;">🔴 P1 Critical</span>`;
-                } else if (sUpper.includes("HIGH") || sUpper.includes("P2")) {
-                    sevBadgeHtml = `<span class="badge" style="background:rgba(249,115,22,0.2); color:#f97316; border:1px solid rgba(249,115,22,0.4); font-weight:800; padding:3px 8px; border-radius:4px; font-size:0.75rem;">🟠 P2 High</span>`;
-                } else if (sUpper.includes("MEDIUM") || sUpper.includes("P3")) {
-                    sevBadgeHtml = `<span class="badge" style="background:rgba(245,158,11,0.2); color:#f59e0b; border:1px solid rgba(245,158,11,0.4); font-weight:800; padding:3px 8px; border-radius:4px; font-size:0.75rem;">🟡 P3 Medium</span>`;
-                } else {
-                    sevBadgeHtml = `<span class="badge" style="background:rgba(59,130,246,0.2); color:#3b82f6; border:1px solid rgba(59,130,246,0.4); font-weight:800; padding:3px 8px; border-radius:4px; font-size:0.75rem;">🔵 P4 Low</span>`;
-                }
-            } else {
-                const _score = Number(f.severity_score);
-                const _band = sUpper.includes("CRITICAL") || sUpper.includes("P1") ? 9.8
-                            : sUpper.includes("HIGH") || sUpper.includes("P2") ? 7.5
-                            : sUpper.includes("MEDIUM") || sUpper.includes("P3") ? 5.3 : 2.5;
-                const _cvss = (Number.isFinite(_score) && _score > 0) ? _score.toFixed(1) : _band.toFixed(1);
-                if (sUpper.includes("CRITICAL") || sUpper.includes("P1")) {
-                    sevBadgeHtml = `<span class="badge" style="background:rgba(239,68,68,0.2); color:#ef4444; border:1px solid rgba(239,68,68,0.4); font-weight:800; padding:3px 8px; border-radius:4px; font-size:0.75rem;">🔴 P1 Critical (CVSS ${_cvss})</span>`;
-                } else if (sUpper.includes("HIGH") || sUpper.includes("P2")) {
-                    sevBadgeHtml = `<span class="badge" style="background:rgba(249,115,22,0.2); color:#f97316; border:1px solid rgba(249,115,22,0.4); font-weight:800; padding:3px 8px; border-radius:4px; font-size:0.75rem;">🟠 P2 High (CVSS ${_cvss})</span>`;
-                } else if (sUpper.includes("MEDIUM") || sUpper.includes("P3")) {
-                    sevBadgeHtml = `<span class="badge" style="background:rgba(245,158,11,0.2); color:#f59e0b; border:1px solid rgba(245,158,11,0.4); font-weight:800; padding:3px 8px; border-radius:4px; font-size:0.75rem;">🟡 P3 Medium (CVSS ${_cvss})</span>`;
-                } else {
-                    sevBadgeHtml = `<span class="badge" style="background:rgba(59,130,246,0.2); color:#3b82f6; border:1px solid rgba(59,130,246,0.4); font-weight:800; padding:3px 8px; border-radius:4px; font-size:0.75rem;">🔵 P4 Low (CVSS ${_cvss})</span>`;
-                }
-            }
-
-            const isPiiHigh = _isPii;
-            const piiColor = isPiiHigh ? "#ef4444" : "#10b981";
-            const piiIcon = isPiiHigh ? "🔒" : "🛡️";
-            const piiText = isPiiHigh ? "Confidential (PII Data Present)" : "Non-PII (Standard System Log)";
-
-            const _bandColor = (band) => band === "CRITICAL" ? "#ef4444"
-                : band === "HIGH" ? "#f97316"
-                    : band === "MEDIUM" ? "#f59e0b"
-                        : band === "LOW" ? "#10b981"
-                            : "#94a3b8";
-
-            card.innerHTML = `
-                <div class="finding-header" style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid rgba(148,163,184,0.15); padding-bottom:10px; margin-bottom:12px;">
-                    <h3 style="margin:0; font-size:1.05rem; font-weight:700; color:var(--text-primary);">${escapeHtml(displayHeaderTitle)}</h3>
-                    <div class="badge-group" style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
-                        <span class="badge" style="background:rgba(147,51,234,0.15); color:#a855f7; border:1px solid rgba(147,51,234,0.3); font-weight:700; padding:3px 8px; border-radius:4px; font-size:0.75rem;">🛡️ OWASP: ${escapeHtml(owaspCat)}</span>
-                        ${sevBadgeHtml}
-                        ${mainBadgeHtml}
-                    </div>
-                </div>
-
-                <div class="finding-body">
-                    <div style="display:flex; gap:16px; margin-bottom:12px; font-size:0.8rem; background:rgba(15,23,42,0.4); padding:8px 12px; border-radius:6px; border:1px solid rgba(148,163,184,0.1); flex-wrap:wrap; align-items:center;">
-                        ${_target ? `<div><span style="color:#94a3b8;">Target Host:</span> <span style="font-family:monospace; color:#38bdf8; font-weight:700;">${escapeHtml(_target)}</span></div>` : ""}
-                        ${_pluginId ? `<div><span style="color:#94a3b8;">Scanner Plugin:</span> <span style="font-family:monospace; color:#a78bfa;">ID #${escapeHtml(_pluginId)}</span></div>` : ""}
-                        ${_riskCategory ? `<div><span style="color:#94a3b8;">Risk Category:</span> <span style="color:#f59e0b; font-weight:700;">${escapeHtml(_riskCategory)}</span></div>` : ""}
-                        ${_ciaImpact ? `<div><span style="color:#94a3b8;">CIA Impact:</span> <span style="color:#a78bfa; font-weight:700;">${escapeHtml(_ciaImpact)}</span></div>` : ""}
-                        <div><span style="color:${piiColor}; font-weight:700;">${piiIcon} ${escapeHtml(piiText)}</span></div>
-                    </div>
-
-                    ${isPqc ? (() => {
-                        const _qsColor = _quantumStatus === "SAFE" ? "#10b981"
-                            : _quantumStatus === "WEAK" ? "#f59e0b"
-                                : _quantumStatus === "VULNERABLE" ? "#ef4444"
-                                    : "#94a3b8";
-                        const _pqcExtras = [
-                            _caAlgo ? `CA Algorithm: ${escapeHtml(_caAlgo)}` : "",
-                            _keyAlgo ? `Key Algorithm: ${escapeHtml(_keyAlgo)}` : "",
-                            _protocolVer ? `Protocol: ${escapeHtml(_protocolVer)}` : "",
-                            _pqcPort ? `Port: ${escapeHtml(_pqcPort)}` : "",
-                            _pqcEnv ? `Environment: ${escapeHtml(_pqcEnv)}` : "",
-                        ].filter(Boolean).join(" &nbsp;·&nbsp; ");
-
-                        const _avBadge = _exposureCtx ? (() => {
-                            const isExt = _exposureCtx.toUpperCase() === "EXTERNAL";
-                            const isInt = _exposureCtx.toUpperCase() === "INTERNAL";
-                            const avColor = isExt ? "#ef4444" : isInt ? "#f59e0b" : "#94a3b8";
-                            const avIcon = isExt ? "🌐" : isInt ? "🏠" : "❓";
-                            const avLabel = isExt ? "External (Internet-facing)"
-                                : isInt ? "Internal (LAN / On-prem)" : _exposureCtx;
-                            const hndlLabel = isExt
-                                ? "Nation-state harvest-now-decrypt-later threat"
-                                : isInt
-                                    ? "Insider / compromised-host threat (network access required)"
-                                    : "";
-                            return `<p style="margin:6px 0 0 0; font-size:0.78rem;">
-                                    <span style="font-weight:700; color:${avColor};">${avIcon} Attack Vector:</span>
-                                    <span style="font-size:0.75rem; padding:2px 8px; border-radius:4px; background:${avColor}22; color:${avColor}; border:1px solid ${avColor}66; font-weight:700; margin-left:4px;">${escapeHtml(avLabel)}</span>
-                                    ${hndlLabel ? `<span style="font-size:0.72rem; color:var(--text-muted); margin-left:6px;">${escapeHtml(hndlLabel)}</span>` : ""}
-                                </p>`;
-                        })() : "";
-
-                        const _riskColor = _bandColor(_riskBand);
-                        const _bpColor = _bandColor(_businessPriority.toUpperCase());
-                        return `
-                        <div class="finding-detail-row" style="border-left: 3px solid ${_qsColor}; padding-left: 10px; margin-bottom: 10px;">
-                            <label style="font-weight:700; font-size:0.78rem; color:${_qsColor}; text-transform:uppercase; letter-spacing:0.5px; display:block; margin-bottom:4px;">🔐 Quantum Readiness</label>
-                            <span style="font-size:0.78rem; padding:3px 9px; border-radius:6px; background:${_qsColor}22; color:${_qsColor}; border:1px solid ${_qsColor}66; font-weight:800;">${escapeHtml(_quantumStatus)}</span>
-                            ${_assetCat ? `<span style="font-size:0.75rem; padding:3px 8px; border-radius:6px; background:rgba(59,130,246,0.12); color:#3b82f6; border:1px solid rgba(59,130,246,0.3); font-weight:700; margin-left:6px;">${escapeHtml(_assetCat)}</span>` : ""}
-                            ${_assetName ? `<span style="font-size:0.82rem; color:var(--text-primary); font-weight:700; margin-left:10px;">Asset: ${escapeHtml(_assetName)}</span>` : ""}
-                            ${_pqcExtras ? `<p style="margin:6px 0 0 0; font-size:0.76rem; color:var(--text-muted); line-height:1.5;">${_pqcExtras}</p>` : ""}
-                            ${_avBadge}
-                            ${(_riskScore !== null && !isNaN(_riskScore)) ? `<p style="margin:6px 0 0 0; font-size:0.78rem;"><span style="font-weight:700; color:${_riskColor};">Risk Score: ${escapeHtml(String(_riskScore))}/100${_riskBand ? ` (${escapeHtml(_riskBand)})` : ""}</span></p>` : ""}
-                            ${_businessPriority ? `<p style="margin:4px 0 0 0; font-size:0.78rem;"><span style="font-weight:700; color:${_bpColor};">Business Priority: ${escapeHtml(_businessPriority)}</span></p>` : ""}
-                            ${_oemProduct ? `<p style="margin:4px 0 0 0; font-size:0.78rem; color:var(--text-primary);"><span style="font-weight:700;">OEM Product / Readiness:</span> ${escapeHtml(_oemProduct)}${_oemReadiness ? `: ${escapeHtml(_oemReadiness)}` : ""}</p>` : ""}
-                            ${_migrationDepFlag ? `<p style="margin:6px 0 0 0; font-size:0.78rem; color:#ef4444; font-weight:700;">⚠ Migration Dependency: downstream system also quantum-vulnerable</p>${_dependencyChain ? `<p style="margin:2px 0 0 0; font-size:0.76rem; color:var(--text-muted);">${escapeHtml(_dependencyChain)}</p>` : ""}` : ""}
-                        </div>`;
-                    })() : ""}
-
-                    <div class="finding-detail-row" style="margin-bottom: 10px;">
-                        <label style="font-weight:700; font-size:0.78rem; color:#94a3b8; text-transform:uppercase; letter-spacing:0.5px; display:block; margin-bottom:4px;">🔴 CVE References (click to view on NVD)</label>
-                        <div style="margin-top: 4px;">${cveBadges}</div>
-                    </div>
-
-                    ${_cvssVec && !isPqc ? `
-                    <div class="finding-detail-row" style="margin-bottom: 10px;">
-                        <label style="font-weight:700; font-size:0.78rem; color:#94a3b8; text-transform:uppercase; letter-spacing:0.5px; display:block; margin-bottom:4px;">📊 CVSS Vector</label>
-                        <p style="font-family: monospace; font-size: 0.82rem; color: #a78bfa; margin: 2px 0;">
-                            ${escapeHtml(_cvssVec)} ${vectorHint}
-                        </p>
-                    </div>` : ""}
-
-                    <div class="finding-detail-row" style="margin-bottom: 12px;">
-                        <label style="font-weight:700; font-size:0.78rem; color:#94a3b8; text-transform:uppercase; letter-spacing:0.5px; display:block; margin-bottom:4px;">📄 Vulnerability Description</label>
-                        <p style="margin:0; font-size:0.86rem; color:var(--text-primary); line-height:1.5;">${escapeHtml(_desc)}</p>
-                    </div>
-
-                    ${_cleanPoc ? `
-                    <div class="finding-detail-row" style="margin-bottom: 12px;">
-                        <label style="font-weight:700; font-size:0.78rem; color:#10b981; text-transform:uppercase; letter-spacing:0.5px; display:block; margin-bottom:4px;">📋 Proof of Concept (Scanner Plugin Output)</label>
-                        <pre class="finding-snippet" style="margin:0; font-family:'Consolas','Fira Code',monospace; font-size:0.78rem; color:#064e3b; background:rgba(16,185,129,0.08); padding:10px 12px; border-radius:8px; border:1px solid rgba(16,185,129,0.25); line-height:1.45; max-height:240px; overflow-y:auto; white-space:pre-wrap; word-break:break-word; font-weight:600;">${escapeHtml(_cleanPoc)}</pre>
-                    </div>` : ""}
-
-                    <div class="finding-detail-row" style="margin-bottom: 12px;">
-                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-                            <label style="font-weight:700; font-size:0.78rem; color:#3b82f6; text-transform:uppercase; letter-spacing:0.5px;">🔧 Recommended Remediation & Action</label>
-                            <button type="button" onclick="navigator.clipboard.writeText('${safeRemedForClick}'); showToastBanner('Remediation script copied to clipboard!');" style="padding:2px 8px; font-size:0.72rem; border-radius:4px; border:1px solid rgba(59,130,246,0.4); background:rgba(59,130,246,0.1); color:#3b82f6; font-weight:700; cursor:pointer;">📋 Copy Fix Command</button>
-                        </div>
-                        <div style="margin:0;">${formatRemediationSteps(_remed, '#2563eb')}</div>
-                    </div>
-
-                    ${(_remedActionable && _remedActionable !== _remed) ? `
-                    <div class="finding-detail-row" style="margin-bottom: 12px;">
-                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-                            <label style="font-weight:700; font-size:0.78rem; color:#10b981; text-transform:uppercase; letter-spacing:0.5px;">👨‍💻 Developer Actionable Mitigation Steps</label>
-                            <button type="button" onclick="navigator.clipboard.writeText('${escapeHtml(_remedActionable).replace(/'/g, "\\'")}'); showToastBanner('Mitigation steps copied to clipboard!');" style="padding:2px 8px; font-size:0.72rem; border-radius:4px; border:1px solid rgba(16,185,129,0.4); background:rgba(16,185,129,0.1); color:#10b981; font-weight:700; cursor:pointer;">📋 Copy Steps</button>
-                        </div>
-                        <div style="margin:0;">${formatRemediationSteps(_remedActionable, '#059669')}</div>
-                    </div>` : ""}
-
-                    <div class="finding-actions" style="display:flex; justify-content:space-between; align-items:center; margin-top:14px; padding-top:10px; border-top:1px solid rgba(148,163,184,0.15);">
-                        <div style="font-size:0.78rem; color:#2563eb; font-weight:600; display:flex; align-items:center; gap:6px;">
-                            <span>📁 Scan File: <i style="color:var(--text-muted); font-weight:400; font-style:italic;">${safeDoc}</i></span>
-                        </div>
-                        <div class="btn-card-group" style="display:flex; gap:8px;">
-                            <button class="btn-secondary" style="color:#10b981; font-weight:700; border-color:rgba(16,185,129,0.4); padding:4px 12px; border-radius:5px; cursor:pointer;" onclick="updateFindingWorkflowStatus(${f.id}, 'Accepted')">✓ Accept</button>
-                            <button class="btn-secondary" style="color:#3b82f6; font-weight:700; border-color:rgba(59,130,246,0.4); padding:4px 12px; border-radius:5px; cursor:pointer;" onclick='openEditFindingModal(${findingJsonStr})'>✏️ Modify</button>
-                            <button class="btn-danger" style="font-weight:700; padding:4px 12px; border-radius:5px; cursor:pointer;" onclick="rejectSingleDocCard(${f.id}, '${safeDocForClick}', '${safeCtrlId}')">✕ Reject</button>
-                        </div>
-                    </div>
-                </div>
-            `;
-        } else {
+        // Not a VAPT/PQC finding, so this is the ISO / NIST card.
+        //
+        // A second `if (isVapt) { ...VAPT card... } else {` used to open here,
+        // nested inside this else -- so its VAPT arm could never run. It held a
+        // stale copy of the card above, still missing the CVE-escaping fix and
+        // still printing band-midpoint CVSS scores rather than the score the
+        // scanner assessed. That made it a trap rather than merely dead weight:
+        // a fix applied to it would have read correctly and changed nothing on
+        // screen. The duplicate nistSevBadgeHtml block that preceded it went the
+        // same way -- the ISO card below declares and uses its own.
             // ── NIST / ISO Severity badge (P1–P4 scale) — only for non-compliant findings ──
             let nistSevBadgeHtml = "";
             if (!isComp && !isFp) {
@@ -6839,7 +6577,6 @@ function renderFindingsList() {
                 </div>
             `;
         }
-        }
         container.appendChild(card);
     });
 
@@ -6891,23 +6628,51 @@ async function rejectSingleDocCard(findingId, docName, controlId) {
 }
 
 async function restoreFindingCard(findingId) {
+    // Restore returns the finding to the verdict the audit reached, which
+    // survives a rejection because _derive_final_result() leaves final_result
+    // alone for workflow-only statuses. This used to send a hardcoded
+    // "COMPLIANT": undoing an accidental reject silently marked a real
+    // non-compliance as passing and wiped its severity to N/A.
+    const _f = findingsList.find(x => x.id === findingId) || {};
+    const _verdict = String(_f.final_result || "").trim().toUpperCase();
+    const restoredStatus = _verdict === "COMPLIANT" ? "Compliant" : "Non-Compliant";
     try {
         const response = await authFetch(`${API_BASE}/audit/findings/${findingId}`, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ status: "COMPLIANT" })
+            body: JSON.stringify({ status: restoredStatus })
         });
         const data = await response.json();
         if (data.success) {
-            showToast("Finding card restored successfully.", "success");
+            showToast(`Finding card restored as ${restoredStatus}.`, "success");
             const idx = findingsList.findIndex(f => f.id === findingId);
-            if (idx !== -1) findingsList[idx].status = "COMPLIANT";
+            if (idx !== -1) {
+                findingsList[idx].status = restoredStatus;
+                findingsList[idx].final_result = deriveFinalResult(restoredStatus, findingsList[idx].final_result);
+            }
             renderFindingsList();
             calculateSeverityStats();
         }
     } catch (err) {
         alert("Restore failed: " + err.message);
     }
+}
+
+// Mirror of _derive_final_result() in src/api/endpoints/audit.py. The card's
+// isComp reads final_result, not status, so after Accept/Reject the local copy
+// has to be moved the same way the server moves it -- otherwise the card keeps
+// rendering the old verdict until the next full reload, and Accept on a
+// compliant finding appears to do nothing and then flips it on refresh.
+const _ACCEPTING_STATUSES = ["COMPLIANT", "ACCEPTED", "PASS", "PASSED", "SATISFIED"];
+const _WORKFLOW_ONLY_STATUSES = ["REJECTED", "DISMISSED", "FALSE_POSITIVE", "OUT_OF_SCOPE", "EXCLUDED"];
+
+function deriveFinalResult(status, currentFinalResult) {
+    const n = String(status || "").trim().toUpperCase().replace(/[-\s]/g, "_");
+    if (_ACCEPTING_STATUSES.indexOf(n) !== -1) return "COMPLIANT";
+    if (_WORKFLOW_ONLY_STATUSES.indexOf(n) !== -1) {
+        return String(currentFinalResult || "").trim().toUpperCase() || "NON_COMPLIANT";
+    }
+    return "NON_COMPLIANT";
 }
 
 async function updateFindingWorkflowStatus(id, status) {
@@ -6922,6 +6687,7 @@ async function updateFindingWorkflowStatus(id, status) {
             showToast(`Finding status updated to '${status}'.`, "success");
             const idx = findingsList.findIndex(f => f.id === id);
             if (idx !== -1) {
+                findingsList[idx].final_result = deriveFinalResult(status, findingsList[idx].final_result);
                 findingsList[idx].status = status;
                 findingsList[idx].is_saved_to_shakthi = true;
                 findingsList[idx].human_verified = true;
@@ -7026,6 +6792,22 @@ function openEditFindingModal(finding) {
     const _polEvRow = document.getElementById("edit-policy-evidence-row");
     if (_polEvRow) _polEvRow.style.display = _isTechnicalFinding ? "none" : "";
 
+    // ── Checklist (CUSTOMIZE) has no policy dimension either ──────────────────
+    // Since 57af2e5 Checklist mode is pure document Q&A: it resolves no controls
+    // and post_process judges it on `evidence_ok` alone, never on policy. The
+    // card already knows this and suppresses the policy badge (isQaFinding), but
+    // the Modify dialog still offered "Policy Present? -> Not Found (Document
+    // Missing)", inviting the auditor to record a policy gap against a question
+    // that was never asked about a policy -- and then saving it, because the
+    // select still had a value to send.
+    //
+    // Evidence stays: it is the one thing this mode does judge on. Both branches
+    // assign explicitly rather than only hiding, because the modal is reused and
+    // a hidden row would otherwise stay hidden for the next finding opened.
+    const _isQaFinding = !!window._sessionIsCustomizeRun;
+    const _polGroup = document.getElementById("edit-policy-group");
+    if (_polGroup) _polGroup.style.display = (_isQaFinding && !_isTechnicalFinding) ? "none" : "";
+
     document.getElementById("edit-finding-id").value = finding.id;
 
     // Custom Heading: populate for both VAPT and ISO
@@ -7077,7 +6859,14 @@ function openEditFindingModal(finding) {
     // 4. Determine Session Type (VAPT/PQC vs ISO) & populate Severity Options.
     // PQC findings use the same CVSS-style severity scale as VAPT (they come
     // from the same deterministic scanner-parser pipeline, not the LLM/RAG path).
-    const isPqc = isPqcFinding(finding);
+    // isPqcFinding() keys on the quantum_status column, which the API serialises
+    // as `f.quantum_status or ""` -- an empty string, and falsy in JS. The card
+    // itself classifies on the control id / category (isVaptFinding), so a PQC
+    // finding with no stored quantum_status rendered as a PQC card and then
+    // opened a Modify dialog offering the ISO severity vocabulary
+    // ("P1 Critical (Critical Gap)") instead of the quantum risk bands. Use both
+    // signals here so the dialog always agrees with the card behind it.
+    const isPqc = isPqcFinding(finding) || _fwHint.includes("PQC");
     const isVapt = !isPqc && (
         (finding.control_id && String(finding.control_id).toUpperCase().includes("VAPT")) ||
         (finding.category && String(finding.category).toUpperCase().includes("VAPT")) ||

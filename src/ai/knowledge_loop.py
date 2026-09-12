@@ -4,6 +4,7 @@ Knowledge Loop Module
 Filters historical auditor feedback and formats it as hints for in-context learning.
 """
 from src.core.pii_redactor import redact_pii
+from src.core.finding_status import derive_final_result, is_recognised_status
 
 def filter_feedback_record(feedback):
     """
@@ -82,8 +83,16 @@ def format_loop_hints(feedbacks):
         # would be a different bug (a finding asserted from no evidence at all).
         cleaned_comment = str(comments).strip()
         if not cleaned_comment:
-            corrected = status_upper.replace("-", "_")
-            if corrected in ("COMPLIANT", "NON_COMPLIANT", "PARTIAL_COMPLIANT", "FALSE_POSITIVE"):
+            # The status recognised here has to be the status the UI actually
+            # sends. This used to test a hand-written tuple of ("COMPLIANT",
+            # "NON_COMPLIANT", "PARTIAL_COMPLIANT", "FALSE_POSITIVE") -- but the
+            # finding card's one-click Accept sends "Accepted", and the Modify
+            # dropdown sends "Partially Compliant" and "Out Of Scope". None of
+            # those three matched, so the commonest auditor action there is was
+            # silently discarded and the loop learned nothing from it.
+            # src/core/finding_status.py owns the vocabulary now.
+            if is_recognised_status(status):
+                corrected = derive_final_result(status)
                 known_non_compliant.append(
                     f"- For Control {control_id}: an auditor previously reviewed this control and "
                     f"recorded it as {corrected}. Treat that as a prior from a human reviewer, not "
