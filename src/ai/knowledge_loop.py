@@ -52,7 +52,7 @@ def format_loop_hints(feedbacks):
         # Redacted again here (not just at write time in audit.py) so records
         # written before that redaction existed are still protected before
         # this text gets injected verbatim into another auditor's prompt.
-        comments = redact_pii(getattr(fb, "auditor_comments", "") or "")
+        comments = redact_pii(getattr(fb, "auditor_comments", "") or "", ip_style="redact")
         status = getattr(fb, "corrected_status", "") or getattr(fb, "status", "") or ""
 
         # Standardize status to check compliance
@@ -60,7 +60,7 @@ def format_loop_hints(feedbacks):
 
         # If rejected or dismissed, add to negative constraint guidelines so LLM doesn't repeat the mistake
         if "REJECTED" in status_upper or "DISMISSED" in status_upper:
-            finding = redact_pii(getattr(fb, "finding", "") or getattr(fb, "description", "") or "")
+            finding = redact_pii(getattr(fb, "finding", "") or getattr(fb, "description", "") or "", ip_style="redact")
             if finding:
                 known_non_compliant.append(f"- For Control {control_id}: Note that a previous finding was REJECTED by the auditor: \"{finding}\". Do NOT repeat or generate this false finding.")
             continue

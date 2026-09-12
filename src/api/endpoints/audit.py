@@ -2342,9 +2342,9 @@ def api_update_finding(finding_id: int, req: UpdateFindingRequest, request: Requ
             # before it's ever written, not just at report-export time. This is a
             # partial mitigation: it won't catch names or account numbers (that needs
             # real NER, not regex), but it closes the structured-PII leak now.
-            _redacted_evidence = redact_pii(finding.evidence_snippet)
-            _redacted_finding = redact_pii(finding.description)
-            _redacted_comment = redact_pii(req.comment or finding.review_note or "")
+            _redacted_evidence = redact_pii(finding.evidence_snippet, ip_style="redact")
+            _redacted_finding = redact_pii(finding.description, ip_style="redact")
+            _redacted_comment = redact_pii(req.comment or finding.review_note or "", ip_style="redact")
             dup = db.query(AuditorFeedback).filter(
                 AuditorFeedback.control_id == finding.control_id,
                 AuditorFeedback.evidence_snippet == _redacted_evidence,
@@ -2929,10 +2929,10 @@ def api_import_feedback(request: Request, file: UploadFile = File(...)):
                     continue
 
                 corrected_status = _clean_str(item.get("corrected_status"), 50) or ""
-                evidence_snippet = redact_pii(_clean_str(item.get("evidence_snippet"), MAX_FIELD_LEN) or "")
-                finding = redact_pii(finding)
+                evidence_snippet = redact_pii(_clean_str(item.get("evidence_snippet"), MAX_FIELD_LEN) or "", ip_style="redact")
+                finding = redact_pii(finding, ip_style="redact")
                 recommendation = _clean_str(item.get("recommendation"), MAX_FIELD_LEN) or ""
-                auditor_comments = redact_pii(_clean_str(item.get("auditor_comments"), MAX_FIELD_LEN) or "")
+                auditor_comments = redact_pii(_clean_str(item.get("auditor_comments"), MAX_FIELD_LEN) or "", ip_style="redact")
 
                 # Prevent duplication
                 dup = db.query(AuditorFeedback).filter(
@@ -4213,9 +4213,9 @@ def api_reject_doc_from_finding(finding_id: int, req: dict, request: Request):
             # other AuditorFeedback write before it's stored (see knowledge_loop.py).
             db.add(AuditorFeedback(
                 control_id=ctrl_id,
-                evidence_snippet=redact_pii(f'Rejected evidence document: {doc_name} for control {ctrl_id}'),
+                evidence_snippet=redact_pii(f'Rejected evidence document: {doc_name} for control {ctrl_id}', ip_style="redact"),
                 corrected_status='REJECTED',
-                finding=redact_pii(f'Document {doc_name} was rejected by auditor for control {ctrl_id}'),
+                finding=redact_pii(f'Document {doc_name} was rejected by auditor for control {ctrl_id}', ip_style="redact"),
                 auditor_comments=redact_pii(fb_comments)
             ))
             db.commit()
