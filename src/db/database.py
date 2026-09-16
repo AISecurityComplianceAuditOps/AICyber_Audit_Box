@@ -645,11 +645,13 @@ def _execute_replicate_changes():
                             data = [dict(row._mapping) for row in rows]
                             dest_conn.execute(insert_sql, data)
 
-                            # Reset sequence if id column is present
+                            # Reset sequence if id column is present. The rows above
+                            # carried their ids over from the source, so the target's
+                            # sequence knows nothing about them and would hand out
+                            # ids that already exist.
                             if "id" in columns:
                                 try:
-                                    seq_sql = text(f"SELECT setval(pg_get_serial_sequence('\"{table_name}\"', 'id'), coalesce(max(id), 1)) FROM \"{table_name}\";")
-                                    dest_conn.execute(seq_sql)
+                                    _reset_id_sequence(dest_conn, table_name)
                                 except Exception:
                                     pass
 
@@ -863,6 +865,51 @@ def reconcile_schemas(engine):
                             flush=True
                         )
 
+def _reset_id_sequence(conn, table_name):
+    """Points a table's id sequence at max(id) + 1 on an existing connection.
+
+    setval(..., is_called=False) rather than setval(seq, max(id)) so an empty
+    table hands out id 1 instead of skipping to 2. pg_get_serial_sequence()
+    returns NULL for a table with no sequence (setval is strict, so that is a
+    no-op, not an error).
+    """
+    conn.execute(
+        text(
+            f'SELECT setval(pg_get_serial_sequence(:tbl, \'id\'), '
+            f'coalesce((SELECT max(id) FROM "{table_name}"), 0) + 1, false)'
+        ),
+        {"tbl": table_name},
+    )
+
+
+def reconcile_sequences(engine):
+    """Realigns every id sequence with the rows actually in its table.
+
+    A Postgres sequence only advances when a row is inserted through it, so any
+    bulk load that supplies ids directly -- restoring a pg_dump, copying rows
+    between the master and a replica -- leaves the sequence behind the data,
+    and every insert after that fails with "duplicate key value violates unique
+    constraint <table>_pkey". It does not recover on its own: a failed insert
+    burns only one sequence number. That is what broke evidence uploads (500s
+    on /api/audit/upload) and silently dropped every system_events audit-trail
+    row -- master's sequences sat at 11 and 84 while those tables already held
+    ids up to 83 and 143, and findings was still at 1 against 1923 rows. Only
+    the master was affected: replication already realigns the replicas after
+    each sync, but the master is never a replication target. Runs on every
+    startup, so the repair is self-healing.
+    """
+    if engine.dialect.name == "sqlite":
+        return  # SQLite derives the next rowid from the table itself.
+    for table in Base.metadata.sorted_tables:
+        if "id" not in table.c:
+            continue
+        try:
+            with engine.begin() as conn:
+                _reset_id_sequence(conn, table.name)
+        except Exception as seq_err:
+            print(f"[SEQUENCE RECONCILIATION WARNING] Could not realign '{table.name}'.id sequence: {seq_err}", flush=True)
+
+
 def _resolve_bootstrap_admin_credentials():
     """
     Resolves the password hash and TOTP secret used to seed the default admin
@@ -1002,6 +1049,11 @@ def init_db():
                 Base.metadata.create_all(bind=eng_m)
                 Base.metadata.create_all(bind=eng_s1)
                 Base.metadata.create_all(bind=eng_s2)
+
+                reconcile_sequences(eng_m)
+                reconcile_sequences(eng_s1)
+                reconcile_sequences(eng_s2)
+
                 return eng_m, "ShaktiDB"
             except Exception as _connect_err:
                 _last_connect_err = _connect_err
@@ -1037,7 +1089,11 @@ def init_db():
         Base.metadata.create_all(bind=eng_m)
         Base.metadata.create_all(bind=eng_s1)
         Base.metadata.create_all(bind=eng_s2)
-        
+
+        reconcile_sequences(eng_m)
+        reconcile_sequences(eng_s1)
+        reconcile_sequences(eng_s2)
+
         engine_master = eng_m
         engine_slave1 = eng_s1
         engine_slave2 = eng_s2

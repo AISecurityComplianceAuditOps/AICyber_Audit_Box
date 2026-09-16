@@ -29,7 +29,7 @@ qrcode==8.2
 pydantic==2.13.4
 langgraph==1.2.6
 langchain-ollama==1.1.0
-python-doctr[torch]==1.0.1
+python-doctr==1.0.1
 numpy==2.4.6
 PyJWT==2.13.0
 transformers==5.10.1
