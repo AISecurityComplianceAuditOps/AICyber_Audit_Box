@@ -50,7 +50,7 @@ jobs:
 
       # 1. Dependency CVEs, straight from requirements.txt.
       - name: Scan dependencies with Trivy
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           scan-type: fs
           scan-ref: .
@@ -63,7 +63,7 @@ jobs:
       # 2. OS-package CVEs in the base image the app is actually built on.
       #    A ~50 MB pull, versus a multi-gigabyte build of the full image.
       - name: Scan base image with Trivy
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: python:3.11-slim
           format: sarif
@@ -74,7 +74,7 @@ jobs:
       # 3. Dockerfile misconfiguration lint (root user, missing HEALTHCHECK,
       #    unpinned versions). Reads the Dockerfiles; builds nothing.
       - name: Lint Dockerfiles with Trivy
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           scan-type: config
           scan-ref: .
