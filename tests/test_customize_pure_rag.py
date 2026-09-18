@@ -273,3 +273,77 @@ def test_the_prompt_asks_for_the_impact_in_plain_terms():
     assert "<business_impact>" in RAG_QA_PROMPT_TEMPLATE
     _block = RAG_QA_PROMPT_TEMPLATE.split("<business_impact>")[1].split("</business_impact>")[0]
     assert "clause" in _block.lower() and "do not cite" in _block.lower()
+
+
+def _rag_branch_source():
+    """The rag_mode arm of the graph's post-validation handling, as text.
+
+    The node around it runs the LLM, the retriever and post_process, so invoking
+    it in a unit test means standing the pipeline up. The invariant worth
+    pinning is a branch condition, and that can be read.
+    """
+    import inspect
+
+    import src.ai.audit_graph as ag
+
+    src = inspect.getsource(ag)
+    start = src.index("is_failed = (")
+    end = src.index("_log_execution_event", start)
+    return src[start:end]
+
+
+def test_a_review_flag_alone_cannot_fail_a_question():
+    """Only a grounding failure may overturn the verdict the answer earned.
+
+    is_failed is deliberately broad -- it fires on requires_human_review, which
+    any gate sets to mean "a person should look at this". The rag_mode arm then
+    treated that as a failure and rewrote a COMPLIANT verdict, so a screenshot
+    whose OCR tripped a review gate produced a finding reading "Yes, NTP is
+    enabled and synchronized" beside a NON_COMPLIANT badge, against a host that
+    was compliant. Seen at a customer, whose log shows the validator had already
+    passed it:
+
+        [VALIDATOR] Customize Q&A: answer opens "Yes" -> COMPLIANT
+        [LANGGRAPH VALIDATOR] Customize Q&A grounding issue for Q1: ... flagged
+
+    finalize_rag_answer owns this verdict and has its own grounding override, so
+    a genuine failure arrives here already downgraded, with the recommendation
+    and impact to match. The overturn here only ever contradicted a verdict the
+    validator had deliberately left standing -- and changed nothing else, which
+    is why "No action required." stayed underneath the new red badge.
+    """
+    branch = _rag_branch_source()
+
+    assert "_grounding_failed" in branch, (
+        "the rag_mode arm no longer distinguishes a grounding failure from a "
+        "review flag -- see this test's docstring")
+
+    downgrade = branch.index('validated_finding["status"] = "NON_COMPLIANT"')
+    guard = branch.index("_grounding_failed")
+    assert guard < downgrade, (
+        "the verdict is overturned before the grounding check is consulted")
+
+    # The reassuring shape: requires_human_review is still set on both paths, so
+    # a flagged answer still reaches a reviewer -- it simply keeps its verdict.
+    assert 'validated_finding["requires_human_review"] = True' in branch
+
+
+def test_a_flagged_but_grounded_answer_keeps_its_recommendation():
+    """A passing answer keeps the narrative that belongs to a pass.
+
+    The fields are written by finalize_rag_answer from the verdict: a COMPLIANT
+    question gets severity N/A, no impact and "No action required.". When the
+    graph overturned the verdict without revisiting them, the finding carried a
+    failing badge over passing prose -- the contradiction the auditor saw.
+    """
+    result = _answer("Yes, NTP is enabled and synchronized on 172.16.32.18.")
+    assert result["status"] == "COMPLIANT"
+    assert result["recommendation"] == "No action required."
+    assert result["business_impact"] == ""
+
+    # And the failing case still carries both, so neither verdict can end up
+    # wearing the other's narrative.
+    failed = _answer("No, NTP is not enabled.")
+    assert failed["status"] == "NON_COMPLIANT"
+    assert failed["recommendation"] and failed["recommendation"] != "No action required."
+    assert failed["business_impact"]

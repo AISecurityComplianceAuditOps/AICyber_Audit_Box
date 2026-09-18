@@ -662,17 +662,48 @@ def validate_node(state: AuditState) -> Dict[str, Any]:
         # pass is an adversarial compliance challenger written around a control, and
         # running it here would put back the framing this mode exists to remove.
         if state.get("rag_mode"):
-            if str(validated_finding.get("status") or "").upper() == "COMPLIANT":
-                validated_finding["status"] = "NON_COMPLIANT"
-                validated_finding["final_result"] = "NON_COMPLIANT"
+            # Only a grounding failure may change the verdict. is_failed above is
+            # deliberately broader than that -- it also fires on
+            # requires_human_review, which any gate can set to mean "a person
+            # should look at this", not "this failed". Downgrading on that turned
+            # every flagged-for-review answer into a failure: a screenshot whose
+            # OCR text tripped a review gate produced a finding reading "Yes, NTP
+            # is enabled and synchronized" beside a NON_COMPLIANT badge, against a
+            # host that was compliant. Confirmed in a customer's log, where the
+            # validator had already passed it:
+            #   [VALIDATOR] Customize Q&A: answer opens "Yes" -> COMPLIANT
+            #   [LANGGRAPH VALIDATOR] Customize Q&A grounding issue ... flagged
+            #
+            # The validator owns this verdict and has its own grounding override
+            # (finalize_rag_answer), so by the time a genuine failure reaches here
+            # the status is already NON_COMPLIANT with the matching recommendation
+            # and impact. This branch only ever corrected a status the validator
+            # had deliberately left alone -- and left the compliant-shaped
+            # narrative ("No action required.") sitting beneath the new verdict,
+            # because it changed the verdict and nothing else.
+            _grounding_failed = (
+                hallucination_state in ("PROMPT_LEAK", "NOT_GROUNDED")
+                or "Grounding validation failed" in str(validated_finding.get("review_note", ""))
+            )
+            if _grounding_failed:
+                if str(validated_finding.get("status") or "").upper() == "COMPLIANT":
+                    validated_finding["status"] = "NON_COMPLIANT"
+                    validated_finding["final_result"] = "NON_COMPLIANT"
+                validated_finding["review_note"] = (
+                    f"The quoted text could not be verified in the cited document: {error_msg}")
+            elif not str(validated_finding.get("review_note") or "").strip():
+                # Flagged for review without a reason recorded. Say that, rather
+                # than inheriting a grounding message that is not true of it.
+                validated_finding["review_note"] = (
+                    "Flagged for a reviewer to confirm. The answer and its quote were "
+                    "accepted by the validator.")
             validated_finding["requires_human_review"] = True
             validated_finding["requires_review"] = True
-            validated_finding["review_note"] = (
-                f"The quoted text could not be verified in the cited document: {error_msg}")
             validated_finding["control_id"] = state["control_id"]
             validated_finding["control"] = state["control_label"]
-            print(f"[LANGGRAPH VALIDATOR] Customize Q&A grounding issue for "
-                  f"{state['control_id']}: kept and flagged for review.", flush=True)
+            print(f"[LANGGRAPH VALIDATOR] Customize Q&A {'grounding issue' if _grounding_failed else 'review flag'} "
+                  f"for {state['control_id']}: verdict {validated_finding.get('status')}, flagged for review.",
+                  flush=True)
             _log_execution_event(state, validated_finding)
             return {
                 "validation_error": None,
