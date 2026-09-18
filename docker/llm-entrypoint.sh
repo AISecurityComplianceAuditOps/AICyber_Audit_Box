@@ -99,29 +99,40 @@ fi
 
 # completion mode
 
-# Which weights this container serves. Both are baked into the image; one
-# llama-server process serves one model, so this picks it at start.
+# Which weights this container serves. One llama-server process serves one
+# model, so this picks it at start.
 #
 # The path used to be hardcoded to E4B further down, which made the
 # application's model dropdown decorative -- llama-server serves whatever it
 # loaded and ignores the model name in a request, so every audit ran on E4B
 # regardless of what the auditor picked.
 #
+# E4B is no longer baked in: it cost 5.4GB in every bundle to cover a machine
+# too small for the 12B, and this image targets a site sized for the 12B. The
+# branch is kept so that LLM_MODEL=e4b -- which the compose file and this
+# script's own error messages used to recommend -- says what happened, rather
+# than falling through to "Unknown LLM_MODEL" and reading like a typo.
+#
 # FIXED_OVERHEAD_GB is the model's resident footprint, and it decides how many
-# slots fit in RAM. Defaulting it per model matters more than it looks: left at
-# E4B's 4.5 while serving the 12B, the sizing below would believe it had ~8GB
-# more free than it does and open slots the machine cannot hold -- which
-# surfaces as an OOM kill mid-audit rather than as a refusal to start. The 4.5
-# for E4B is the measured value the install guide's sizing table is built on;
-# do not "correct" it to the file size.
-MODEL_E4B="/models/google_gemma-4-E4B-it-Q4_K_M.gguf"
+# slots fit in RAM. It must match the model actually loaded: too low, and the
+# sizing below believes it has RAM it does not and opens slots the machine
+# cannot hold -- which surfaces as an OOM kill mid-audit rather than as a
+# refusal to start.
 MODEL_12B="/models/gemma-4-12B-it-Q8_0.gguf"
 case "$(echo "${LLM_MODEL:-12b}" | tr 'A-Z' 'a-z')" in
-    e4b|4b|small) MODEL_PATH="$MODEL_E4B"; MODEL_LABEL="Gemma 4 E4B (Q4_K_M)"; DEFAULT_OVERHEAD_GB=4.5 ;;
     12b|large)    MODEL_PATH="$MODEL_12B"; MODEL_LABEL="Gemma 4 12B (Q8_0)"; DEFAULT_OVERHEAD_GB=12.5 ;;
     /*)           MODEL_PATH="$LLM_MODEL"; MODEL_LABEL="$(basename "$LLM_MODEL")"; DEFAULT_OVERHEAD_GB=12.5 ;;
+    e4b|4b|small)
+        echo "[LLM ENTRYPOINT] LLM_MODEL=e4b, but this image ships only the 12B weights." >&2
+        echo "[LLM ENTRYPOINT] It was built for a site sized for the 12B, so the E4B" >&2
+        echo "[LLM ENTRYPOINT] fallback was left out to save 5.4GB in the bundle." >&2
+        echo "[LLM ENTRYPOINT] To serve smaller weights, mount the .gguf into this" >&2
+        echo "[LLM ENTRYPOINT] container and give LLM_MODEL its absolute path:" >&2
+        echo "[LLM ENTRYPOINT]   LLM_MODEL=/models/your-model.gguf" >&2
+        exit 1
+        ;;
     *)
-        echo "[LLM ENTRYPOINT] Unknown LLM_MODEL='"'"'${LLM_MODEL}'"'"'. Expected 12b, e4b, or an absolute path." >&2
+        echo "[LLM ENTRYPOINT] Unknown LLM_MODEL='"'"'${LLM_MODEL}'"'"'. Expected 12b or an absolute path." >&2
         exit 1
         ;;
 esac
@@ -250,10 +261,12 @@ if [ -z "$LLM_SLOTS_OVERRIDE" ] && awk -v t="$TOTAL_GB" -v o="$FIXED_OVERHEAD_GB
     echo "[LLM ENTRYPOINT]   this container can see : ${TOTAL_GB}GB" >&2
     echo "[LLM ENTRYPOINT]   weights need           : ${FIXED_OVERHEAD_GB}GB resident" >&2
     echo "[LLM ENTRYPOINT]   one ${MIN_CTX_PER_REQUEST}-token slot needs : ${GB_PER_SLOT}GB on top" >&2
-    echo "[LLM ENTRYPOINT] Either give this container more memory (on Docker" >&2
-    echo "[LLM ENTRYPOINT] Desktop, raise the VM's memory limit -- the host's own" >&2
-    echo "[LLM ENTRYPOINT] RAM is not what this container sees), or serve the" >&2
-    echo "[LLM ENTRYPOINT] smaller model with LLM_MODEL=e4b in docker-compose.yml." >&2
+    echo "[LLM ENTRYPOINT] Give this container more memory: on Docker Desktop," >&2
+    echo "[LLM ENTRYPOINT] raise the VM's memory limit -- the host's own RAM is" >&2
+    echo "[LLM ENTRYPOINT] not what this container sees. This image ships only" >&2
+    echo "[LLM ENTRYPOINT] the 12B weights, so there is no smaller model to fall" >&2
+    echo "[LLM ENTRYPOINT] back to; smaller weights must be mounted and named by" >&2
+    echo "[LLM ENTRYPOINT] absolute path in LLM_MODEL." >&2
     exit 1
 fi
 

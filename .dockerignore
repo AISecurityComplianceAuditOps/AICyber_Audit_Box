@@ -4,9 +4,11 @@
 # ends up inside any image.
 #
 # NOTE: do NOT blanket-exclude *.gguf -- Dockerfile.llm needs
-# google_gemma-4-E4B-it-Q4_K_M.gguf and nomic-embed-text-v1.5.f16.gguf present
-# in the build context by exact name. Only the unused demo model is excluded
-# below, by exact filename.
+# gemma-4-12B-it-Q8_0.gguf and nomic-embed-text-v1.5.f16.gguf present in the
+# build context by exact name. Every other model is excluded below by exact
+# filename, because the daemon transfers the whole context before the first
+# COPY runs: a model left in costs its full size on every single build, whether
+# or not any Dockerfile asks for it.
 
 .git
 __pycache__/
@@ -29,8 +31,14 @@ scratch/
 *.exe
 *.pem
 gemma-2-2b-it-Q4_K_M.gguf
+# Dropped from Dockerfile.llm when the bundle went 12B-only. Leaving it here
+# unexcluded shipped 5 GB to the daemon on every build for nothing.
+google_gemma-4-E4B-it-Q4_K_M.gguf
 *.tar
 *.zip
+# A git worktree of this same repo, created by a local tool. No Dockerfile
+# reads it, and it grows a second copy of the tree into every build context.
+.kilo/
 
 # Nothing below is COPYed by any Dockerfile here (app takes src/, config/,
 # docker/ and "Sample report.docx"; llm takes the two .gguf models; the db

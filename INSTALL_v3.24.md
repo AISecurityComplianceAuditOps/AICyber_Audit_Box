@@ -28,8 +28,7 @@ whole product fits in __SIZE__ rather than roughly twice that.
 
 | Model | Size | Role |
 |---|---|---|
-| Gemma 4 12B (Q8_0) | ~11.8 GB | Completion — **the default** |
-| Gemma 4 E4B (Q4_K_M) | ~5 GB | Completion — lighter alternative, see section 6 |
+| Gemma 4 12B (Q8_0) | ~11.8 GB | Completion — the only completion model in this bundle |
 | nomic-embed-text v1.5 | ~262 MB | Embeddings for retrieval |
 
 The docTR OCR models and the reranker are baked into the application image the
@@ -71,9 +70,10 @@ resident, and each concurrent request holds a 32,768-token slot costing about
 | 4–5 | 6 | ~28 GB | **48 GB** | 16 |
 | **10** | **12** | **~42 GB** | **64 GB** | **24–32** |
 
-**Running E4B instead subtracts about 8 GB from every LLM figure above** (see
-section 6). On a 32 GB machine that is the difference between two concurrent
-auditors and five.
+**These figures are firm.** This bundle ships the 12B only, so there is no
+lighter model to fall back to if the machine is short of RAM — the LLM
+container refuses to start rather than be killed partway through an audit.
+Provision to the table above.
 
 Cores drive **latency**, RAM drives **how many can run at once**. Under-provision
 cores and audits still complete, only slower; under-provision RAM and the LLM
@@ -178,28 +178,32 @@ Two lines matter:
 - **32768 tokens per request** — the last line. That is the per-request budget
   the app assumes. If it reads lower, the machine has less RAM than the LLM
   container was expecting and evidence will be truncated before the model sees
-  it. Add RAM, lower `LLM_MAX_SLOTS`, or switch to E4B.
+  it. Add RAM or lower `LLM_MAX_SLOTS`.
 
 ---
 
-## 6. Choosing the model
+## 6. The model
 
-Both completion models are already in the image. One `llama-server` process
-serves one model, so the choice is made in `docker-compose.yml` and takes effect
-on restart — nothing is downloaded and no new image is needed:
+This bundle ships **one** completion model, Gemma 4 12B (Q8_0), already inside
+the image. It is selected in `docker-compose.yml` and there is nothing to
+change for a normal installation:
 
 ```yaml
   llm:
     environment:
-      - LLM_MODEL=12b     # or: e4b
+      - LLM_MODEL=12b
 ```
 
-```sh
-docker compose up -d llm
-```
+Earlier bundles also carried a lighter model (E4B) that could be selected here.
+It is no longer included. `LLM_MODEL=e4b` now stops the container at startup
+with a message saying so, rather than quietly serving different weights than
+you asked for. If this machine cannot hold the 12B, the answer is more memory
+for the container — see the sizing table in section 2.
 
-The container adjusts its own memory floor to match (12.5 GB for `12b`, 4.5 GB
-for `e4b`), so the slot count re-sizes itself correctly without any other edit.
+To serve different weights entirely, mount the `.gguf` into the container and
+give `LLM_MODEL` its absolute path (e.g. `/models/your-model.gguf`). Set
+`RESOURCE_GUARD_FIXED_OVERHEAD_GB` to that model's resident size if it differs
+materially from the 12B's 12.5 GB, or the slot count will be sized wrongly.
 
 > **The model dropdown in the application does not override this.** It records
 > which model an auditor intended; `llama-server` serves the weights it was
@@ -228,7 +232,7 @@ Postgres, Redis and the embedding server (~1 GB).
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `LLM_MODEL` (llm) | `12b` | Which baked-in model is served: `12b` or `e4b`. |
+| `LLM_MODEL` (llm) | `12b` | Which model is served. `12b` is the only one in this image; an absolute path serves mounted weights. |
 | `MIN_CTX_PER_REQUEST` (llm) | `32768` | Tokens each request may use. |
 | `LLM_NUM_CTX` (app) | `32768` | **Must equal the above.** The app budgets prompts against it. |
 | `LLM_MAX_SLOTS` | detected cores | Upper bound on parallel slots. |
@@ -278,9 +282,9 @@ controls already judged are not re-run.
 
 | Symptom | Cause and fix |
 |---|---|
-| App answers 502 / not reachable | The LLM is still loading weights on first start. The 12B takes longer than the E4B — give it 3–5 minutes. |
-| LLM container exits at start | It names the missing file and lists `/models`. Almost always `LLM_MODEL` set to something other than `12b`, `e4b` or an absolute path. |
-| "per request" is below 32768 | Not enough RAM for the slot count. Add RAM, set `LLM_MAX_SLOTS` lower, or switch `LLM_MODEL` to `e4b`. |
+| App answers 502 / not reachable | The LLM is still loading weights on first start. The 12B is ~11.8 GB — give it 3–5 minutes. |
+| LLM container exits at start | Read the message. Either `LLM_MODEL` is set to something other than `12b` or an absolute path, or this container has less memory than the 12B needs — it says which, and refuses rather than being OOM-killed mid-audit. |
+| "per request" is below 32768 | Not enough RAM for the slot count. Add RAM or set `LLM_MAX_SLOTS` lower. |
 | Audits queue instead of running | Slot count is the limit — see the sizing table in section 2. |
 | Controls report a timeout | Cores are the limit. The finding says so explicitly rather than guessing a verdict. |
 | Postgres connection refused | The database did not become healthy. `docker compose logs shakthidb`. |

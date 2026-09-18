@@ -11,12 +11,15 @@
 
 FROM ghcr.io/ggml-org/llama.cpp:server
 
-# Both completion models ship in the image. One llama-server process serves one
-# model, so docker/llm-entrypoint.sh picks between them at start from LLM_MODEL
-# (default 12b) -- baking both is what lets an operator switch by editing the
-# compose file instead of taking a new image.
+# One completion model ships: the 12B. The E4B was dropped deliberately -- it
+# cost 5.4GB in every bundle to serve as a fallback for a machine too small for
+# the 12B, and this build targets a site sized for the 12B. A site that is NOT
+# sized for it has no working configuration in this image, which is why
+# llm-entrypoint.sh now says so outright instead of suggesting LLM_MODEL=e4b.
+#
+# An operator who needs different weights can still mount them and point
+# LLM_MODEL at the absolute path; only the baked-in shortcut is gone.
 COPY gemma-4-12B-it-Q8_0.gguf /models/gemma-4-12B-it-Q8_0.gguf
-COPY google_gemma-4-E4B-it-Q4_K_M.gguf /models/google_gemma-4-E4B-it-Q4_K_M.gguf
 COPY nomic-embed-text-v1.5.f16.gguf /models/nomic-embed-text-v1.5.f16.gguf
 COPY docker/llm-entrypoint.sh /llm-entrypoint.sh
 RUN chmod +x /llm-entrypoint.sh

@@ -49,23 +49,25 @@ services:
     container_name: aicyberauditbox_llm
     environment:
       - LLM_MODE=completion
-      # Which of the two baked-in completion models this container serves:
-      # 12b (Gemma 4 12B Q8_0, ~11.8GB of weights) or e4b (Gemma 4 E4B Q4_K_M,
-      # ~5GB). One llama-server process serves ONE model, so this is the choice
-      # -- the model dropdown in the application does not override it. Switching
-      # is an edit here plus a restart; both files are already in the image, so
-      # nothing is downloaded and no new image is needed.
+      # The completion model this container serves: 12b (Gemma 4 12B Q8_0,
+      # ~11.8GB of weights). One llama-server process serves ONE model, and the
+      # model dropdown in the application does not override this.
       #
-      # Dropping to e4b roughly halves the LLM's memory floor, which is the
-      # cheapest way to fit more concurrent auditors on a smaller box.
+      # This image ships the 12B ONLY. The E4B fallback was dropped to save
+      # 5.4GB in every bundle, so LLM_MODEL=e4b now fails at startup with an
+      # explanatory message rather than silently serving other weights. If this
+      # machine cannot hold the 12B (see the RAM budget below), the fix is more
+      # memory for this container, not a smaller baked-in model. Other weights
+      # can still be mounted in and named by absolute path, e.g.
+      # LLM_MODEL=/models/your-model.gguf
       - LLM_MODEL=12b
       # Tokens each request may use. 16384 admits only ~14 of the 30 passages
       # Deep-mode retrieval produces; 32768 clears all 30 with headroom. The
       # entrypoint sizes slots from this container's RAM and sets
-      # -c = slots x this value.  RAM ~= 12.5GB + slots x 1.92GB on 12b
-      # (4.5GB + slots x 1.92GB on e4b -- the entrypoint sets that floor from
-      # LLM_MODEL automatically; do not pin RESOURCE_GUARD_FIXED_OVERHEAD_GB
-      # unless you have measured your own).
+      # -c = slots x this value.  RAM ~= 12.5GB + slots x 1.92GB on 12b.
+      # The entrypoint sets that 12.5GB floor from LLM_MODEL automatically; do
+      # not pin RESOURCE_GUARD_FIXED_OVERHEAD_GB unless you have measured your
+      # own.
       - MIN_CTX_PER_REQUEST=32768
     #
     # Slots are bounded by this container's RAM and by CPU cores. With no
@@ -76,7 +78,9 @@ services:
     #   2 concurrent auditors  ->  2 slots -> ~17GB
     #   5 concurrent auditors  ->  6 slots -> ~24GB
     #   10 concurrent auditors -> 12 slots -> ~36GB
-    # On e4b, subtract 8GB from each of those.
+    # These are the real floors: this image has no smaller model to fall back
+    # to, so a container given less than ~17GB will refuse to start rather than
+    # be OOM-killed partway through an audit.
     # mem_limit: 36g
       # LLM_THREADS intentionally NOT set here -- the container auto-detects
       # its actual CPU allowance (cgroup quota, or the host's full core
