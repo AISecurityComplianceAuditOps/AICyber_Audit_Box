@@ -24,6 +24,8 @@ app.js already greyed out the scope panel, but a disabled attribute is not a
 boundary -- a direct API call walks past it. These tests exercise the API
 directly for exactly that reason.
 """
+import re
+
 import pytest
 
 from src.api.endpoints import audit as audit_ep
@@ -120,3 +122,71 @@ def test_read_only_evidence_routes_are_not_guarded():
     import inspect
     src = inspect.getsource(audit_ep.api_get_session_evidence)
     assert "_assert_session_not_running" not in src
+
+
+def _set_run_locked_inputs_source():
+    """The body of app.js's _setRunLockedInputs, as text."""
+    import io
+    import os
+
+    app_js = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                          "src", "api", "static", "app.js")
+    src = io.open(app_js, encoding="utf-8").read()
+    start = src.index("function _setRunLockedInputs(")
+    end = src.index("\nfunction ", start + 1)
+    return src[start:end]
+
+
+def test_the_lock_restores_the_cursor_it_replaced():
+    """Unlocking must put the cursor back, not test the value it just wrote.
+
+    The lock swaps cursor:pointer for cursor:not-allowed so a frozen control
+    stops advertising itself as clickable. The restore was written as one
+    branch serving both directions:
+
+        if (el.style.cursor === "pointer" || id === "scoping-excel-dropzone")
+            el.style.cursor = locked ? "not-allowed" : "pointer";
+
+    which is a one-way door. Locking rewrites the value, so unlocking tested
+    "not-allowed" against "pointer", failed, and left the no-entry cursor in
+    place for the rest of the session -- on buttons that were enabled, had
+    pointer-events untouched, and worked perfectly when clicked. A finished
+    audit left the scope panel looking broken, and a reload cleared it, so it
+    never reproduced for whoever went to look.
+
+    Read off the source because the behaviour is three lines of DOM styling in
+    a browser-only function: a Playwright run needs the whole stack up, and
+    this needs to fail at commit time.
+    """
+    body = _set_run_locked_inputs_source()
+
+    assert "cursorBeforeLock" in body, (
+        "the pre-lock cursor is not stashed, so unlocking cannot know what to "
+        "restore -- see this test's docstring")
+
+    # The specific shape of the original defect: one conditional assignment
+    # deciding the cursor for both directions at once.
+    assert not re.search(r'style\.cursor\s*=\s*locked\s*\?', body), (
+        "the cursor is still set from a `locked ? ... : ...` expression guarded "
+        "by a test on its own current value -- locking overwrites that value, "
+        "so the unlock branch is unreachable")
+
+
+def test_the_lock_restores_the_scope_badge():
+    """Releasing the lock must clear the "scan in progress" badge.
+
+    lockScopeDisplayToCheckpoint writes "N / M selected (locked — scan in
+    progress)" into the scope badge. The only other writer is
+    updateSelectedScopeCount, which runs when the auditor changes the
+    selection -- so nothing cleared the suffix when the run ended. A resumed run
+    that finished left the panel announcing a scan in progress next to controls
+    that were editable again, until an unrelated click happened to recount.
+
+    Same failure shape as the cursor: applied on the way in, with no matching
+    step on the way out. Checked here so the pair cannot drift apart again.
+    """
+    body = _set_run_locked_inputs_source()
+
+    assert "updateSelectedScopeCount" in body, (
+        "nothing recounts the scope badge when the lock is released, so the "
+        '"(locked — scan in progress)" suffix survives the run that set it')

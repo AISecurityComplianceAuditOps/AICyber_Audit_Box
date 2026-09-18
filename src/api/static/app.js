@@ -967,8 +967,26 @@ function _setRunLockedInputs(locked) {
         el.style.pointerEvents = locked ? "none" : "";
         // The dropzone sets cursor:pointer inline; without this it still reads
         // as clickable while being inert, which is worse than looking disabled.
-        if (el.style.cursor === "pointer" || id === "scoping-excel-dropzone") {
-            el.style.cursor = locked ? "not-allowed" : "pointer";
+        //
+        // Stash and restore rather than testing the live value. The test used to
+        // be `el.style.cursor === "pointer"` in BOTH directions, which only ever
+        // worked on the way in: locking rewrites the value to "not-allowed", so
+        // unlocking found "not-allowed", failed the test, and left the cursor
+        // alone. Every scope-mode button therefore kept a no-entry cursor for
+        // the rest of the session once any run had started -- while staying
+        // enabled, with pointer-events untouched and fully clickable. The panel
+        // worked and looked broken, which is the worst of both, and it cleared
+        // only on reload so it never reproduced when anyone went looking.
+        if (locked) {
+            if (el.style.cursor === "pointer" || id === "scoping-excel-dropzone") {
+                if (el.dataset.cursorBeforeLock === undefined) {
+                    el.dataset.cursorBeforeLock = el.style.cursor || "";
+                }
+                el.style.cursor = "not-allowed";
+            }
+        } else if (el.dataset.cursorBeforeLock !== undefined) {
+            el.style.cursor = el.dataset.cursorBeforeLock;
+            delete el.dataset.cursorBeforeLock;
         }
     });
 
@@ -1016,6 +1034,21 @@ function _setRunLockedInputs(locked) {
 
     const note = document.getElementById("evidence-lock-note");
     if (note) note.style.display = locked ? "block" : "none";
+
+    // Put the scope badge back. lockScopeDisplayToCheckpoint writes
+    // "N / M selected (locked — scan in progress)" into it, and nothing clears
+    // that suffix on release: the only other writer is updateSelectedScopeCount,
+    // which runs when the auditor changes the selection. So after a resumed run
+    // finished, the panel went on announcing a scan in progress -- beside
+    // controls that were once again editable -- until something unrelated
+    // happened to tick a checkbox. Same shape as the cursor above: state applied
+    // on the way in with no matching step on the way out.
+    //
+    // A pure recount of the checkboxes, so it is safe to call here; the run-lock
+    // flag is already cleared at the top of this function.
+    if (!locked && typeof updateSelectedScopeCount === "function") {
+        updateSelectedScopeCount();
+    }
 }
 
 function lockScopeDisplayToCheckpoint(checkpoint) {
