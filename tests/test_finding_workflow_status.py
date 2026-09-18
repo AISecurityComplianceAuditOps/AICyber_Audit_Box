@@ -357,3 +357,91 @@ def test_checklist_keeps_the_evidence_field():
     # the evidence select is still read back when the dialog is saved
     submit = _top_level_function_source("handleEditFindingSubmit")
     assert 'getElementById("edit-finding-evidence").value' in submit
+
+
+def test_the_workflow_filter_is_never_reset_to_a_value_it_cannot_show():
+    """Every reset of #status-filter must name one of the select's own options.
+
+    startNewAuditSession set it to "" -- a value none of the options carry, so
+    the browser drew the box empty and a new session opened with a filter that
+    looked broken. The list underneath was right the whole time: the filter
+    reads the value and falls back to "all" when it is blank, which is exactly
+    why it survived. Only the label was wrong, and only on that one path; the
+    session load, the KPI toggle and the severity toggle all set "All".
+
+    The options live in index.html, so they are read from there rather than
+    restated here -- a new option or a renamed value cannot put this out of date.
+    """
+    import io as _io
+    import os as _os
+    import re as _re
+
+    index_html = _os.path.join(_os.path.dirname(_APP_JS), "index.html")
+    with _io.open(index_html, encoding="utf-8") as fh:
+        html = fh.read()
+
+    block = html[html.index('id="status-filter"'):]
+    block = block[:block.index("</select>")]
+    options = set(_re.findall(r'<option value="([^"]*)"', block))
+    assert "All" in options, "the status filter lost its All option"
+
+    src = _app_js()
+    # Direct writes of a literal to whichever variable holds this select. The
+    # element is fetched under several names, so anchor on the id and take the
+    # assignments that follow it.
+    for m in _re.finditer(r'getElementById\("status-filter"\)', src):
+        window = src[m.start():m.start() + 400]
+        for var, value in _re.findall(r'(\w+)\.value\s*=\s*"([^"]*)"', window):
+            assert value in options, (
+                'app.js resets the workflow filter to %r, which is not one of its '
+                "options %s -- the select renders blank" % (value, sorted(options)))
+
+
+def _severity_band_py(severity):
+    """The band rule as app.js states it, mirrored so the cases can be exercised."""
+    sev = str(severity or "").lower()
+    for band, words in (("p1", ("p1", "critical")), ("p2", ("p2", "high")),
+                        ("p3", ("p3", "medium")), ("p4", ("p4", "low"))):
+        if any(w in sev for w in words):
+            return band
+    return ""
+
+
+def test_a_counted_severity_is_always_a_findable_one():
+    """The KPI count and the KPI click-through must agree on every severity.
+
+    They did not. The counter accepted either spelling -- includes("p4") OR
+    includes("low") -- while the filter asked whether the severity contained the
+    whole label the box hands it, "P4 Low". Anything recorded as just "Low", or
+    as "P4 - Low", was counted in the box and matched by nothing when that box
+    was clicked: P4 / Low reading 1, with "No audit findings match the current
+    filter criteria" directly beneath it.
+
+    Seen at a customer on a 122-finding run.
+    """
+    labels = {"p1": "P1 Critical", "p2": "P2 High", "p3": "P3 Medium", "p4": "P4 Low"}
+    # Spellings the counter accepts. Each must also survive the filter.
+    for stored in ("P4 Low", "Low", "P4", "P4 - Low", "P4/Low", "low",
+                   "P1 Critical", "Critical", "P2 High", "High",
+                   "P3 Medium", "Medium"):
+        band = _severity_band_py(stored)
+        assert band, "%r is counted by no band" % stored
+        assert _severity_band_py(labels[band]) == band, (
+            "a finding stored as %r counts under %s, but clicking that box "
+            "(which passes %r) would not match it" % (stored, band, labels[band]))
+
+
+def test_the_counter_and_the_filter_share_one_severity_rule():
+    """Both must call the same helper, so they cannot drift apart again."""
+    src = _app_js()
+    assert src.count("function severityBand(") == 1, (
+        "severityBand should be defined exactly once")
+
+    stats = _top_level_function_source("calculateSeverityStats")
+    assert "severityBand(" in stats, "the KPI counter no longer uses the shared rule"
+    assert 'includes("p4")' not in stats, (
+        "the counter has its own severity matching again -- that is how it and the "
+        "filter came to disagree")
+
+    render = _render_findings_list_source()
+    assert "severityBand(" in render, "the severity filter no longer uses the shared rule"

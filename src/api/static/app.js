@@ -1878,8 +1878,15 @@ async function startNewAuditSession(skipPrompt = false, customTitle = null) {
         if (allBtn) allBtn.classList.add("active");
 
         // ── Reset UI: Workflow filter ─────────────────────────────────────────────────
+        // "All", not "" -- the empty string matches none of the select's options, so
+        // the browser rendered the box blank. Every other reset of this control
+        // (the session load, the KPI toggle, the severity toggle) sets "All"; this
+        // one was the odd one out, so a new session always opened showing a filter
+        // with no value in it. Harmless to the filtering itself, which reads the
+        // value and falls back to "all" when it is empty -- which is exactly why
+        // it survived: the list was right and only the label looked wrong.
         const wfFilter = document.getElementById("status-filter");
-        if (wfFilter) wfFilter.value = "";
+        if (wfFilter) wfFilter.value = "All";
 
         // ── Reset UI: Progress bar ────────────────────────────────────────────────────
         const progressBar = document.getElementById("pipeline-progress-fill");
@@ -4949,6 +4956,28 @@ function toggleSeverityFilter(sev) {
     renderFindingsList();
 }
 
+// Which P-band a severity string belongs to, as "p1".."p4", or "" for none.
+//
+// The KPI counters and the KPI click-through filter each used to decide this
+// for themselves, and they disagreed. The counter accepted either spelling --
+// includes("p4") OR includes("low") -- while the filter asked whether the
+// severity contained the whole label the box passes it, "p4 low". So a finding
+// stored as "Low", "P4", "P4 - Low" or "P4/Low" was counted in the box and
+// then matched by nothing when that same box was clicked: P4 / Low showing 1,
+// and "No audit findings match the current filter criteria" underneath it.
+//
+// One function, used by both, so a severity that is counted is always a
+// severity that can be found. The order matters: a P-code wins over a word, so
+// "P2 High" is p2 and never p1 by way of some other substring.
+function severityBand(severity) {
+    const sev = String(severity || "").toLowerCase();
+    if (sev.includes("p1") || sev.includes("critical")) return "p1";
+    if (sev.includes("p2") || sev.includes("high")) return "p2";
+    if (sev.includes("p3") || sev.includes("medium")) return "p3";
+    if (sev.includes("p4") || sev.includes("low")) return "p4";
+    return "";
+}
+
 function calculateSeverityStats(currentExpandedCards) {
     let compCount = 0;
     let nonCompCount = 0;
@@ -4969,11 +4998,11 @@ function calculateSeverityStats(currentExpandedCards) {
                 compCount++;
             } else {
                 nonCompCount++;
-                const sev = (f.severity || "").toLowerCase();
-                if (sev.includes("p1") || sev.includes("critical")) p1Count++;
-                else if (sev.includes("p2") || sev.includes("high")) p2Count++;
-                else if (sev.includes("p3") || sev.includes("medium")) p3Count++;
-                else if (sev.includes("p4") || sev.includes("low")) p4Count++;
+                const band = severityBand(f.severity);
+                if (band === "p1") p1Count++;
+                else if (band === "p2") p2Count++;
+                else if (band === "p3") p3Count++;
+                else if (band === "p4") p4Count++;
             }
         });
     } else {
@@ -4986,11 +5015,11 @@ function calculateSeverityStats(currentExpandedCards) {
                 compCount++;
             } else {
                 nonCompCount++;
-                const sev = (f.severity || "").toLowerCase();
-                if (sev.includes("p1") || sev.includes("critical")) p1Count++;
-                else if (sev.includes("p2") || sev.includes("high")) p2Count++;
-                else if (sev.includes("p3") || sev.includes("medium")) p3Count++;
-                else if (sev.includes("p4") || sev.includes("low")) p4Count++;
+                const band = severityBand(f.severity);
+                if (band === "p1") p1Count++;
+                else if (band === "p2") p2Count++;
+                else if (band === "p3") p3Count++;
+                else if (band === "p4") p4Count++;
             }
         });
     }
@@ -6020,7 +6049,15 @@ function renderFindingsList() {
     }
 
     if (activeSeverityFilter && activeSeverityFilter !== "all") {
-        list = list.filter(f => (f.severity || "").toLowerCase().includes(activeSeverityFilter.toLowerCase()));
+        // Compare bands, not substrings. The KPI box passes its whole label
+        // ("P4 Low"), and asking whether the severity contains that exact pair of
+        // words failed every finding recorded as just "Low", or as "P4 - Low" --
+        // findings the box beside it had already counted.
+        const wanted = severityBand(activeSeverityFilter);
+        list = wanted
+            ? list.filter(f => severityBand(f.severity) === wanted)
+            : list.filter(f => (f.severity || "").toLowerCase()
+                                 .includes(activeSeverityFilter.toLowerCase()));
     }
 
     if (!list || list.length === 0) {
