@@ -3879,9 +3879,30 @@ def _export_iso_template_docx(session_title, findings, resolved_list, status, co
     from docx.enum.text import WD_ALIGN_PARAGRAPH as _WD_ALIGN
 
     def _add_page_number_field(footer):
-        for _p in footer.paragraphs:
-            for _it in _p._p.iter(qn("w:instrText")):
+        # Scan the whole footer part, not footer.paragraphs.
+        #
+        # This guard existed to avoid double-numbering and did not work. The
+        # template keeps its page number inside nested content controls
+        # (w:ftr > w:sdt > w:sdtContent > w:sdt > w:sdtContent > w:p), and
+        # python-docx's .paragraphs yields only the direct w:p children of
+        # w:ftr -- which hold the classification line and nothing else. The
+        # guard therefore saw a footer with no page field, added a second one,
+        # and every ISO report exported from this template has carried
+        # "Page 1 of 9Page 1 of 9". Invisible in the DOCX only because nobody
+        # looked at the footer twice; obvious the moment it is rendered to PDF.
+        #
+        # Iterating the element tree finds the field wherever it sits -- content
+        # control, table cell, or plain paragraph. fldSimple is checked too: it
+        # is the other legal encoding, carrying the instruction as an attribute
+        # rather than as w:instrText, and a template using it would defeat a
+        # check that only looked for the complex form.
+        _root = getattr(footer, "_element", None)
+        if _root is not None:
+            for _it in _root.iter(qn("w:instrText")):
                 if "PAGE" in (_it.text or ""):
+                    return
+            for _fs in _root.iter(qn("w:fldSimple")):
+                if "PAGE" in (_fs.get(qn("w:instr")) or ""):
                     return
         para = footer.paragraphs[0].insert_paragraph_before() if footer.paragraphs else footer.add_paragraph()
         para.alignment = _WD_ALIGN.RIGHT
@@ -4294,6 +4315,27 @@ def _export_iso_template_docx(session_title, findings, resolved_list, status, co
                 evidence=evidence,
             )
             sno_counter += 1
+
+    # ── Recalculate the contents page on open ────────────────────────────────
+    # The template carries a real TOC field but no w:updateFields, so its cached
+    # page numbers -- taken from the 31-page document this template was made
+    # from -- are what the reader sees. An eight-page report whose contents page
+    # sends them to page 13 reads as a mistake, because it is one.
+    #
+    # Word recalculates fields on open when this is set. It matters more for the
+    # PDF: nobody can press F9 on a PDF, so without this the stale numbers are
+    # permanent there. LibreOffice honours the same flag while converting, which
+    # is what makes the exported PDF's contents page correct.
+    # Explicit None tests, not `a or b`: lxml warns that truth-testing an
+    # element is ambiguous and will always be True in future versions, which
+    # would silently pick the wrong attribute here.
+    _settings = getattr(doc.settings, "element", None)
+    if _settings is None:
+        _settings = getattr(doc.settings, "_element", None)
+    if _settings is not None and _settings.find(qn("w:updateFields")) is None:
+        _uf = OxmlElement("w:updateFields")
+        _uf.set(qn("w:val"), "true")
+        _settings.append(_uf)
 
     # ── Save and return bytes ─────────────────────────────────────────────────
     buf = _io.BytesIO()
@@ -4875,6 +4917,79 @@ def export_docx_report(session_title, findings, resolved_list, status, comments=
     return buf.read()
 
 
+def _docx_bytes_to_pdf(docx_bytes, timeout=180):
+    """Renders a DOCX to PDF with LibreOffice. Returns bytes, or None.
+
+    The ISO DOCX is built from the firm's own `Sample report.docx`, so its cover
+    page, running header, table styling and narrative sections live inside that
+    file. Re-drawing all of that in a PDF library means maintaining a second,
+    independent copy of a design nobody can see -- and it drifted: the DOCX has
+    been rendering the branded template while the PDF rendered a plainer
+    programmatic layout, from one identical payload. Rendering the DOCX itself
+    is what makes the two formats the same document rather than two documents
+    that are supposed to look alike.
+
+    Returns None on every failure rather than raising. The caller falls back to
+    the programmatic layout, so a missing or broken LibreOffice degrades the
+    report's appearance instead of failing the export -- which, at an air-gapped
+    site with no way to install anything, is the difference between a plain
+    report and no report.
+    """
+    import shutil as _shutil
+    import subprocess as _subprocess
+    import tempfile as _tempfile
+
+    soffice = _shutil.which("soffice") or _shutil.which("libreoffice")
+    if not soffice:
+        return None
+
+    with _tempfile.TemporaryDirectory() as _td:
+        src = os.path.join(_td, "report.docx")
+        try:
+            with open(src, "wb") as fh:
+                fh.write(docx_bytes)
+        except OSError:
+            return None
+
+        # A private profile per call. LibreOffice locks its user profile, so two
+        # exports running at once -- ordinary here, the product runs concurrent
+        # audits -- would have the second block on the first's lock or fail
+        # outright. A throwaway profile inside the temp directory removes the
+        # shared resource entirely, and is cleaned up with it.
+        profile_uri = "file:///" + os.path.join(_td, "loprofile").replace(os.sep, "/").lstrip("/")
+        cmd = [
+            soffice, "--headless", "--norestore", "--invisible", "--nologo",
+            "--nodefault", "--nolockcheck",
+            "-env:UserInstallation=" + profile_uri,
+            "--convert-to", "pdf", "--outdir", _td, src,
+        ]
+        try:
+            proc = _subprocess.run(cmd, timeout=timeout, capture_output=True)
+        except (_subprocess.TimeoutExpired, OSError) as exc:
+            print("[REPORT EXPORT] LibreOffice conversion failed (%s); "
+                  "falling back to the programmatic PDF layout." % exc, flush=True)
+            return None
+
+        out = os.path.join(_td, "report.pdf")
+        if not os.path.exists(out):
+            print("[REPORT EXPORT] LibreOffice produced no PDF (exit %s): %s" % (
+                proc.returncode,
+                (proc.stderr or b"").decode("utf-8", "replace").strip()[:300]), flush=True)
+            return None
+        try:
+            with open(out, "rb") as fh:
+                data = fh.read()
+        except OSError:
+            return None
+
+    # A PDF that is not a PDF is worse than no PDF: it would be served as a
+    # download that opens in nothing.
+    if not data.startswith(b"%PDF"):
+        print("[REPORT EXPORT] LibreOffice output was not a PDF; falling back.", flush=True)
+        return None
+    return data
+
+
 def export_pdf_report(session_title, findings, resolved_list, status, comments="", audit_type=None, custom_logo=None, metadata=None):
     """
     audit_type: explicit "vapt" / "iso" from the caller (derived from AuditReport.framework,
@@ -4900,6 +5015,24 @@ def export_pdf_report(session_title, findings, resolved_list, status, comments="
 
     if is_vapt:
         return _export_vapt_pdf(session_title, findings, resolved_list, status, comments, custom_logo=custom_logo, metadata=metadata)
+
+    # ── ISO: render the same branded template the DOCX uses ──────────────────
+    # Both formats are the same report and had stopped looking like it. The DOCX
+    # is built from Sample report.docx; this PDF was written out longhand below,
+    # so the two diverged everywhere the template was edited -- cover page,
+    # header, section text. Building the template DOCX and rendering THAT keeps
+    # them identical by construction: one template, one layout, two file types.
+    #
+    # Everything after this point is the fallback, reached when the template is
+    # absent (the file is gitignored) or LibreOffice is unavailable.
+    _iso_docx = _export_iso_template_docx(
+        session_title, findings, resolved_list, status, comments,
+        custom_logo=custom_logo, metadata=metadata)
+    if _iso_docx:
+        _rendered = _docx_bytes_to_pdf(_iso_docx)
+        if _rendered:
+            return _rendered
+
     from fpdf.fonts import FontFace
 
     # Which standard this report is actually certifying against -- defaults to today's

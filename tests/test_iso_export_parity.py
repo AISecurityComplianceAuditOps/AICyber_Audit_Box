@@ -129,3 +129,125 @@ def test_observations_precedence_matches_across_layouts():
         assert chain, "%s: could not find the observation fallback chain" % name
         assert 'description' in chain.group(0), (
             "%s omits description from the observation chain" % name)
+
+
+def test_iso_pdf_renders_the_template_when_a_converter_exists(monkeypatch):
+    """The ISO PDF must be the template DOCX rendered, not a second layout.
+
+    This is the defect the whole path exists for: the DOCX was built from
+    Sample report.docx while the PDF was written out longhand, so one payload
+    produced two differently-branded documents and only the DOCX carried the
+    firm's cover page and header.
+    """
+    called = {}
+
+    def _fake_convert(docx_bytes, timeout=180):
+        called["docx"] = docx_bytes
+        return b"%PDF-1.7 rendered-from-template"
+
+    monkeypatch.setattr(rx, "_docx_bytes_to_pdf", _fake_convert)
+    monkeypatch.setattr(rx, "_export_iso_template_docx",
+                        lambda *a, **k: b"PK\x03\x04 pretend-docx")
+
+    out = rx.export_pdf_report(
+        "ISO 27001 Audit", [dict(FINDING)], [], "Reviewed",
+        audit_type="iso", metadata=META)
+
+    assert called.get("docx") == b"PK\x03\x04 pretend-docx", (
+        "the ISO PDF did not go through the template DOCX")
+    assert out == b"%PDF-1.7 rendered-from-template"
+
+
+def test_iso_pdf_falls_back_when_no_converter(monkeypatch):
+    """A missing LibreOffice must degrade the look, never fail the export.
+
+    At an air-gapped site nobody can install a converter, so a hard failure here
+    would mean no report at all. The programmatic layout is worse-looking and
+    still correct.
+    """
+    monkeypatch.setattr(rx, "_docx_bytes_to_pdf", lambda *a, **k: None)
+
+    out = rx.export_pdf_report(
+        "ISO 27001 Audit", [dict(FINDING)], [], "Reviewed",
+        audit_type="iso", metadata=META)
+
+    assert out, "export produced nothing when the converter was unavailable"
+    assert bytes(out[:4]) == b"%PDF", "fallback did not produce a PDF"
+
+
+def test_docx_to_pdf_returns_none_without_soffice(monkeypatch):
+    """No converter on PATH is a None, not an exception.
+
+    _docx_bytes_to_pdf imports shutil inside the function, which binds the same
+    module object -- so patching shutil.which here reaches it.
+    """
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    assert rx._docx_bytes_to_pdf(b"PK\x03\x04 not really a docx") is None
+
+
+def _template_on_disk():
+    """The template paths the exporter itself searches, in its own order.
+
+    The skipif above checks only the VAPT copy; the exporter accepts the repo
+    root copy too, so a test keyed to VAPT alone silently stops running on a
+    machine that has only the other one.
+    """
+    base = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(rx.__file__)), "..", ".."))
+    for candidate in (os.path.join(base, "VAPT", "Sample report.docx"),
+                      os.path.join(base, "Sample report.docx")):
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
+@pytest.mark.skipif(_template_on_disk() is None,
+                    reason="master template not present (it is gitignored by *.docx)")
+def test_template_docx_numbers_each_page_exactly_once():
+    """The footer must carry one page number, not two.
+
+    _add_page_number_field guards against double-numbering by looking for an
+    existing PAGE field, and the guard was reading footer.paragraphs -- which in
+    python-docx yields only the direct w:p children of w:ftr. This template
+    keeps its page number inside nested content controls
+    (w:ftr > w:sdt > w:sdtContent > w:sdt > w:sdtContent > w:p), so the guard
+    saw a footer holding nothing but the classification line, concluded there
+    was no page number, and added a second one. Every report exported from this
+    template read "Page 1 of 9Page 1 of 9".
+
+    It survived because nothing rendered the footer: the DOCX shows cached field
+    text until Word recalculates, and the ISO PDF came from a different code
+    path entirely. Counting the fields in the XML is what catches it at commit
+    time instead of in a customer's report.
+    """
+    import zipfile
+
+    data = rx._export_iso_template_docx(
+        "ISO 27001 Audit", [dict(FINDING)], [], "Reviewed", metadata=META)
+    assert data, "template exporter returned None despite the template existing"
+
+    W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    import xml.etree.ElementTree as ET
+
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        footers = [n for n in z.namelist() if re.match(r"word/footer\d*\.xml$", n)]
+        assert footers, "no footer part in the exported document"
+        for part in sorted(footers):
+            root = ET.fromstring(z.read(part))
+            # Both legal encodings: complex fields carry the instruction in
+            # w:instrText, simple fields in a w:instr attribute.
+            page = [t.text for t in root.iter(W + "instrText")
+                    if t.text and re.search(r"\bPAGE\b", t.text)]
+            page += [e.get(W + "instr") for e in root.iter(W + "fldSimple")
+                     if re.search(r"\bPAGE\b", e.get(W + "instr") or "")]
+            numpages = [t.text for t in root.iter(W + "instrText")
+                        if t.text and "NUMPAGES" in t.text]
+            numpages += [e.get(W + "instr") for e in root.iter(W + "fldSimple")
+                         if "NUMPAGES" in (e.get(W + "instr") or "")]
+            assert len(page) == 1, (
+                "%s carries %d PAGE fields, expected 1 -- the page number is "
+                "duplicated: %r" % (part, len(page), page))
+            assert len(numpages) == 1, (
+                "%s carries %d NUMPAGES fields, expected 1: %r"
+                % (part, len(numpages), numpages))
