@@ -221,7 +221,7 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
             if self.page_no() > 1:
                 self.set_font("Helvetica", "", 8.5)
                 self.set_text_color(100, 116, 139)
-                if os.path.exists(logo_path):
+                if logo_path and os.path.exists(logo_path):
                     self.image(logo_path, x=184, y=4, w=10)
                     self.cell(166, 5, clean_text(f"{scope_type} Network VAPT Validation Report"), align="R", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                 else:
@@ -259,7 +259,15 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
     # Cover Page Top-Left Branding Box
     pdf.set_fill_color(255, 255, 255)
     pdf.rect(12, 12, 85, 34, style='F')
-    if os.path.exists(logo_path):
+    # `logo_path and`, because _default_auditor_logo returns None when there is
+    # no logo to be had -- and os.path.exists(None) raises TypeError rather than
+    # returning False. That is not hypothetical: data/assets is excluded from
+    # the app image (it holds uploaded evidence, so it is a volume, not image
+    # content), so on a customer installation where no logo has been uploaded
+    # this is always None, and every VAPT PDF export answered 500. The other
+    # seven exporters already guard this way; only these two did not, which is
+    # why ISO and PQC exports were unaffected and VAPT alone failed.
+    if logo_path and os.path.exists(logo_path):
         pdf.image(logo_path, x=15, y=15, w=26)
     else:
         pdf.set_font("Helvetica", "B", 10)
@@ -1027,22 +1035,75 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
 
         # Styled Monospace Box for HTTP Request/Response Evidence or Console Logs
         def format_http_evidence(txt):
-            if not txt:
+            """Lay the evidence out so an auditor can read it.
+
+            This is the part of the report a reader actually studies -- the raw
+            proof the finding rests on -- and three things were working against
+            it.
+
+            Every line was left-stripped. Indentation is not decoration in a
+            terminal capture: nmap output, JSON and config blocks all carry
+            their structure in leading whitespace, and flattening it turned a
+            nested response into an undifferentiated wall.
+
+            The header split ran over every piece of evidence, not just HTTP.
+            The patterns match bare words like "Date:" and "Server:", so an
+            sslscan or systemctl capture that happened to contain one was
+            broken apart at a point that meant nothing.
+
+            And long lines were left to multi_cell, which breaks wherever it
+            runs out of width -- mid-token, mid-URL, mid-hash. Wrapping them
+            here instead keeps the break predictable and marks it, so a reader
+            can tell a wrapped line from a new one.
+            """
+            if not txt or not str(txt).strip():
                 return "Console / Log Audit Verification"
-            import re
-            keywords = [
-                r'(GET\s+/[^\s\n]*)', r'(POST\s+/[^\s\n]*)', r'(PUT\s+/[^\s\n]*)', r'(DELETE\s+/[^\s\n]*)',
-                r'(HTTP/1\.[01]\s+\d+)', r'(HTTP/2\s+\d+)',
-                r'(Host:)', r'(User-Agent:)', r'(Accept:)', r'(Accept-Encoding:)', r'(Accept-Language:)',
-                r'(Content-Type:)', r'(Content-Length:)', r'(Connection:)', r'(Cache-Control:)',
-                r'(Cookie:)', r'(Set-Cookie:)', r'(Date:)', r'(Server:)', r'(Location:)',
-                r'(\[Request\s*\d*\])', r'(\[Response\s*\d*\])'
-            ]
-            formatted = str(txt)
-            for kw in keywords:
-                formatted = re.sub(kw, r'\n\1', formatted, flags=re.IGNORECASE)
-            lines = [l.strip() for l in formatted.splitlines() if l.strip()]
-            return "\n".join(lines)
+
+            text = str(txt).replace("\r\n", "\n").replace("\r", "\n").replace("\t", "    ")
+
+            # Only reshape genuine HTTP traffic, and only when it arrived as one
+            # unbroken run -- evidence that already has its own line breaks is
+            # already laid out, and re-splitting it only does harm.
+            looks_http = re.search(r'(?:^|\n)\s*(?:GET|POST|PUT|DELETE|HEAD|OPTIONS)\s+\S+|HTTP/\d', text)
+            if looks_http and text.count("\n") <= 2:
+                keywords = [
+                    r'((?:GET|POST|PUT|DELETE|HEAD|OPTIONS)\s+/[^\s\n]*)',
+                    r'(HTTP/1\.[01]\s+\d+)', r'(HTTP/2\s+\d+)',
+                    r'(Host:)', r'(User-Agent:)', r'(Accept:)', r'(Accept-Encoding:)',
+                    r'(Accept-Language:)', r'(Content-Type:)', r'(Content-Length:)',
+                    r'(Connection:)', r'(Cache-Control:)', r'(Cookie:)', r'(Set-Cookie:)',
+                    r'(Date:)', r'(Server:)', r'(Location:)',
+                    r'(\[Request\s*\d*\])', r'(\[Response\s*\d*\])',
+                ]
+                for kw in keywords:
+                    text = re.sub(kw, r'\n\1', text)
+
+            # Courier at 7.5pt fits about 110 characters across the box. Wrap at
+            # that, with a marker and a hanging indent, rather than letting the
+            # PDF break a URL or a hash at an arbitrary column.
+            WIDTH = 108
+            out, blanks = [], 0
+            for raw in text.splitlines():
+                line = raw.rstrip()
+                if not line:
+                    # Keep the paragraph breaks, lose the runs of them.
+                    blanks += 1
+                    if blanks == 1 and out:
+                        out.append("")
+                    continue
+                blanks = 0
+                indent = line[:len(line) - len(line.lstrip())][:8]
+                while len(line) > WIDTH:
+                    cut = line.rfind(" ", len(indent) + 20, WIDTH)
+                    if cut <= len(indent):
+                        cut = WIDTH          # nothing to break on: a hash or a URL
+                    out.append(line[:cut].rstrip() + " \\")
+                    line = indent + "  " + line[cut:].lstrip()
+                out.append(line)
+
+            while out and not out[-1]:
+                out.pop()
+            return "\n".join(out) if out else "Console / Log Audit Verification"
 
         clean_poc = format_http_evidence(poc_text[:2500])
 
