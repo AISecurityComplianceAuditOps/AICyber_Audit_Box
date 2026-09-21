@@ -1,23 +1,26 @@
 # -*- coding: utf-8 -*-
-"""The ISO cover's lower block is one bordered box, not two.
+"""The ISO cover page, as it is actually delivered.
 
     pytest tests/test_iso_cover_layout.py -v
 
 WHY THIS EXISTS
 
-Word draws a run of consecutive paragraphs that share the same border as a
-single box. The cover's lower block -- the auditor logo, "Audit Conducted By:",
-the name, the firm, the address and the contact lines -- is one such run.
+The cover comes from `Sample report.docx`, a real past audit by another firm, so
+everything on it is that firm's design until it is deliberately changed. Three
+things it carried were wrong for a Dhiware report and none of them raised:
 
-The auditor's logo is inserted into that run at export time with
-insert_paragraph_before(), which creates a BARE paragraph. A paragraph with no
-border in the middle of a bordered run ends the first box and starts a second,
-so the delivered cover showed two stacked boxes with the shield stranded in the
-gap between them, overlapping the lower box's top edge.
+  * every cover paragraph had a thinThickSmallGap border, which Word and
+    LibreOffice both draw as a heavy decorative box around the page
+  * the auditor logo was inserted with insert_paragraph_before(), which makes a
+    BARE paragraph -- inside a bordered run that ended one box and started
+    another, leaving the shield stranded in the gap between two boxes
+  * the auditor block was padded with runs of empty paragraphs (four inside it,
+    three more before the phone lines), so the contact details drifted down the
+    page instead of reading as one block
 
-Nothing raised, and the DOCX and the PDF agreed with each other -- they were
-both wrong in the same way, because the PDF is a LibreOffice render of this very
-DOCX. It could only be seen by looking at the page.
+The DOCX and the PDF agreed throughout, because the PDF is a LibreOffice render
+of this very DOCX -- they were both wrong in the same way. None of it was
+visible except by rendering the page and looking at it.
 """
 import io
 
@@ -39,7 +42,7 @@ FINDING = {
 }
 
 
-def _cover_paragraphs():
+def _cover():
     buf = _export_iso_template_docx(
         session_title="ISO 27001 - Test - 22 Sept 2026",
         findings=[dict(FINDING)], resolved_list=[], status="Final", comments="",
@@ -53,59 +56,71 @@ def _cover_paragraphs():
     return doc.paragraphs[:end]
 
 
-def _has_border(p):
+def _border(p):
     pr = p._p.find(W + "pPr")
     return pr is not None and pr.find(W + "pBdr") is not None
 
 
-def _has_picture(p):
+def _picture(p):
     return bool(p._p.findall(".//" + A + "blip"))
 
 
-def test_the_logo_paragraph_carries_the_block_border():
-    """The defect, stated directly: a bare paragraph split the box in two."""
-    cover = _cover_paragraphs()
-    logo = [p for p in cover if _has_picture(p)]
-    assert logo, "no logo on the cover at all"
-    # The auditee slot at the top may be an empty placeholder; the auditor's
-    # logo is the one inside the lower bordered run.
-    in_block = [p for p in logo if _has_border(p)]
-    assert in_block, (
-        "the auditor logo sits in a borderless paragraph, which ends the "
-        "bordered box above it and starts a new one below -- the logo renders "
-        "stranded in the gap between two boxes")
+def _index(cover, prefix):
+    return next((i for i, p in enumerate(cover)
+                 if p.text.strip().startswith(prefix)), None)
 
 
-def test_the_lower_block_is_one_unbroken_run():
-    """From the logo to the email line, every paragraph shares the border.
-
-    Checked as a run rather than per paragraph: one borderless paragraph
-    anywhere inside it is what breaks the box, wherever it lands.
-    """
-    cover = _cover_paragraphs()
-    start = next((i for i, p in enumerate(cover)
-                  if p.text.strip().startswith("Audit Conducted By")), None)
-    assert start is not None, "the cover has no 'Audit Conducted By:' line"
-
-    # Walk backwards over the logo paragraph(s) that precede it.
-    while start > 0 and (_has_picture(cover[start - 1]) or _has_border(cover[start - 1])):
-        start -= 1
-
-    end = next((i for i, p in enumerate(cover)
-                if p.text.strip().startswith("Email")), None)
-    assert end is not None, "the cover has no email line"
-
-    unbordered = [i for i in range(start, end + 1) if not _has_border(cover[i])]
-    assert not unbordered, (
-        "paragraph(s) %r inside the cover's lower block carry no border, so "
-        "Word will draw it as more than one box" % (unbordered,))
+def test_the_cover_carries_no_decorative_border():
+    """The template's box belongs to the firm the template came from."""
+    boxed = [i for i, p in enumerate(_cover()) if _border(p)]
+    assert not boxed, (
+        "paragraph(s) %r still carry the template's page border, which renders "
+        "as a heavy box around the cover" % (boxed,))
 
 
-def test_the_logo_comes_before_the_conducted_by_line():
-    cover = _cover_paragraphs()
-    logo_idx = next((i for i, p in enumerate(cover)
-                     if _has_picture(p) and _has_border(p)), None)
-    conducted = next((i for i, p in enumerate(cover)
-                      if p.text.strip().startswith("Audit Conducted By")), None)
-    assert logo_idx is not None and conducted is not None
-    assert logo_idx < conducted, "the auditor logo is below 'Audit Conducted By:'"
+def test_the_auditor_logo_sits_above_a_bold_conducted_by():
+    cover = _cover()
+    logo = next((i for i, p in enumerate(cover) if _picture(p)
+                 and i > len(cover) // 3), None)
+    conducted = _index(cover, "Audit Conducted By")
+    assert conducted is not None, "the cover has no 'Audit Conducted By:' line"
+    assert logo is not None and logo < conducted, (
+        "the auditor logo is missing from the foot of the cover, or sits below "
+        "'Audit Conducted By:'")
+    assert all(r.bold for r in cover[conducted].runs), (
+        "'Audit Conducted By:' heads the block and should be bold like the "
+        "other cover headings")
+
+
+def test_the_auditor_block_has_no_runs_of_blank_lines():
+    """Padding inside the block scattered the contact details down the page."""
+    cover = _cover()
+    start = _index(cover, "Audit Conducted By")
+    assert start is not None
+
+    run, offenders = 0, []
+    for i in range(start, len(cover)):
+        if cover[i].text.strip():
+            run = 0
+            continue
+        run += 1
+        if run > 1:
+            offenders.append(i)
+    assert not offenders, (
+        "consecutive blank paragraphs at %r inside the auditor block -- the "
+        "contact details will drift apart" % (offenders,))
+
+
+def test_the_contact_details_are_all_present():
+    """Tightening the block must not delete a line from it."""
+    cover = _cover()
+    for prefix in ("Audit Conducted By", "Dhiware Technologies",
+                   "Ph:", "Mobile:", "Email"):
+        assert _index(cover, prefix) is not None, "%r was lost from the cover" % prefix
+
+
+def test_the_four_cover_fields_survive():
+    cover = _cover()
+    for prefix in ("Dates of Audit", "Date of Report", "Order reference",
+                   "Document ID"):
+        assert _index(cover, prefix) is not None, "%r is missing" % prefix

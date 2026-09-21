@@ -4026,6 +4026,51 @@ def _export_iso_template_docx(session_title, findings, resolved_list, status, co
                 continue
             _add_page_number_field(ftr)
 
+    # ── Cover-page border ────────────────────────────────────────────────────
+    # The template's cover wraps every paragraph in a thinThickSmallGap border,
+    # which Word and LibreOffice both draw as a heavy decorative box around the
+    # page. That box belongs to the firm whose report this template came from;
+    # the delivered Dhiware cover is plain. Stripped here rather than edited
+    # into the .docx so the template file stays the untouched original.
+    for _p in doc.paragraphs[:next((i for i, _q in enumerate(doc.paragraphs)
+                                    if _q.text.strip() == "Contents"),
+                                   len(doc.paragraphs))]:
+        _pr = _p._p.find(qn("w:pPr"))
+        if _pr is None:
+            continue
+        _bdr = _pr.find(qn("w:pBdr"))
+        if _bdr is not None:
+            _pr.remove(_bdr)
+
+    # The template's cover is padded with runs of empty paragraphs -- thirteen
+    # before "Audit Conducted By:", four inside the auditor block, three more
+    # before the phone lines -- which left the contact details scattered down
+    # the page instead of reading as one block. Runs of blanks are collapsed to
+    # a single blank, keeping the separation between blocks without the drift.
+    # The one long run above "Audit Conducted By:" is left alone: it is what
+    # holds the auditor block at the foot of the cover.
+    _cover_end_idx = next((i for i, _q in enumerate(doc.paragraphs)
+                           if _q.text.strip() == "Contents"), len(doc.paragraphs))
+    _conducted_at = next((i for i, _q in enumerate(doc.paragraphs[:_cover_end_idx])
+                          if _q.text.strip().startswith("Audit Conducted By")), None)
+    if _conducted_at is not None:
+        # The paragraph OBJECTS are captured first: doc.paragraphs rebuilds on
+        # every access, so removing one while indexing into it shifts every
+        # index after it and silently skips the next blank in the run.
+        _block = doc.paragraphs[_conducted_at:_cover_end_idx]
+        _run = 0
+        for _q in _block:
+            if _q.text.strip():
+                _run = 0
+                continue
+            _run += 1
+            if _run > 1:                          # keep the first blank of a run
+                _q._p.getparent().remove(_q._p)
+        # "Audit Conducted By:" heads the block, so it is set in bold like the
+        # other cover headings rather than reading as another contact line.
+        for _r in doc.paragraphs[_conducted_at].runs:
+            _r.bold = True
+
     # ── Cover-page images ────────────────────────────────────────────────────
     # Two real logos are baked into the cover: SEBI's official mark at the top
     # (this is the auditee logo slot, so it takes the uploaded auditee logo, or
