@@ -4067,6 +4067,16 @@ def _export_iso_template_docx(session_title, findings, resolved_list, status, co
                           if _p.text.strip()]
         if logo_path and os.path.exists(logo_path):
             _auditor_logo_para = _conducted.insert_paragraph_before()
+            # The cover's lower block is a run of consecutive paragraphs that
+            # all carry the same border, which Word renders as ONE box. A
+            # paragraph inserted bare has no border, so it split that box in
+            # two and left the logo floating in the gap between them -- visible
+            # on the cover as a shield straddling the second box's top edge.
+            # Adopting the block's own paragraph properties keeps it one box,
+            # with the logo inside it.
+            _src_pr = _conducted._p.find(qn("w:pPr"))
+            if _src_pr is not None:
+                _auditor_logo_para._p.insert(0, deepcopy(_src_pr))
             _auditor_logo_para.alignment = _WD_AL.LEFT
             _auditor_logo_para.add_run().add_picture(logo_path, height=Cm(1.2))
         for _p in _auditor_block:
