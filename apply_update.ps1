@@ -120,13 +120,13 @@ Say "New version : $newVersion"
 Write-Host ""
 
 # ------------------------------------------------------------------- docker
-Write-Host "[1/5] Checking Docker"
+Write-Host "[1/6] Checking Docker"
 if ((Invoke-DockerQuiet "info") -ne 0) { Die "Docker is not running. Start Docker Desktop and run this again." }
 Good "Docker is running."
 
 # ----------------------------------------------------------------- checksum
 Write-Host ""
-Write-Host "[2/5] Verifying the file arrived intact"
+Write-Host "[2/6] Verifying the file arrived intact"
 $sidecar = "$($tar.FullName).sha256"
 if (Test-Path $sidecar) {
     $expected = (Get-Content $sidecar -Raw).Trim().ToLower() -replace '[^0-9a-f]', ''
@@ -139,9 +139,82 @@ if (Test-Path $sidecar) {
     Warn "No .sha256 beside the tar -- skipping the integrity check."
 }
 
+# ------------------------------------------------------------------- backup
+# Taken before anything is touched, because that is the only moment it is worth
+# anything. Until now a site had no backup at all: run_all.bat dumps the
+# database on the developer's machine, and nothing of the kind ever shipped.
+#
+# Both halves or neither. The audit results are rows in the database; the
+# evidence those results cite -- screenshots, PDFs -- are files in the app's
+# data volume. Restoring one without the other leaves findings quoting
+# documents that are gone, or documents nobody assessed. For an audit product
+# that is worse than having no backup, because it looks like a complete one.
+Write-Host ""
+Write-Host "[3/6] Backing up before anything is changed"
+
+$stamp = Get-Date -Format "yyyyMMdd-HHmm"
+$backupRoot = Join-Path $here "backups"
+$dbFile = Join-Path $backupRoot "db_before_$newVersion`_$stamp.sql"
+$filesDir = Join-Path $backupRoot "files_before_$newVersion`_$stamp"
+
+$dbUp = ((Invoke-DockerQuiet "inspect -f {{.State.Running}} shakthidb_service") -eq 0)
+if (-not $dbUp) {
+    Warn "The database container is not running, so there is nothing to back up yet."
+    Warn "This is normal on a site that has not been started."
+} else {
+    New-Item -ItemType Directory -Force -Path $backupRoot | Out-Null
+
+    Say "Audit results -> $(Split-Path -Leaf $dbFile)"
+    # pg_dumpall, not pg_dump of POSTGRES_DB.
+    #
+    # The compose file sets POSTGRES_DB=shakthidb, and that is NOT where the
+    # audits are. The application works in shakthidb_master, with
+    # shakthidb_slave1 and _slave2 replicated from it, and shakthidb itself
+    # holds almost nothing. Dumping the named database therefore exited 0,
+    # produced valid SQL, and captured none of the customer's work -- measured
+    # on a real installation: 4 KB and two tables, beside 1,922 findings in
+    # master that the backup never touched. A backup that looks complete and is
+    # empty is worse than none, because nobody checks it until they need it.
+    #
+    # cmd, not a PowerShell redirect: PowerShell 5.1 writes UTF-16 with a BOM
+    # when it redirects, and psql will not read that back.
+    cmd /c "docker exec shakthidb_service pg_dumpall -U postgres -p 15234 > `"$dbFile`" 2>nul"
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $dbFile) -or (Get-Item $dbFile).Length -lt 1024) {
+        Die "the database backup failed or came out empty, so this update has not been applied.`n           Nothing has been changed. Check the database container is healthy:`n               docker compose ps"
+    }
+    # Prove the real database is in there, rather than trusting a size. This is
+    # the check that would have caught the wrong-database dump above.
+    if (-not (Select-String -Path $dbFile -Pattern "shakthidb_master" -Quiet -ErrorAction SilentlyContinue)) {
+        Die "the database backup does not contain shakthidb_master, which is where the`n           audits live. Not proceeding on a backup that would not restore anything.`n           Saved for inspection: $dbFile"
+    }
+    Good ("Audit results saved ({0:N1} MB, includes shakthidb_master)" -f ((Get-Item $dbFile).Length / 1MB))
+
+    Say "Uploaded evidence -> $(Split-Path -Leaf $filesDir)"
+    # docker cp reads a stopped container as happily as a running one, so this
+    # works whatever state the app is in -- it only needs the container to
+    # exist. A site that has never been started has no evidence to lose.
+    if ((Invoke-DockerQuiet "inspect aicyberauditbox_app") -ne 0) {
+        Warn "The application container does not exist yet, so there is no uploaded"
+        Warn "evidence to back up. The audit results were saved."
+    } else {
+        cmd /c "docker cp aicyberauditbox_app:/app/data `"$filesDir`" >nul 2>&1"
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path $filesDir)) {
+            Die "the evidence backup failed, so this update has not been applied.`n           The audit results were saved to:`n               $dbFile`n           but without the evidence files that backup is not a complete one."
+        }
+    }
+    if (Test-Path $filesDir) {
+        $mb = (Get-ChildItem $filesDir -Recurse -File -ErrorAction SilentlyContinue |
+               Measure-Object -Property Length -Sum).Sum / 1MB
+        Good ("Uploaded evidence saved ({0:N1} MB)" -f $mb)
+    }
+    Write-Host ""
+    Say "Both are in:  $backupRoot"
+    Say "Keep them until the update has been used and looks right."
+}
+
 # --------------------------------------------------------------------- load
 Write-Host ""
-Write-Host "[3/5] Loading the new image (several minutes, prints nothing while it works)"
+Write-Host "[4/6] Loading the new image (several minutes, prints nothing while it works)"
 docker load -i $tar.FullName
 if ($LASTEXITCODE -ne 0) { Die "docker load failed." }
 foreach ($img in $comp.ImageNames) {
@@ -153,7 +226,7 @@ Good ("Loaded: " + (($comp.ImageNames | ForEach-Object { "${_}:$newVersion" }) -
 
 # ------------------------------------------------------------------ compose
 Write-Host ""
-Write-Host "[4/5] Pointing the installation at the new image"
+Write-Host "[5/6] Pointing the installation at the new image"
 
 # Ask Docker where the running stack was started from, rather than searching the
 # disk. A search finds copies -- an old extracted bundle, a spare in "New
@@ -243,7 +316,7 @@ if (-not $needsChange) {
 
 # ------------------------------------------------------------------ restart
 Write-Host ""
-Write-Host "[5/5] Restarting $($comp.Label)"
+Write-Host "[6/6] Restarting $($comp.Label)"
 Push-Location (Split-Path -Parent $composePath)
 try {
     docker compose up -d @($comp.Services)
