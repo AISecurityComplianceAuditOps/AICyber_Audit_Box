@@ -191,7 +191,6 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
     assets_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "data", "assets"))
     custom_logo_file = os.path.join(assets_dir, "custom_company_logo.png")
     effective_custom_logo = custom_logo if (custom_logo and os.path.exists(custom_logo)) else (custom_logo_file if os.path.exists(custom_logo_file) else None)
-    shield_logo_path = os.path.join(assets_dir, "shield_logo.png")
     # Fell back to tuv_sud_logo.png -- another company's logo -- whenever the
     # shield asset was missing.
     logo_path = effective_custom_logo if (effective_custom_logo and os.path.exists(effective_custom_logo)) else _default_auditor_logo(assets_dir)
@@ -1375,8 +1374,7 @@ def _export_pqc_pdf(session_title, findings, resolved_list, status, comments="",
     custom_logo_file = os.path.join(assets_dir, "custom_company_logo.png")
     effective_logo = (custom_logo if (custom_logo and os.path.exists(custom_logo))
                       else (custom_logo_file if os.path.exists(custom_logo_file) else None))
-    shield_path = os.path.join(assets_dir, "shield_logo.png")
-    logo_path = effective_logo or (shield_path if os.path.exists(shield_path) else None)
+    logo_path = effective_logo or _default_auditor_logo(assets_dir)
 
     # Load OEM readiness data from knowledge base
     _oem_kb = {}
@@ -2511,8 +2509,7 @@ def _export_vapt_docx(session_title, findings, resolved_list, status, comments="
     assets_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "data", "assets"))
     custom_logo_file = os.path.join(assets_dir, "custom_company_logo.png")
     effective_custom_logo = custom_logo if (custom_logo and os.path.exists(custom_logo)) else (custom_logo_file if os.path.exists(custom_logo_file) else None)
-    shield_logo_path = os.path.join(assets_dir, "shield_logo.png")
-    logo_path = effective_custom_logo if (effective_custom_logo and os.path.exists(effective_custom_logo)) else (shield_logo_path if os.path.exists(shield_logo_path) else None)
+    logo_path = effective_custom_logo if (effective_custom_logo and os.path.exists(effective_custom_logo)) else _default_auditor_logo(assets_dir)
     testing_dates = f"20-June-2026 to {datetime.now().strftime('%d-%B-%Y')}"
 
 
@@ -3323,16 +3320,48 @@ _PLACEHOLDER_PHONE   = "+91-XXXXXXXXXX"
 _PLACEHOLDER_EMAIL   = "xyz@xyz.com"
 
 
+# Branding that ships inside the image.
+#
+# data/assets is a Docker volume (app_data:/app/data in docker-compose.customer.yml)
+# AND is excluded from the build context by .dockerignore, so on a customer
+# installation it starts empty and stays empty until somebody uploads a logo.
+# Any default asset resolved only from there was therefore missing on exactly
+# the installations that ship -- which is why the VAPT export found no logo at
+# all, and why it 500'd before the os.path.exists(None) guard was added.
+#
+# src/ is COPYed into the image and is not under the volume mount, so a copy
+# kept here survives both a fresh install and an upgrade that reuses an
+# existing app_data volume (an existing volume is never re-seeded from the
+# image, so seeding data/assets at build time would not reach an upgrade).
+_BUNDLED_BRANDING_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "branding"))
+
+
+def _branding_asset(name, assets_dir=None):
+    """An uploaded asset if there is one, else the copy bundled in the image.
+
+    The upload wins: a customer who sets their own logo in Report Metadata keeps
+    it. The bundled copy exists so the slot is never empty on an air-gapped
+    installation that has uploaded nothing.
+    """
+    if assets_dir:
+        _uploaded = os.path.join(assets_dir, name)
+        if os.path.exists(_uploaded):
+            return _uploaded
+    _bundled = os.path.join(_BUNDLED_BRANDING_DIR, name)
+    return _bundled if os.path.exists(_bundled) else None
+
+
 def _default_auditor_logo(assets_dir):
     """The auditor logo used when none has been uploaded in Report Metadata.
 
-    Prefers Dhiware's own mark: drop the file in as data/assets/dhiware_logo.png
+    Prefers Dhiware's own mark: drop the file in as src/branding/dhiware_logo.png
     and it becomes the default on every export, with no code change. Falls back
     to this app's shield so the slot is never empty.
     """
     for _name in ("dhiware_logo.png", "shield_logo.png"):
-        _p = os.path.join(assets_dir, _name)
-        if os.path.exists(_p):
+        _p = _branding_asset(_name, assets_dir)
+        if _p:
             return _p
     return None
 
@@ -4506,11 +4535,12 @@ def export_docx_report(session_title, findings, resolved_list, status, comments=
         run.font.color.rgb = _rgb(15, 23, 42)
 
     # ── COVER PAGE ─────────────────────────────────────────────────────────────
-    assets_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
-    custom_logo_file = os.path.join(assets_dir, "custom_company_logo.png")
-    effective_custom_logo = custom_logo if (custom_logo and os.path.exists(custom_logo)) else (custom_logo_file if os.path.exists(custom_logo_file) else None)
-    shield_logo_path = os.path.join(assets_dir, "shield_logo.png")
-    logo_path = effective_custom_logo if (effective_custom_logo and os.path.exists(effective_custom_logo)) else (shield_logo_path if os.path.exists(shield_logo_path) else None)
+    # data/assets, like every other exporter. This read src/assets -- a directory
+    # that exists neither in the repo nor in the image -- so this cover never
+    # found a logo on any machine, customer or developer.
+    assets_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "data", "assets"))
+    effective_custom_logo = custom_logo if (custom_logo and os.path.exists(custom_logo)) else _branding_asset("custom_company_logo.png", assets_dir)
+    logo_path = effective_custom_logo if effective_custom_logo else _default_auditor_logo(assets_dir)
 
     if logo_path and os.path.exists(logo_path):
         logo_p = doc.add_paragraph()

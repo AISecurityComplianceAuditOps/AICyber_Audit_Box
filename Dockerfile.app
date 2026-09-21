@@ -82,8 +82,8 @@ COPY src/ /compile/src/
 RUN python -m nuitka --module src --include-package=src \
         --output-dir=/compile/out --no-pyi-file --remove-output --assume-yes-for-downloads
 
-# The 39 non-.py files under src/ -- 13 knowledge JSON, the frontend, 17 fonts
-# -- are NOT inside the .so. They are read from disk at runtime, so they are
+# The 41 non-.py files under src/ -- 13 knowledge JSON, the frontend, 17 fonts,
+# and the bundled branding in src/branding -- are NOT inside the .so. They are read from disk at runtime, so they are
 # staged back into the same relative layout the source tree had. Two separate
 # things depend on that layout:
 #   * 15 __file__-relative loads (pqc_crypto_db walks ../knowledge, and so on)
