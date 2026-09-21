@@ -236,8 +236,59 @@ def build():
         "findings, evidence, reports and the documents themselves are untouched &mdash; "
         "only the search index is rebuilt.", OKP))
 
+    # ========================================================= 4b. backup
+    s.append(Paragraph("5 &mdash; Backup and restore", PART))
+    s.append(Paragraph(
+        "Every update takes one automatically, before it changes anything, and stops "
+        "if it cannot. A site that has never been updated has no backup, so this is "
+        "also the argument for applying updates rather than sitting on them.", BODY))
+
+    s.append(Paragraph("What is saved, and where", STEP))
+    s.append(table([
+        ["File", "Holds", "Typical size"],
+        ["<font face='Courier' size='8'>db_before_&lt;ver&gt;_&lt;stamp&gt;.sql</font>",
+         "Every database: the audits, findings, sessions, users, document text and "
+         "its vectors.", "tens of MB"],
+        ["<font face='Courier' size='8'>files_before_&lt;ver&gt;_&lt;stamp&gt;\\</font>",
+         "The uploaded evidence -- screenshots, PDFs -- plus both logos and the "
+         "generated secret.", "however much evidence"],
+    ], [175, 250, 80]))
+    s.append(Paragraph(
+        "Both land in a <font face='Courier' size='8'>backups</font> folder beside the "
+        "site's docker-compose.yml, on their own disk. Nothing leaves the machine.", NOTE))
+    s.append(Paragraph(
+        "<b>Both halves or neither.</b> The findings are rows in the database; the "
+        "evidence they cite are files. Restore one without the other and you have "
+        "findings quoting documents that are gone, or documents nobody assessed.", WARNP))
+
+    s.append(Paragraph("Restoring &mdash; tested, not assumed", STEP))
+    s.append(Paragraph(
+        "Verified by restoring a real 26.3 MB backup into an empty database: 1,922 "
+        "findings, 70 audit sessions and 10 users all came back.", OKP))
+    s.append(Paragraph(
+        "docker compose stop app<br/>"
+        "docker exec -i shakthidb_service psql -U postgres -p 15234 -d postgres &lt; backups\\db_before_....sql<br/>"
+        "docker cp backups\\files_before_....\\. aicyberauditbox_app:/app/data<br/>"
+        "docker compose up -d", CODE))
+    s.append(Paragraph(
+        "The dump carries every database and recreates them, so restoring onto a site "
+        "that still holds its own data is not a merge &mdash; treat it as replacing the "
+        "site's contents with the backup's.", NOTE))
+
+    s.append(Paragraph("Two things that destroy data", STEP))
+    s.append(table([
+        ["<font face='Courier' size='8'>docker compose down -v</font>",
+         "The <b>-v</b> deletes the volumes. This is the one command that actually "
+         "erases a customer's audits. Without -v it is harmless."],
+        ["A PostgreSQL major-version bump",
+         "The database image is built on pgvector/pgvector:<b>pg16</b>. Move to pg17 "
+         "and Postgres refuses to start against a pg16 data directory. Nothing is "
+         "lost, but the product will not run until the data is dumped and reloaded. "
+         "Never bump that base as part of a routine update."],
+    ], [175, 330], header=False))
+
     # =============================================================== 4. rules
-    s.append(Paragraph("5 &mdash; Rules that do not bend", PART))
+    s.append(Paragraph("6 &mdash; Rules that do not bend", PART))
     s.append(table([
         ["#", "Rule", "Why"],
         ["1", "Push only to the <b>testing</b> remote, branch <b>Developer</b>.",
@@ -270,7 +321,7 @@ def build():
 
     # ============================================================ 5. hazards
     s.append(PageBreak())
-    s.append(Paragraph("6 &mdash; Failures this product has actually had", PART))
+    s.append(Paragraph("7 &mdash; Failures this product has actually had", PART))
     s.append(Paragraph(
         "Each of these shipped. They are listed because they share a shape, and that "
         "shape is worth recognising before writing the next one.", BODY))
@@ -307,7 +358,7 @@ def build():
         "one path's output.", WARNP))
 
     # ========================================================== 6. quick ref
-    s.append(Paragraph("7 &mdash; Quick reference", PART))
+    s.append(Paragraph("8 &mdash; Quick reference", PART))
     s.append(table([
         ["To...", "Run"],
         ["Run the tests", "<font face='Courier' size='8'>python -m pytest</font>"],
@@ -326,6 +377,10 @@ def build():
          "last line must read <font face='Courier' size='8'>= 32768 tokens per request</font>"],
         ["Find a site's configuration file",
          "<font face='Courier' size='8'>docker compose ls</font>"],
+        ["Restore a backup",
+         "<font face='Courier' size='8'>docker exec -i shakthidb_service psql -U postgres -p 15234 -d postgres &lt; db_before_....sql</font><br/>"
+         r"then <font face='Courier' size='8'>docker cp files_before_....\. "
+         r"aicyberauditbox_app:/app/data</font> &mdash; see section 5"],
     ], [150, 355]))
 
     s.append(Spacer(1, 8))

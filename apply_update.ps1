@@ -152,8 +152,36 @@ if (Test-Path $sidecar) {
 Write-Host ""
 Write-Host "[3/6] Backing up before anything is changed"
 
+# Where the installation lives, found before the backup rather than after,
+# because that is where the backups belong. Ask Docker where the running stack
+# was started from rather than searching the disk: a search finds copies -- an
+# old extracted bundle, a spare in "New folder" -- and the wrong one leads
+# everything afterwards astray.
+$composePath = $null
+try {
+    $projects = docker compose ls --format json 2>$null | ConvertFrom-Json
+    foreach ($p in $projects) {
+        $cfg = ($p.ConfigFiles -split ",")[0].Trim()
+        if ($cfg -and (Test-Path $cfg)) {
+            if ([IO.File]::ReadAllText($cfg) -match "aicyberauditbox-") { $composePath = $cfg; break }
+        }
+    }
+} catch { }
+if (-not $composePath) {
+    $local = Join-Path $here "docker-compose.yml"
+    if ((Test-Path $local) -and ([IO.File]::ReadAllText($local) -match "aicyberauditbox-")) {
+        $composePath = $local
+    }
+}
+
 $stamp = Get-Date -Format "yyyyMMdd-HHmm"
-$backupRoot = Join-Path $here "backups"
+# Beside the installation, not beside this script. The update files are often
+# opened from Downloads or the desktop and deleted once applied, which is no
+# place to leave the only copy of a site's audits. The install folder is where
+# the product already lives and where somebody looking for a backup would think
+# to look.
+$backupBase = if ($composePath) { Split-Path -Parent $composePath } else { $here }
+$backupRoot = Join-Path $backupBase "backups"
 $dbFile = Join-Path $backupRoot "db_before_$newVersion`_$stamp.sql"
 $filesDir = Join-Path $backupRoot "files_before_$newVersion`_$stamp"
 
@@ -208,7 +236,8 @@ if (-not $dbUp) {
         Good ("Uploaded evidence saved ({0:N1} MB)" -f $mb)
     }
     Write-Host ""
-    Say "Both are in:  $backupRoot"
+    Say "Both are in:"
+    Say "    $backupRoot"
     Say "Keep them until the update has been used and looks right."
 }
 
@@ -228,25 +257,6 @@ Good ("Loaded: " + (($comp.ImageNames | ForEach-Object { "${_}:$newVersion" }) -
 Write-Host ""
 Write-Host "[5/6] Pointing the installation at the new image"
 
-# Ask Docker where the running stack was started from, rather than searching the
-# disk. A search finds copies -- an old extracted bundle, a spare in "New
-# folder" -- and editing the wrong one changes nothing while appearing to work.
-$composePath = $null
-try {
-    $projects = docker compose ls --format json 2>$null | ConvertFrom-Json
-    foreach ($p in $projects) {
-        $cfg = ($p.ConfigFiles -split ",")[0].Trim()
-        if ($cfg -and (Test-Path $cfg)) {
-            if ([IO.File]::ReadAllText($cfg) -match "aicyberauditbox-") { $composePath = $cfg; break }
-        }
-    }
-} catch { }
-if (-not $composePath) {
-    $local = Join-Path $here "docker-compose.yml"
-    if ((Test-Path $local) -and ([IO.File]::ReadAllText($local) -match "aicyberauditbox-")) {
-        $composePath = $local
-    }
-}
 if (-not $composePath) {
     Die "could not find the docker-compose.yml this installation runs from.`n           Start the product once, then run this again -- or run this from the install folder."
 }
