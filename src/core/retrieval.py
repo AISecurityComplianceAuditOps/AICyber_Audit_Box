@@ -40,6 +40,23 @@ CACHE_FILE = os.path.join(os.path.dirname(__file__), ".embeddings_cache.pkl")
 _chunk_embeddings_cache = {}
 
 
+# Which embedding model produced the vectors on this installation.
+#
+# Vectors are only comparable to other vectors from the same model. Change the
+# model and every stored vector becomes a measurement in different units --
+# which does not fail, it silently returns the wrong passages, and an auditor
+# reads findings drawn from evidence that never matched the question.
+#
+# Nothing in the request identifies it: llama-server serves whichever .gguf it
+# was started with and ignores the model name the client sends, exactly as it
+# does for the completion model. So the identity is declared here instead, and
+# an operator who swaps the model is expected to change it. Both stores below
+# key off this, so changing it retires every vector built by the previous model
+# rather than mixing the two.
+EMBEDDING_MODEL_ID = os.environ.get(
+    "EMBEDDING_MODEL_ID", "nomic-embed-text-v1.5.f16").strip() or "nomic-embed-text-v1.5.f16"
+
+
 def _embed_cache_key(filename, chunk_index, content):
     """Content-addressed key for the persistent _chunk_embeddings_cache (which is
     pickled to disk and shared across every session/audit, not just one). Keying
@@ -55,7 +72,12 @@ def _embed_cache_key(filename, chunk_index, content):
     entry instead of colliding.
     """
     content_hash = hashlib.md5((content or "").encode("utf-8", errors="ignore")).hexdigest()[:12]
-    return (filename, chunk_index, content_hash)
+    # The model is part of the identity. Without it a swapped embedding model
+    # kept matching every existing entry -- same file, same chunk, same content
+    # -- and handed back vectors the new model cannot be compared against. Keys
+    # written by the previous model no longer match, so they are simply never
+    # read again and the chunk is re-embedded on demand.
+    return (EMBEDDING_MODEL_ID, filename, chunk_index, content_hash)
 if os.path.exists(CACHE_FILE):
     try:
         with open(CACHE_FILE, "rb") as f:
@@ -112,6 +134,24 @@ def _init_sqlite_vec():
             CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks
             USING vec0(chunk_id INTEGER PRIMARY KEY, embedding FLOAT[768])
         """)
+        # Which model built the vectors in there. Keyed by chunk_id alone, this
+        # table cannot tell one model's vectors from another's, so the stamp is
+        # kept beside it and checked on every start.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS vec_meta (k TEXT PRIMARY KEY, v TEXT)
+        """)
+        _row = conn.execute("SELECT v FROM vec_meta WHERE k='embedding_model'").fetchone()
+        _stamped = _row[0] if _row else None
+        if _stamped and _stamped != EMBEDDING_MODEL_ID:
+            # Retire them rather than mix them. They are derived data: the next
+            # search re-embeds what it needs from the chunks, which are intact.
+            conn.execute("DELETE FROM vec_chunks")
+            print("[VEC SEARCH] embedding model changed (%s -> %s); cleared the vector "
+                  "index so it rebuilds against the new model."
+                  % (_stamped, EMBEDDING_MODEL_ID), flush=True)
+        if _stamped != EMBEDDING_MODEL_ID:
+            conn.execute("INSERT OR REPLACE INTO vec_meta(k, v) VALUES ('embedding_model', ?)",
+                         (EMBEDDING_MODEL_ID,))
         conn.commit()
         conn.close()
         print(f"[VEC SEARCH] sqlite-vec native engine ready (db: {db_path}).", flush=True)
@@ -138,7 +178,26 @@ def _init_pgvector(pg_engine):
                 CREATE INDEX IF NOT EXISTS idx_pg_vec_hnsw
                 ON pg_vec_chunks USING hnsw (embedding vector_cosine_ops)
                 WITH (m=16, ef_construction=64)"""))
-        print("[VEC SEARCH] pgvector HNSW engine ready.", flush=True)
+            # Same reasoning as the sqlite side: chunk_id alone cannot tell one
+            # model's vectors from another's, so the model that built them is
+            # recorded beside them and checked on every start.
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS pg_vec_meta (k TEXT PRIMARY KEY, v TEXT)"""))
+            _row = conn.execute(text(
+                "SELECT v FROM pg_vec_meta WHERE k='embedding_model'")).first()
+            _stamped = _row[0] if _row else None
+            if _stamped and _stamped != EMBEDDING_MODEL_ID:
+                conn.execute(text("DELETE FROM pg_vec_chunks"))
+                print("[VEC SEARCH] embedding model changed (%s -> %s); cleared the "
+                      "vector index so it rebuilds against the new model."
+                      % (_stamped, EMBEDDING_MODEL_ID), flush=True)
+            if _stamped != EMBEDDING_MODEL_ID:
+                conn.execute(text("""
+                    INSERT INTO pg_vec_meta (k, v) VALUES ('embedding_model', :v)
+                    ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v"""),
+                    {"v": EMBEDDING_MODEL_ID})
+        print("[VEC SEARCH] pgvector HNSW engine ready (embeddings: %s)."
+              % EMBEDDING_MODEL_ID, flush=True)
         return {"type": "pgvector", "engine": pg_engine}
     except Exception as e:
         print(f"[VEC SEARCH] pgvector init failed ({e}); using Python cosine.", flush=True)
