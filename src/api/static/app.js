@@ -6798,13 +6798,19 @@ async function restoreFindingCard(findingId) {
 // has to be moved the same way the server moves it -- otherwise the card keeps
 // rendering the old verdict until the next full reload, and Accept on a
 // compliant finding appears to do nothing and then flips it on refresh.
-const _ACCEPTING_STATUSES = ["COMPLIANT", "ACCEPTED", "PASS", "PASSED", "SATISFIED"];
+const _ACCEPTING_STATUSES = ["COMPLIANT", "PASS", "PASSED", "SATISFIED"];
+// "Accept" confirms that the audit's result is correct. It affirms whatever
+// verdict is already recorded and asserts nothing about compliance on its own,
+// so it must preserve that verdict -- accepting a NON_COMPLIANT finding
+// confirms the non-compliance. It used to live in _ACCEPTING_STATUSES, so one
+// click on a real gap rewrote it to COMPLIANT and dropped it from the report.
+const _AFFIRMING_STATUSES = ["ACCEPTED", "CONFIRMED"];
 const _WORKFLOW_ONLY_STATUSES = ["REJECTED", "DISMISSED", "FALSE_POSITIVE", "OUT_OF_SCOPE", "EXCLUDED"];
 
 function deriveFinalResult(status, currentFinalResult) {
     const n = String(status || "").trim().toUpperCase().replace(/[-\s]/g, "_");
     if (_ACCEPTING_STATUSES.indexOf(n) !== -1) return "COMPLIANT";
-    if (_WORKFLOW_ONLY_STATUSES.indexOf(n) !== -1) {
+    if (_AFFIRMING_STATUSES.indexOf(n) !== -1 || _WORKFLOW_ONLY_STATUSES.indexOf(n) !== -1) {
         return String(currentFinalResult || "").trim().toUpperCase() || "NON_COMPLIANT";
     }
     return "NON_COMPLIANT";

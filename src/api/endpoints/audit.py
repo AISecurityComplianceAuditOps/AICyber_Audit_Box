@@ -2384,6 +2384,10 @@ def api_update_finding(finding_id: int, req: UpdateFindingRequest, request: Requ
                     control_id=finding.control_id,
                     evidence_snippet=_redacted_evidence,
                     corrected_status=req.status,
+                    # The verdict the action resolved to. "Accepted" affirms the
+                    # verdict rather than naming one, so without this the loop
+                    # cannot tell a confirmed pass from a confirmed failure.
+                    final_verdict=derived_final_result,
                     finding=_redacted_finding,
                     recommendation=finding.recommendation,
                     auditor_comments=_redacted_comment

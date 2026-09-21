@@ -365,6 +365,18 @@ class AuditorFeedback(Base):
     control_id       = Column(String(100), index=True)
     evidence_snippet = Column(Text, nullable=True)
     corrected_status = Column(String(50))
+    # The COMPLIANT / NON_COMPLIANT verdict this action resolved to.
+    #
+    # corrected_status holds the auditor's ACTION ("Accepted", "Rejected"), and
+    # the audit trail displays it as such, so it cannot also carry the verdict.
+    # But "Accepted" means "the result is correct" -- it affirms whatever verdict
+    # was already there and does not name one. Without this column the knowledge
+    # loop had to guess, and guessed COMPLIANT, teaching every later audit of
+    # that control the opposite of what the auditor confirmed.
+    #
+    # Nullable: rows written before this existed have no verdict to recover, and
+    # the loop skips them rather than inventing one.
+    final_verdict    = Column(String(50), nullable=True)
     finding          = Column(Text, nullable=True)
     recommendation   = Column(Text, nullable=True)
     auditor_comments = Column(Text, nullable=True)

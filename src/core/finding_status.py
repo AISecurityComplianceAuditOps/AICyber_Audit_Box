@@ -9,7 +9,9 @@ then have to decide what that string means:
   * src/api/endpoints/audit.py  -- derives final_result, which the card's isComp
     and two of report_exporter's three layouts read in preference to status
   * src/ai/knowledge_loop.py    -- turns an auditor's correction into a prior for
-    the next audit of the same control
+    the next audit of the same control. It needs the VERDICT that was affirmed,
+    which "Accepted" alone does not carry, so AuditorFeedback.final_verdict
+    records it at write time.
   * src/api/static/app.js       -- moves its local copy of final_result so the
     card does not render a stale verdict until the next reload
 
@@ -24,11 +26,21 @@ The app.js copy is checked against this one by
 tests/test_finding_workflow_status.py.
 """
 
-# Statuses that say the control is satisfied and needs no action. The report
-# says as much in its own words: "OK/ACCEPTED: This is normal and good practice.
-# It is as per the guidelines / best practices. The observations categorized as
-# 'ACCEPTED' need no action."
-ACCEPTING_STATUSES = ("COMPLIANT", "ACCEPTED", "PASS", "PASSED", "SATISFIED")
+# Statuses that assert the control is satisfied. These are explicit verdicts,
+# chosen in the Modify dialog by an auditor who means "this control passes".
+ACCEPTING_STATUSES = ("COMPLIANT", "PASS", "PASSED", "SATISFIED")
+
+# "Accept" on the finding card means "the result the audit produced is correct,
+# I confirm it". It is a statement about the FINDING, not about the control, so
+# it must preserve whatever verdict is already recorded:
+#
+#   accepting a NON_COMPLIANT finding confirms the non-compliance
+#   accepting a COMPLIANT finding    confirms the pass
+#
+# It used to sit in ACCEPTING_STATUSES, so one click on a real non-compliance
+# rewrote it to COMPLIANT, set its severity to "N/A" and dropped it out of the
+# report's non-conformities -- the auditor confirming a gap was what deleted it.
+AFFIRMING_STATUSES = ("ACCEPTED", "CONFIRMED")
 
 # Statuses that describe what happened to the finding, not to the control. A
 # rejected finding was thrown out; that says nothing about whether the control
@@ -62,7 +74,7 @@ def derive_final_result(status, current_final_result=None):
     normalised = normalise_status(status)
     if normalised in ACCEPTING_STATUSES:
         return "COMPLIANT"
-    if normalised in WORKFLOW_ONLY_STATUSES:
+    if normalised in AFFIRMING_STATUSES or normalised in WORKFLOW_ONLY_STATUSES:
         return str(current_final_result or "").strip().upper() or "NON_COMPLIANT"
     return "NON_COMPLIANT"
 
@@ -75,5 +87,6 @@ def is_recognised_status(status):
     """
     normalised = normalise_status(status)
     return (normalised in ACCEPTING_STATUSES
+            or normalised in AFFIRMING_STATUSES
             or normalised in WORKFLOW_ONLY_STATUSES
             or normalised in FAILING_STATUSES)

@@ -24,9 +24,17 @@ DOCX path disagreed with both of the others, because its _risk_level() reads
 `status` and already treats "accepted" and "compliant" alike -- one report,
 three code paths, two of them wrong about the same finding.
 
-"Accepted" means acceptable in this product; report_exporter says so in the
-report itself: "OK/ACCEPTED: This is normal and good practice ... need no
-action." These tests pin that reading.
+"Accepted" means "the result this audit produced is correct, I confirm it".
+It is a statement about the FINDING, not about the control, so it preserves
+whatever verdict is recorded: accepting a NON_COMPLIANT finding confirms the
+non-compliance, and accepting a COMPLIANT one confirms the pass.
+
+It used to be treated as a verdict of its own and mapped to COMPLIANT, so one
+click on a real gap rewrote it to COMPLIANT, set its severity to "N/A" and
+dropped it out of the report's non-conformities -- the auditor confirming a
+finding was the act that deleted it. Worse, the knowledge loop was told the
+control had passed, so every later audit of that control carried a prior saying
+the opposite of what the auditor confirmed.
 
 Reject is the other half. It says the finding was thrown out, not that the
 control failed, so it must leave final_result alone -- that is what lets
@@ -84,11 +92,14 @@ def _code_only(js):
 # ── the verdict derivation itself ────────────────────────────────────────────
 
 @pytest.mark.parametrize("status,previous,expected", [
-    # The regression: signing off a passing control must leave it passing.
+    # Accept confirms the verdict that is there; it never invents one.
     ("Accepted", "COMPLIANT", "COMPLIANT"),
-    # Accept is an override too -- the auditor is saying "this is acceptable".
-    ("Accepted", "NON_COMPLIANT", "COMPLIANT"),
-    ("accepted", None, "COMPLIANT"),
+    ("Accepted", "NON_COMPLIANT", "NON_COMPLIANT"),
+    ("Confirmed", "NON_COMPLIANT", "NON_COMPLIANT"),
+    # Nothing recorded to affirm: fail closed rather than read as a pass.
+    ("accepted", None, "NON_COMPLIANT"),
+    # An explicit verdict from the Modify dialog DOES override.
+    ("Compliant", "NON_COMPLIANT", "COMPLIANT"),
     # The Modify dialog's own dropdown values.
     ("Compliant", None, "COMPLIANT"),
     ("COMPLIANT", None, "COMPLIANT"),
@@ -205,9 +216,13 @@ class _Feedback(object):
     filter_feedback_record() screens on (hallucination_check, confidence,
     human_verified), so every row of it reaches format_loop_hints()."""
 
-    def __init__(self, status, comment=""):
+    def __init__(self, status, comment="", final_verdict="NON_COMPLIANT"):
         self.control_id = "8.17"
         self.corrected_status = status
+        # The verdict the action resolved to, written alongside the action by
+        # the finding-edit endpoint. "Accepted" affirms a verdict without
+        # naming one, so the loop reads it from here rather than guessing.
+        self.final_verdict = final_verdict
         self.auditor_comments = comment
         self.finding = "The system clock is not synchronised with any time source."
         self.recommendation = ""
@@ -242,18 +257,45 @@ def test_unrecognised_status_teaches_the_loop_nothing(junk):
     assert not format_loop_hints([_Feedback(junk)]).strip()
 
 
-def test_accept_is_taught_as_compliant_not_as_its_raw_string():
+def test_accept_teaches_the_verdict_that_was_confirmed_not_its_raw_string():
+    """Accept on a non-compliance must not teach the next audit it passed."""
     from src.ai.knowledge_loop import format_loop_hints
-    hint = format_loop_hints([_Feedback("Accepted")])
-    assert "recorded it as COMPLIANT" in hint
+    hint = format_loop_hints([_Feedback("Accepted", final_verdict="NON_COMPLIANT")])
+    assert "recorded it as NON_COMPLIANT" in hint, hint
+    assert "recorded it as COMPLIANT" not in hint
     assert "recorded it as ACCEPTED" not in hint
+
+
+def test_accept_on_a_pass_still_teaches_the_pass():
+    from src.ai.knowledge_loop import format_loop_hints
+    hint = format_loop_hints([_Feedback("Accepted", final_verdict="COMPLIANT")])
+    assert "recorded it as COMPLIANT" in hint, hint
+
+
+def test_a_legacy_row_with_no_recorded_verdict_teaches_nothing():
+    """Rows written before final_verdict existed cannot say what was affirmed.
+
+    A guess here is injected verbatim into a later audit's prompt, and guessing
+    COMPLIANT is exactly the bug this file now documents -- so say nothing.
+    """
+    from src.ai.knowledge_loop import format_loop_hints
+    assert not format_loop_hints([_Feedback("Accepted", final_verdict=None)]).strip()
+
+
+def test_the_verdict_column_is_written_with_the_action():
+    """The loop can only read this if the endpoint records it."""
+    src = io.open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "src", "api", "endpoints", "audit.py"), encoding="utf-8").read()
+    assert "final_verdict=derived_final_result" in src, (
+        "the finding-edit endpoint no longer records the resolved verdict, so "
+        "every Accept becomes unreadable to the knowledge loop")
 
 
 def test_prior_is_worded_as_a_prior_not_as_evidence():
     """Handing the model a verdict to copy is a different bug -- a finding
     asserted from no evidence at all."""
     from src.ai.knowledge_loop import format_loop_hints
-    hint = format_loop_hints([_Feedback("Accepted")])
+    hint = format_loop_hints([_Feedback("Accepted", final_verdict="NON_COMPLIANT")])
     assert "not" in hint and "as evidence" in hint
     assert "only agree if the evidence supports it" in hint
 

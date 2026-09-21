@@ -4,7 +4,8 @@ Knowledge Loop Module
 Filters historical auditor feedback and formats it as hints for in-context learning.
 """
 from src.core.pii_redactor import redact_pii
-from src.core.finding_status import derive_final_result, is_recognised_status
+from src.core.finding_status import (AFFIRMING_STATUSES, derive_final_result,
+                                     is_recognised_status, normalise_status)
 
 def filter_feedback_record(feedback):
     """
@@ -92,7 +93,23 @@ def format_loop_hints(feedbacks):
             # silently discarded and the loop learned nothing from it.
             # src/core/finding_status.py owns the vocabulary now.
             if is_recognised_status(status):
-                corrected = derive_final_result(status)
+                # "Accepted" says the audit's result was right; it affirms a
+                # verdict without naming one. Deriving from the status alone
+                # therefore cannot tell a confirmed pass from a confirmed
+                # failure -- it used to answer COMPLIANT for both, so an auditor
+                # confirming a real non-compliance taught every later audit of
+                # that control that the control passes. The verdict is recorded
+                # on the row instead (AuditorFeedback.final_verdict).
+                _stored = str(getattr(fb, "final_verdict", "") or "").strip().upper()
+                if _stored:
+                    corrected = _stored
+                elif normalise_status(status) in AFFIRMING_STATUSES:
+                    # A row written before final_verdict existed. What was
+                    # affirmed is unrecoverable, and a guess here is injected
+                    # verbatim into a later audit's prompt, so say nothing.
+                    continue
+                else:
+                    corrected = derive_final_result(status)
                 known_non_compliant.append(
                     f"- For Control {control_id}: an auditor previously reviewed this control and "
                     f"recorded it as {corrected}. Treat that as a prior from a human reviewer, not "
