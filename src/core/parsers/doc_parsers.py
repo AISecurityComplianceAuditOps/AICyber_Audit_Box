@@ -9,6 +9,77 @@ from src.core.retrieval import _ingested_chunks_cache, _cache_key
 
 _OCR_READER = None
 
+# Relative-coordinate thresholds for deciding a page is laid out in columns.
+_COL_MIN_GAP = 0.06           # a vertical corridor this wide carrying no text
+_COL_MIN_LINES = 3            # each column must hold at least this many lines
+_COL_ROW_PAIR_TOL = 0.02      # two lines this close in y are on the same row
+_COL_MAX_ROW_PAIRING = 0.9    # above this the columns are a table's cells
+
+
+def _line_columns(lines):
+    """Group OCR lines into columns, or return None if the page has none.
+
+    `lines` is a list of (x0, x1, y, text) in doctr's relative coordinates.
+
+    doctr reports where every line sits, but the reader used to drop that and
+    emit lines top-to-bottom, so a side-by-side layout -- a Burp request beside
+    its response, two terminals, a diff -- came out with the panes spliced into
+    each other line by line:
+
+        HTTP Request (Repeater Tab 1)     <- left pane
+        HTTP Response (200 OK)            <- right pane
+        POST /user/profile/update HTTP/1.1 <- left pane
+        HTTP/1.1 200 OK                   <- right pane
+
+    That text is what the model judges the finding on, so it is a correctness
+    problem and not only an ugly report.
+
+    A TABLE is the case this must not touch. Its cells sit in columns too, but
+    reading them column-first would separate every label from its value -- which
+    is precisely what validator gate 4 depends on ("NTP synchronized: yes", the
+    false negative that cost three wrong diagnoses). The two are told apart by
+    row pairing: in a table nearly every row has a cell in each column at the
+    same height, whereas two independent panes have their own line flows and
+    line up only by coincidence.
+    """
+    if len(lines) < 2 * _COL_MIN_LINES:
+        return None
+
+    # Merge the lines' x-extents; a corridor wider than _COL_MIN_GAP that no
+    # line crosses separates one column from the next.
+    spans = sorted((x0, x1) for x0, x1, _y, _t in lines)
+    groups = [[spans[0][0], spans[0][1]]]
+    for x0, x1 in spans[1:]:
+        if x0 - groups[-1][1] >= _COL_MIN_GAP:
+            groups.append([x0, x1])
+        else:
+            groups[-1][1] = max(groups[-1][1], x1)
+    if len(groups) < 2:
+        return None
+
+    columns = [[] for _ in groups]
+    for x0, x1, y, text in lines:
+        mid = (x0 + x1) / 2.0
+        for gi, (g0, g1) in enumerate(groups):
+            if g0 <= mid <= g1:
+                columns[gi].append((y, text))
+                break
+        else:
+            # A line belonging to no column means the split is not clean.
+            return None
+    if any(len(col) < _COL_MIN_LINES for col in columns):
+        return None
+
+    # Table check, on the two busiest columns.
+    a, b = sorted(columns, key=len, reverse=True)[:2]
+    ys = [y for y, _ in a]
+    paired = sum(1 for y, _ in b if any(abs(y - ay) <= _COL_ROW_PAIR_TOL for ay in ys))
+    if paired > _COL_MAX_ROW_PAIRING * min(len(a), len(b)):
+        return None
+
+    return [[t for _y, t in sorted(col)] for col in columns]
+
+
 class _DocTRReaderAdapter:
     """Wraps doctr's ocr_predictor to expose the same .readtext(img, detail=0) -> List[str]
     interface EasyOCR provided, so existing call sites don't need to change. DocTR gives
@@ -22,11 +93,22 @@ class _DocTRReaderAdapter:
         exported = result.export()
         lines_out = []
         for page in exported.get("pages", []):
+            page_lines = []
             for block in page.get("blocks", []):
                 for line in block.get("lines", []):
                     words = [w.get("value", "") for w in line.get("words", []) if w.get("value")]
-                    if words:
-                        lines_out.append(" ".join(words))
+                    if not words:
+                        continue
+                    (x0, y0), (x1, _y1) = line.get("geometry", ((0.0, 0.0), (1.0, 1.0)))
+                    page_lines.append((x0, x1, y0, " ".join(words)))
+            # Columns are emitted one after another; anything else keeps the
+            # plain top-to-bottom order this reader has always used.
+            columns = _line_columns(page_lines)
+            if columns:
+                for col in columns:
+                    lines_out.extend(col)
+            else:
+                lines_out.extend(t for _x0, _x1, _y, t in page_lines)
         return lines_out
 
 def get_ocr_reader():
