@@ -770,6 +770,34 @@ def api_import_auditee_evidence(req: ImportAuditeeEvidenceRequest, request: Requ
         db.close()
 
 
+def _session_is_technical(framework, control_ids):
+    """Whether a session exports as a technical (VAPT/PQC) report.
+
+    The framework recorded on the session decides. It is set when the session is
+    created and re-synced from the live sidebar at /audit/start, so by export
+    time it is the auditor's stated intent for this run.
+
+    The control ids are a fallback for sessions that never recorded a framework
+    at all -- they must NOT be able to override a recorded one. They used to:
+    the rule was "framework says VAPT *or* any finding's control id contains
+    VAPT/PQC", so a single stray control id turned a whole ISO audit into a VAPT
+    report. That is not hypothetical -- five ISO 27001 reports in this database
+    hold 1,497 findings with VAPT-* control ids between them, and every one of
+    them exported as a VAPT report while the UI, the session title and the
+    framework column all said ISO 27001.
+
+    An ISO checklist row labelled "VAPT-1", or a Checklist-mode question that
+    mentions PQC, was enough to trigger it on a customer machine.
+    """
+    _fw = str(framework or "").strip().upper()
+    if _fw:
+        return "VAPT" in _fw or "PQC" in _fw
+    return any(
+        "VAPT" in str(_c or "").upper() or "PQC" in str(_c or "").upper()
+        for _c in control_ids
+    )
+
+
 def get_or_create_audit_report(db, session_id: str, default_title: str = None, default_framework: str = "ISO 27001", username: str = None):
     report = db.query(AuditReport).filter(AuditReport.session_id == session_id).first()
     if not report:
@@ -3428,12 +3456,9 @@ def api_export_docx(
                     resolved_list.append(f.control_id)
                     
             fw_name = (report.framework or "Audit_Report").replace(" ", "_").replace("/", "_")
-            is_vapt = (
-                "VAPT" in (report.framework or "").upper() or
-                "PQC" in (report.framework or "").upper() or
-                any("VAPT" in str(f.get("control_id") or f.get("control") or "").upper()
-                    or "PQC" in str(f.get("control_id") or f.get("control") or "").upper()
-                    for f in findings_mapped)
+            is_vapt = _session_is_technical(
+                report.framework,
+                (f.get("control_id") or f.get("control") for f in findings_mapped),
             )
 
             meta_dict = {
@@ -3895,12 +3920,10 @@ def api_export_pdf(
                 if is_comp:
                     resolved_list.append(f.control_id)
                     
-            is_vapt = (
-                "VAPT" in (report.framework or "").upper() or
-                "PQC" in (report.framework or "").upper() or
-                any("VAPT" in str(f.control_id or "").upper() or "VAPT" in str(getattr(f, "category", "") or "").upper()
-                    or "PQC" in str(f.control_id or "").upper() or "PQC" in str(getattr(f, "category", "") or "").upper()
-                    for f in db_findings)
+            is_vapt = _session_is_technical(
+                report.framework,
+                (c for f in db_findings
+                   for c in (f.control_id, getattr(f, "category", ""))),
             )
             fw_name = (report.framework or "Audit_Report").replace(" ", "_").replace("/", "_")
 

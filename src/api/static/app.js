@@ -1217,6 +1217,67 @@ async function discardCheckpointAndReset() {
 
 // ── SESSION MANAGEMENT ──
 
+// ── Keep the sidebar framework pointed at the session that is actually active ──
+//
+// The sidebar <select> and the session's stored framework were independent:
+// nothing in this file ever ASSIGNED framework-select, so it only changed when
+// the auditor clicked it. Switching to a VAPT session while the sidebar still
+// said ISO 27001 left the two disagreeing, and the disagreement is not
+// cosmetic -- /audit/start sends the SIDEBAR value and the backend writes it
+// over the session's stored framework. So running an audit from a stale
+// sidebar silently reframes the session, and the report that comes out is not
+// the one the header says it is.
+//
+// The two selects also do not share a vocabulary: the sidebar offers "VAPT"
+// and "SOC2", the new-session modal offers "VAPT" and "SOC 2", and the backend
+// rewrites a running VAPT session's framework to "VAPT Framework Controls"
+// (_FRAMEWORK_CATEGORY_LABELS in controls.py). Matching on the exact string
+// would therefore fail on precisely the sessions this needs to fix, so the
+// match is on framework family instead.
+function _frameworkFamily(value) {
+    const v = String(value || "").toUpperCase();
+    if (v.includes("PQC")) return "PQC";
+    if (v.includes("VAPT")) return "VAPT";
+    if (v.includes("NIST")) return "NIST";
+    if (v.includes("DPDP") || v.includes("GDPR")) return "DPDP";
+    if (v.includes("SOC")) return "SOC";
+    // Checked before ISO: "ISO 22301 BCMS" contains both.
+    if (v.includes("BCMS") || v.includes("22301")) return "BCMS";
+    if (v.includes("XBOM") || v.includes("X-BOM") || v.includes("SBOM")) return "XBOM";
+    if (v.includes("ISO")) return "ISO";
+    return "";
+}
+
+function applySessionFramework(framework) {
+    const sel = document.getElementById("framework-select");
+    const family = _frameworkFamily(framework);
+    if (!sel || !family) return false;
+    const match = Array.from(sel.options).find(
+        o => _frameworkFamily(o.value) === family);
+    // Assigning a value no <option> carries silently blanks a <select>, which
+    // is worse than leaving a stale one, so an unmatched framework is ignored.
+    if (!match || sel.value === match.value) return false;
+    sel.value = match.value;
+    // The framework gates which analysis modes are selectable, so the gating has
+    // to be re-run -- the browser fires no change event for a scripted assignment.
+    if (typeof onFrameworkChangeSuggestMode === "function") onFrameworkChangeSuggestMode();
+    if (typeof loadFrameworkControls === "function") loadFrameworkControls();
+    return true;
+}
+
+async function syncFrameworkFromSession(sessionId, knownFramework) {
+    let fw = knownFramework;
+    if (!fw && sessionId) {
+        try {
+            const res = await authFetch(`${API_BASE}/audit/sessions`);
+            const data = await res.json();
+            const hit = (data.sessions || []).find(s => s.session_id === sessionId);
+            fw = hit ? hit.framework : "";
+        } catch (e) { return; }
+    }
+    applySessionFramework(fw);
+}
+
 function _autoFillSessionTitle() {
     const frameworkEl = document.getElementById("new-session-framework");
     const companyEl = document.getElementById("new-session-company");
@@ -1913,6 +1974,9 @@ async function startNewAuditSession(skipPrompt = false, customTitle = null) {
             const saveData = await saveResp.json();
             if (saveData.success && saveData.session_id) {
                 activeSessionId = saveData.session_id;
+                // The framework the auditor just picked in the modal, so the
+                // sidebar agrees with the session from the moment it exists.
+                applySessionFramework(framework);
                 if (badgeEl) badgeEl.innerText = `Session ID: ${activeSessionId.slice(0, 14)}...`;
                 try {
                     const userKey = currentUser && currentUser.username ? `_${currentUser.username}` : "";
@@ -1962,6 +2026,7 @@ async function loadOrCreateSession(user) {
     if (lastSid) {
         activeSessionId = lastSid;
         if (lastTitle) activeSessionTitle = lastTitle;
+        syncFrameworkFromSession(lastSid);
         const badgeEl = document.getElementById("active-session-badge");
         const titleEl = document.getElementById("workspace-title");
         if (badgeEl) badgeEl.innerText = `Session ID: ${activeSessionId.slice(0, 14)}...`;
@@ -8895,7 +8960,7 @@ async function loadRecentSessionsList() {
                 const item = document.createElement("div");
                 item.className = "recent-session-item";
                 item.style.cssText = "display: flex; align-items: center; justify-content: space-between; padding: 6px 8px; background: rgba(255,255,255,0.05); border-radius: 6px; cursor: pointer; font-size: 0.73rem; transition: background 0.2s;";
-                item.onclick = () => switchActiveAuditSession(sess.session_id);
+                item.onclick = () => switchActiveAuditSession(sess.session_id, sess.framework);
 
                 const isCurrent = sess.session_id === activeSessionId;
                 item.innerHTML = `
@@ -8915,8 +8980,9 @@ async function loadRecentSessionsList() {
     }
 }
 
-function switchActiveAuditSession(sessionId) {
+function switchActiveAuditSession(sessionId, framework) {
     activeSessionId = sessionId;
+    syncFrameworkFromSession(sessionId, framework);
     document.getElementById("active-session-badge").innerText = `Session: ${activeSessionId.slice(0, 8)}...`;
     loadFindings();
     loadRecentSessionsList();
@@ -9166,6 +9232,7 @@ async function selectRecentSessionScope(ev) { // BUG-13 FIX: use explicit ev par
             const recent = data.sessions[0];
             activeSessionId = recent.session_id;
             activeSessionTitle = recent.session_title;
+            applySessionFramework(recent.framework);
 
             // Update header UI elements
             const badge = document.getElementById("active-session-badge");
