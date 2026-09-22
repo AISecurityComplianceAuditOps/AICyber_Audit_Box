@@ -1252,6 +1252,13 @@ function applySessionFramework(framework) {
     const sel = document.getElementById("framework-select");
     const family = _frameworkFamily(framework);
     if (!sel || !family) return false;
+    // Not while a run is executing. framework-select is one of the inputs
+    // _setRunLockedInputs() freezes, because switching framework mid-run would
+    // describe a different audit from the one running -- and the re-render
+    // below calls loadFrameworkControls(), which does NOT consult
+    // window._scopeRunLocked and would blank and rebuild the scope panel behind
+    // that lock.
+    if (window._scopeRunLocked) return false;
     const match = Array.from(sel.options).find(
         o => _frameworkFamily(o.value) === family);
     // Assigning a value no <option> carries silently blanks a <select>, which
@@ -6128,6 +6135,16 @@ function renderFindingsList() {
             list = list.filter(f => (f.status || "").toLowerCase() === "accepted");
         } else if (valLower.includes("rejected")) {
             list = list.filter(f => (f.status || "").toLowerCase() === "rejected");
+        } else if (valLower.includes("open") || valLower.includes("unreviewed")) {
+            // "Unreviewed / Open Gaps": a gap nobody has acted on yet.
+            //
+            // This fell through to the substring branch below and tested
+            // status.includes("open"), but no finding ever carries "Open" as its
+            // status -- the audit writes "Non-Compliant", "COMPLIANT" or
+            // "Informational", and "Open" lives in display_status. Confirmed
+            // against the database: of 1,922 findings, not one has that status,
+            // so the option returned an empty list every time it was chosen.
+            list = list.filter(f => !isFindingCompliant(f) && !f.human_verified);
         } else {
             list = list.filter(f => (f.status || "").toLowerCase().includes(valLower));
         }
