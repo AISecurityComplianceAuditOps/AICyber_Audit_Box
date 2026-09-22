@@ -5700,7 +5700,15 @@ function buildEvidenceSnippetHtml(rawSnip, f_obj) {
 function buildNistRiskPanelHtml(f) {
     if (!f) return "";
     const st = (f.status || "").toUpperCase();
-    if (st === "COMPLIANT" || st === "FALSE_POSITIVE" || f.final_result === "COMPLIANT") {
+    // A thrown-out finding carries no risk to rate. The check used to be the
+    // literal "FALSE_POSITIVE", but the finding card sends "Rejected" and the
+    // Modify dialog "Out Of Scope", and the reports spell it "False Positive" --
+    // none of which matched, so a finding the auditor had rejected still showed
+    // a NIST rating such as "Risk: HIGH". _WORKFLOW_ONLY_STATUSES is the same
+    // vocabulary the reports now use to leave those findings out.
+    const _stNorm = st.trim().replace(/[-\s]/g, "_");
+    if (st === "COMPLIANT" || f.final_result === "COMPLIANT"
+        || _WORKFLOW_ONLY_STATUSES.indexOf(_stNorm) !== -1) {
         return "";
     }
     const lh = f.likelihood || "N/A";
