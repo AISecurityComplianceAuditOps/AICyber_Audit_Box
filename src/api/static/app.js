@@ -2619,6 +2619,37 @@ function _setControlScopeVisible(show) {
     if (label) label.innerText = show ? "Scope Detection Method" : "Scope Method";
 }
 
+// ── Which scoping mode can actually apply ────────────────────────────────────
+//
+// A technical framework (VAPT, PQC) takes its scope from the uploaded scan files,
+// so onFrameworkChangeSuggestMode() shows only AI Auto-Scoping and hides the three
+// checklist modes; a governance framework does the reverse. That was enforced only
+// at the moment the framework changed. Three session paths then called
+// setScopingMode('EXCEL') unconditionally -- switching to a session with no
+// scoping cache, starting a new session, and restoring a cached mode -- and none
+// of them looked at the framework. On a VAPT session the result was a panel in two
+// states at once: the checklist buttons still hidden, but the Excel dropzone and
+// the "build one here" link back on screen, the status line announcing "Control
+// Scope", and the active marker on the Excel button that nobody could see -- so
+// the only visible button, AI Auto-Scoping, rendered as inactive grey. Whether it
+// happened depended on which of the two ran last, which is why it came and went.
+//
+// Enforcing it here, where every caller passes through, means no call order can
+// produce that state again.
+function _frameworkIsTechnical() {
+    const sel = document.getElementById("framework-select");
+    const fw = sel ? String(sel.value || "").toUpperCase() : "";
+    return fw.includes("VAPT") || fw.includes("PQC");
+}
+
+function _effectiveScopingMode(requested, technical) {
+    const m = String(requested || "").toUpperCase();
+    const wantsAi = m === "AI" || m.includes("AUTO");
+    if (technical && !wantsAi) return "AI";      // checklist modes are hidden here
+    if (!technical && wantsAi) return "EXCEL";   // and AI is hidden here
+    return m;
+}
+
 function setScopingMode(mode) {
     const aiBtn = document.getElementById("btn-ai-scoping");
     const chkBtn = document.getElementById("btn-checklist-scoping");
@@ -2631,7 +2662,7 @@ function setScopingMode(mode) {
     // Reset active class on all buttons
     [aiBtn, chkBtn, excelBtn, customBtn].forEach(b => { if (b) b.classList.remove("active-scope-mode"); });
 
-    const modeStr = String(mode || "").toUpperCase();
+    const modeStr = _effectiveScopingMode(mode, _frameworkIsTechnical());
 
     if (modeStr === "CUSTOMIZE" || modeStr.includes("CUSTOM")) {
         // Pure document Q&A. Each checklist question is answered from the document
