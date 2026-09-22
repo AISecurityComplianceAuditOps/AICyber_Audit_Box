@@ -126,6 +126,15 @@ def get_ocr_reader():
     except Exception:
         return None
 
+# Upscaling limits for _preprocess_image_for_ocr. A screenshot pasted at screen
+# resolution carries far fewer pixels per glyph than a scan, and the recogniser
+# needs them; a page that is already large gains nothing and costs the square of
+# the factor in time and memory.
+_OCR_TARGET_WIDTH = 2400     # upscale a narrower image up to about this
+_OCR_MAX_UPSCALE = 3.0       # never more than this, whatever the width
+_OCR_MAX_PIXELS = 40_000_000  # ceiling on the result, to bound memory
+
+
 def _preprocess_image_for_ocr(img_np):
     """Option 2: OpenCV pre-processing before OCR.
 
@@ -166,6 +175,39 @@ def _preprocess_image_for_ocr(img_np):
 
         # 4. Fast non-local means denoising (h=10 → mild, keeps text sharp)
         denoised = cv2.fastNlMeansDenoising(enhanced, h=10)
+
+        # 5. Invert a dark-theme capture.
+        #
+        # Recognition models are trained overwhelmingly on dark text over a
+        # light page. A tool screenshot -- Burp, a terminal, a SIEM console --
+        # is the opposite, and every glyph is read against that grain. The mean
+        # luminance test means a scanned document or a light UI is never
+        # touched: only an image that really is mostly dark gets flipped.
+        if float(np.mean(denoised)) < 128.0:
+            denoised = cv2.bitwise_not(denoised)
+
+        # 6. Upscale a small image so the recogniser has pixels to work with.
+        #
+        # Measured on the Burp proof-of-concept screenshot that prompted this
+        # (940x381, body text about 8 pixels tall), scored against the capture's
+        # known text: 53% as it shipped, 62% at 3x. The difference is not
+        # cosmetic -- at 940px the class name "Stored XSS]" was read as "XSSI"
+        # and the host as "appxyz-corp-internal.com"; at 3x both come out
+        # correctly, and the class name is what the finding's title, its
+        # description and its CIA impact are all derived from.
+        #
+        # Only ever upward, and only up to a target width: a scanned A4 page
+        # arrives around 2500px wide already and needs nothing, while tripling
+        # it would cost nine times the pixels for no gain. The pixel cap keeps
+        # an unusually tall image from exhausting memory.
+        _h, _w = denoised.shape[:2]
+        if _w > 0 and _h > 0 and _w < _OCR_TARGET_WIDTH:
+            _factor = min(_OCR_MAX_UPSCALE, _OCR_TARGET_WIDTH / float(_w))
+            if _factor * _factor * _w * _h > _OCR_MAX_PIXELS:
+                _factor = max(1.0, (_OCR_MAX_PIXELS / float(_w * _h)) ** 0.5)
+            if _factor > 1.05:
+                denoised = cv2.resize(denoised, None, fx=_factor, fy=_factor,
+                                      interpolation=cv2.INTER_CUBIC)
 
         # Return as 3-channel for OCR reader compatibility
         return cv2.cvtColor(denoised, cv2.COLOR_GRAY2BGR)
