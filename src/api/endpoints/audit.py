@@ -205,13 +205,17 @@ class UpdateFindingRequest(BaseModel):
         "policy_name", "policy_version", "policy_clause", "evidence_freshness",
         "policy_effective_date", "policy_review_date", "policy_expiry_date", "evidence_date",
     )
-    # Long free-text fields (auditor-written prose, AI-generated text the auditor edited)
-    _LONG_FIELDS = (
-        "description", "evidence_snippet", "recommendation", "reasoning",
-        "policy_present", "evidence_present", "source_files", "comment",
+    # Long free text that quotes EVIDENCE, and so may legitimately contain markup:
+    # the proof of a stored XSS is "<script>...</script>". Control characters are
+    # still refused. Every one of these is escaped where the UI renders it.
+    _CONTENT_FIELDS = (
+        "description", "evidence_snippet", "recommendation", "reasoning", "comment",
         "policy_finding", "policy_gap", "evidence_finding", "evidence_gap",
         "final_reason", "custom_heading",
     )
+    # Long fields holding a value picked from a list, or a filename. No legitimate
+    # markup, so the strict rule stays.
+    _LONG_STRICT_FIELDS = ("policy_present", "evidence_present", "source_files")
 
     @field_validator(*_SHORT_FIELDS)
     @classmethod
@@ -220,12 +224,20 @@ class UpdateFindingRequest(BaseModel):
             return v
         return _clean_safe_text(v, info.field_name.replace("_", " ").title(), 100)
 
-    @field_validator(*_LONG_FIELDS)
+    @field_validator(*_LONG_STRICT_FIELDS)
     @classmethod
-    def _validate_long_fields(cls, v, info):
+    def _validate_long_strict_fields(cls, v, info):
         if v is None:
             return v
         return _clean_safe_text(v, info.field_name.replace("_", " ").title(), 5000)
+
+    @field_validator(*_CONTENT_FIELDS)
+    @classmethod
+    def _validate_content_fields(cls, v, info):
+        if v is None:
+            return v
+        return _clean_safe_text(v, info.field_name.replace("_", " ").title(), 5000,
+                                allow_markup=True)
 
 class ChatSendRequest(BaseModel):
     session_id: str
