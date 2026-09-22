@@ -7261,11 +7261,19 @@ async function handleEditFindingSubmit(e) {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body)
         });
-        const data = await response.json();
+        const data = await response.json().catch(() => ({}));
 
-        if (data.success) {
+        if (response.ok && data.success) {
             closeEditFindingModal();
             loadFindings(); // Reload list
+        } else {
+            // A failed save used to do nothing at all. The server answers an error
+            // with {"detail": ...} and no "success" key, so the check above was
+            // simply false: no message, the dialog stayed open, and "Save
+            // Findings Changes" looked like a button that did not work. The
+            // auditor's edit had not been saved and nothing said so.
+            alert(`The finding was not saved: ${formatApiError(
+                data.detail, `server returned HTTP ${response.status}`)}`);
         }
     } catch (err) {
         alert(`Update failed: ${err.message}`);

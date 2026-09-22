@@ -2373,26 +2373,40 @@ def api_update_finding(finding_id: int, req: UpdateFindingRequest, request: Requ
             _redacted_evidence = redact_pii(finding.evidence_snippet, ip_style="redact")
             _redacted_finding = redact_pii(finding.description, ip_style="redact")
             _redacted_comment = redact_pii(req.comment or finding.review_note or "", ip_style="redact")
-            dup = db.query(AuditorFeedback).filter(
-                AuditorFeedback.control_id == finding.control_id,
-                AuditorFeedback.evidence_snippet == _redacted_evidence,
-                AuditorFeedback.corrected_status == req.status,
-                AuditorFeedback.finding == _redacted_finding
-            ).first()
-            if not dup:
-                db.add(AuditorFeedback(
-                    control_id=finding.control_id,
-                    evidence_snippet=_redacted_evidence,
-                    corrected_status=req.status,
-                    # The verdict the action resolved to. "Accepted" affirms the
-                    # verdict rather than naming one, so without this the loop
-                    # cannot tell a confirmed pass from a confirmed failure.
-                    final_verdict=derived_final_result,
-                    finding=_redacted_finding,
-                    recommendation=finding.recommendation,
-                    auditor_comments=_redacted_comment
-                ))
-                
+            # The feedback row is written inside its own SAVEPOINT. It is the
+            # knowledge loop's record of this decision, and it shared the finding
+            # update's transaction -- so any failure writing it (a schema that has
+            # not been migrated yet, a constraint, a driver error) rolled back the
+            # auditor's actual edit along with it, and the save answered 500. The
+            # learning log is secondary to the thing the auditor asked for; it may
+            # be lost, the edit may not.
+            try:
+                with db.begin_nested():
+                    dup = db.query(AuditorFeedback).filter(
+                        AuditorFeedback.control_id == finding.control_id,
+                        AuditorFeedback.evidence_snippet == _redacted_evidence,
+                        AuditorFeedback.corrected_status == req.status,
+                        AuditorFeedback.finding == _redacted_finding
+                    ).first()
+                    if not dup:
+                        db.add(AuditorFeedback(
+                            control_id=finding.control_id,
+                            evidence_snippet=_redacted_evidence,
+                            corrected_status=req.status,
+                            # The verdict the action resolved to. "Accepted"
+                            # affirms the verdict rather than naming one, so
+                            # without this the loop cannot tell a confirmed pass
+                            # from a confirmed failure.
+                            final_verdict=derived_final_result,
+                            finding=_redacted_finding,
+                            recommendation=finding.recommendation,
+                            auditor_comments=_redacted_comment
+                        ))
+                        db.flush()   # surface an INSERT error inside the savepoint
+            except Exception as _fb_err:
+                print(f"[UPDATE FINDING] Finding #{finding_id} saved; its knowledge-loop "
+                      f"feedback row was not: {_fb_err}", flush=True)
+
             db.commit()
             log_system_event("FINDING_UPDATED", "INFO", f"Finding #{finding_id} updated to '{req.status}' (control: {finding.control_id})", session_id=str(finding.report_id))
             return {"success": True, "message": "Finding successfully updated and saved to Shakthi DB."}
