@@ -105,7 +105,14 @@ class _DocTRReaderAdapter:
             # plain top-to-bottom order this reader has always used.
             columns = _line_columns(page_lines)
             if columns:
-                for col in columns:
+                for _ci, col in enumerate(columns):
+                    # A blank line between panes. Without it the request and the
+                    # response run together as one block: correctly ordered, but
+                    # a reader has to work out where one ends and the next
+                    # begins, and the proof of concept is the part of a VAPT
+                    # report that actually gets studied.
+                    if _ci:
+                        lines_out.append("")
                     lines_out.extend(col)
             else:
                 lines_out.extend(t for _x0, _x1, _y, t in page_lines)

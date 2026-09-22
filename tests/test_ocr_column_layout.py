@@ -198,3 +198,26 @@ def test_the_reader_leaves_a_table_in_row_order():
     out = _readtext(_table(rows))
     assert out.index("yes") == out.index("NTP synchronized") + 1, (
         "the table was reordered -- 'yes' no longer follows its label: %r" % (out,))
+
+
+def test_the_panes_are_separated_by_a_blank_line():
+    """Correctly ordered is not the same as readable.
+
+    Without a break the request and the response run together as one block and
+    the reader has to work out where one ends -- and the proof of concept is the
+    part of a VAPT report that actually gets studied.
+    """
+    out = _readtext(BURP_LINES)
+    assert "" in out, "no blank line between the two panes: %r" % (out,)
+    gap = out.index("")
+    joined_before = "\n".join(out[:gap])
+    joined_after = "\n".join(out[gap + 1:])
+    assert "POST /user/profile/update HTTP/1.1" in joined_before
+    assert "HTTP/1.1 200 OK" in joined_after
+    assert "HTTP/1.1 200 OK" not in joined_before
+
+
+def test_a_single_column_page_gains_no_blank_lines():
+    """The separator belongs between panes, not inside ordinary text."""
+    lines = [(0.05, 0.60, 0.05 + i * 0.05, "line %d" % i) for i in range(10)]
+    assert "" not in _readtext(lines)
