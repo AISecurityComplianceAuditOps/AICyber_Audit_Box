@@ -5915,6 +5915,23 @@ function getCleanRecommendation(f) {
 
 function isFindingCompliant(f, singleSnip) {
     if (!f) return false;
+
+    // The verdict the audit actually reached wins, whenever there is one.
+    //
+    // Everything below is a text heuristic for a draft finding that has no
+    // verdict yet, and it must never overrule a recorded one. The finding card
+    // already reads final_result in preference to status (see isComp at the
+    // card renderer), so while this disagreed with it the same finding was a
+    // NON_COMPLIANT card sitting behind a "Compliant: 1" counter, and the
+    // Compliant/Non-compliant filter put it on the wrong side too.
+    //
+    // "Accepted" is why they disagreed. It means the auditor confirms the
+    // result is correct -- accepting a NON_COMPLIANT finding confirms the
+    // non-compliance -- so it is no longer read as a pass here either. See
+    // src/core/finding_status.py, which owns this vocabulary.
+    const _verdict = String(f.final_result || "").trim().toUpperCase();
+    if (_verdict) return _verdict === "COMPLIANT";
+
     const descText = (f.description || f.finding || f.reasoning || f.gap_description || "").toLowerCase();
     const snipText = (singleSnip || f.evidence_snippet || "").toLowerCase().trim().replace(/^[\"\']+|[\"\']+$/g, '');
 
@@ -5936,7 +5953,10 @@ function isFindingCompliant(f, singleSnip) {
         return false;
     }
 
-    return st === "compliant" || st === "resolved" || st === "accepted" || st === "pass";
+    // No verdict recorded and the status is only a workflow state: fail closed.
+    // "accepted" is deliberately absent -- it confirms a verdict rather than
+    // asserting one, and with no verdict to confirm there is nothing to read.
+    return st === "compliant" || st === "resolved" || st === "pass";
 }
 
 function renderPqcSummaryPanel(allFindings) {

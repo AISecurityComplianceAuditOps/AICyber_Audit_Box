@@ -465,7 +465,14 @@ def extract_text(f):
             img = PIL.Image.open(f)
             img_np = _preprocess_image_for_ocr(np.array(img))
             res = reader.readtext(img_np, detail=0)
-            ocr_text = " ".join(res)
+            # Joined on newlines, not spaces. readtext() returns one string
+            # per OCR line, and flattening them with a space threw away every
+            # line break the image had -- a captured HTTP request, an nmap run
+            # or a console log arrived as one unbroken paragraph, unreadable in
+            # the finding card and in the report, and harder for the model to
+            # parse. Grounding is unaffected: validator.normalize_text()
+            # collapses all whitespace before any verbatim or fuzzy compare.
+            ocr_text = "\n".join(res)
 
             image_chunks = []
             img_fname = getattr(f, "name", "unknown.png")
@@ -545,7 +552,7 @@ def extract_text(f):
                             img_np = _preprocess_image_for_ocr(np.array(pil_img))
                             res = reader.readtext(img_np, detail=0)
                             if res:
-                                text += "\n[Page Image OCR]: " + " ".join(res)
+                                text += "\n[Page Image OCR]: " + "\n".join(res)
                         except Exception as page_ocr_err:
                             print(f"[HYBRID OCR WARNING] Failed full page OCR: {page_ocr_err}", flush=True)
 
@@ -707,7 +714,7 @@ def extract_text(f):
                                 res = reader.readtext(img_np, detail=0)
                                 if not res:
                                     continue
-                                ocr_text = " ".join(res)
+                                ocr_text = "\n".join(res)
                                 img_chunk = (
                                     f"[Embedded Image OCR]: {ocr_text}",
                                     {
@@ -830,7 +837,7 @@ def extract_text(f):
                             reader = get_ocr_reader()
                             res = reader.readtext(img_np, detail=0)
                             if res:
-                                ocr_text = " ".join(res)
+                                ocr_text = "\n".join(res)
                                 shape_texts.append(f"[Slide Image OCR]: {ocr_text}")
                         except Exception:
                             pass
@@ -1360,7 +1367,7 @@ def extract_text(f):
                             reader = get_ocr_reader()
                             res = reader.readtext(img_np, detail=0)
                             if res:
-                                ocr_text = " ".join(res)
+                                ocr_text = "\n".join(res)
                                 paragraphs_data.append((f"[Embedded Image OCR]: {ocr_text}", current_section))
                         except Exception:
                             pass  # not a decodable/OCR-able embedded image -- skip
@@ -1427,7 +1434,7 @@ def extract_text(f):
                     reader = get_ocr_reader()
                     res = reader.readtext(img_np, detail=0)
                     if res:
-                        ocr_text = " ".join(res)
+                        ocr_text = "\n".join(res)
                         doc_chunks.append((f"[Embedded Image OCR]: {ocr_text}", {
                             "source_file": doc_fname,
                             "source_type": "doc",
@@ -1482,7 +1489,7 @@ def extract_text(f):
                     reader = get_ocr_reader()
                     res = reader.readtext(img_np, detail=0)
                     if res:
-                        ocr_text = " ".join(res)
+                        ocr_text = "\n".join(res)
                         ppt_chunks.append((f"[Embedded Image OCR]: {ocr_text}", {
                             "source_file": ppt_fname,
                             "source_type": "ppt",
@@ -1543,7 +1550,7 @@ def extract_text(f):
                                 reader = get_ocr_reader()
                                 res = reader.readtext(img_np, detail=0)
                                 if res:
-                                    ocr_text = " ".join(res)
+                                    ocr_text = "\n".join(res)
                                     paragraphs_data.append((
                                         f"[Embedded Image OCR ({img_name})]: {ocr_text}",
                                         current_section or "[Embedded Image Content]"
@@ -1587,7 +1594,7 @@ def extract_text(f):
                                 reader = get_ocr_reader()
                                 res = reader.readtext(img_np, detail=0)
                                 if res:
-                                    ocr_text = " ".join(res)
+                                    ocr_text = "\n".join(res)
                                     base_img_name = os.path.basename(name)
                                     paragraphs_data.append((f"[Embedded Image OCR ({base_img_name})]: {ocr_text}", "[Embedded Image Content]"))
                             except Exception as img_err:

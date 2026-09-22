@@ -487,3 +487,69 @@ def test_the_counter_and_the_filter_share_one_severity_rule():
 
     render = _render_findings_list_source()
     assert "severityBand(" in render, "the severity filter no longer uses the shared rule"
+
+
+# ── the counter and the filter must agree with the card ──────────────────────
+
+def _compliance_predicate(code_only=True):
+    """isFindingCompliant's body, optionally with its comments stripped.
+
+    The comments explain the rule using the very words the rule excludes, so a
+    test that greps the raw text matches its own documentation.
+    """
+    m = re.search(r"function isFindingCompliant\(f, singleSnip\) \{.*?\n\}",
+                  _app_js(), re.S)
+    assert m, "isFindingCompliant not found in app.js"
+    body = m.group(0)
+    if code_only:
+        body = "\n".join(l for l in body.splitlines()
+                         if not l.strip().startswith("//"))
+    return body
+
+
+def test_the_compliance_predicate_reads_the_recorded_verdict_first():
+    """The card reads final_result; the counter used to guess from status.
+
+    So one Accept on a non-compliance produced a NON_COMPLIANT card sitting
+    behind a "Compliant: 1" counter, and the Compliant/Non-compliant filter put
+    the same finding on the wrong side. Reported from a live session.
+    """
+    body = _compliance_predicate()
+    assert "f.final_result" in body, (
+        "isFindingCompliant no longer consults final_result, so the counter and "
+        "the finding card can disagree about the same finding again")
+    assert body.index("f.final_result") < body.index("descText"), (
+        "final_result is read after the text heuristics, which can still "
+        "overrule the recorded verdict")
+
+
+def test_accepted_is_not_read_as_a_pass_by_the_predicate():
+    """The last place "accepted" still meant COMPLIANT."""
+    body = _compliance_predicate()
+    assert '"accepted"' not in body, (
+        "isFindingCompliant still treats an accepted finding as a pass -- "
+        "Accept confirms a verdict rather than asserting one")
+    # The verdicts that DO assert a pass are still honoured.
+    for kept in ('"compliant"', '"resolved"', '"pass"'):
+        assert kept in body, "%s was dropped from the predicate" % kept
+
+
+# ── OCR text keeps its line breaks ───────────────────────────────────────────
+
+def test_ocr_lines_are_joined_on_newlines():
+    """Flattening them with a space made every screenshot one paragraph.
+
+    readtext() returns one string per OCR line. Joined with a space, a captured
+    HTTP request, an nmap run or a console log arrived as a single unbroken
+    line -- unreadable in the finding card and in the report, and harder for the
+    model to parse. Safe because validator.normalize_text() collapses all
+    whitespace before any verbatim or fuzzy comparison.
+    """
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "src", "core", "parsers", "doc_parsers.py")
+    src = io.open(path, encoding="utf-8").read()
+    assert '" ".join(res)' not in src, (
+        "an OCR call site still joins its lines with a space, so images read "
+        "through it lose every line break")
+    assert src.count('"' + chr(92) + 'n".join(res)') >= 9, (
+        "expected every OCR call site to join on newlines")
