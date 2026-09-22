@@ -7035,20 +7035,8 @@ function openEditFindingModal(finding) {
 
     // 1. Normalize and pre-select Compliance Status
     const statusSelect = document.getElementById("edit-finding-status");
-    const rawStatus = (finding.status || "").toUpperCase().trim();
-    let targetStatusVal = "Non-Compliant";
-
-    if (rawStatus.includes("NON") || rawStatus.includes("GAP") || rawStatus.includes("FAIL")) {
-        targetStatusVal = "Non-Compliant";
-    } else if (rawStatus.includes("PARTIAL")) {
-        targetStatusVal = "Partially Compliant";
-    } else if (rawStatus.includes("OUT") || rawStatus.includes("SCOPE")) {
-        targetStatusVal = "Out Of Scope";
-    } else if (rawStatus.includes("COMPLIANT") || rawStatus.includes("PASS") || rawStatus.includes("SATISFIED") || rawStatus.includes("ACCEPTED")) {
-        targetStatusVal = "Compliant";
-    } else {
-        targetStatusVal = "Non-Compliant";
-    }
+    const targetStatusVal = modifyDialogStatus(finding);
+    _applyModifyStatusOptions(statusSelect, targetStatusVal);
     statusSelect.value = targetStatusVal;
 
     // 2. Normalize and pre-select Policy Present
@@ -7230,6 +7218,51 @@ function _updateSeverityVisibility(statusVal) {
             }
         }
     }
+}
+
+// ── The Modify dialog's Compliance Status ────────────────────────────────────
+//
+// Which option the dialog opens on. It used to read the status text alone and
+// mapped "Accepted" to "Compliant" -- the meaning Accept had before acaffc4. Accept
+// now confirms whatever verdict the audit reached, so an accepted NON-COMPLIANT
+// finding opened here pre-selected "Compliant", and saving the dialog for any
+// reason -- to correct the recommendation, say -- turned a confirmed gap into a
+// pass, set its severity to N/A and dropped it from the non-conformities. The
+// recorded verdict is now what decides; the status text is consulted only for the
+// two outcomes the verdict cannot express, and for a finding with no verdict yet.
+function modifyDialogStatus(finding) {
+    const st = String((finding && finding.status) || "").toUpperCase().trim();
+    const verdict = String((finding && finding.final_result) || "").toUpperCase().trim();
+    if (st.includes("PARTIAL")) return "Partially Compliant";
+    if (st.includes("OUT") && st.includes("SCOPE")) return "Out Of Scope";
+    if (verdict === "COMPLIANT") return "Compliant";
+    if (verdict === "NON_COMPLIANT") return "Non-Compliant";
+    // No verdict recorded. "ACCEPTED" is deliberately absent: it confirms a
+    // verdict rather than asserting one, and with none to confirm it proves
+    // nothing -- fail closed, as derive_final_result does.
+    if (st.includes("NON") || st.includes("GAP") || st.includes("FAIL")) return "Non-Compliant";
+    if (st === "COMPLIANT" || st.includes("PASS") || st.includes("SATISFIED")) return "Compliant";
+    return "Non-Compliant";
+}
+
+// Offer only the outcomes that apply: Compliant or Non-Compliant, for every
+// framework. "Partially Compliant" and "Out Of Scope" are no longer offered -- a
+// finding the auditor wants excluded is Rejected from the card, which keeps it
+// out of the report by the same rule as any thrown-out finding.
+//
+// An option is never hidden while it is the finding's CURRENT status. Findings
+// saved as Partially Compliant or Out Of Scope before this still exist, and a
+// <select> whose value names no visible option goes blank -- saving it would send
+// an empty status and silently overwrite what the auditor had recorded.
+const _MODIFY_STATUSES = ["Compliant", "Non-Compliant"];
+
+function _applyModifyStatusOptions(select, current) {
+    if (!select) return;
+    Array.from(select.options).forEach(opt => {
+        const hide = _MODIFY_STATUSES.indexOf(opt.value) === -1 && opt.value !== current;
+        opt.hidden = hide;
+        opt.disabled = hide;
+    });
 }
 
 function closeEditFindingModal() {
