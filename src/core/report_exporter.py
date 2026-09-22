@@ -411,7 +411,7 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
 
     if findings:
         dict_findings = [f.to_dict() if hasattr(f, "to_dict") else (f if isinstance(f, dict) else getattr(f, "__dict__", {})) for f in findings]
-        active_findings = [f for f in dict_findings if f.get("status") not in ("Out of Scope", "False Positive", "FALSE_POSITIVE")]
+        active_findings = [f for f in dict_findings if not _excluded_from_report(f)]
     else:
         # BUG-FIX: Never fall back to the in-memory registry -- it contains findings
         # from the PREVIOUS scan and silently poisons the report with stale data.
@@ -672,7 +672,7 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
     
     if findings:
         dict_findings = [f.to_dict() if hasattr(f, "to_dict") else (f if isinstance(f, dict) else getattr(f, "__dict__", {})) for f in findings]
-        active_findings = [f for f in dict_findings if f.get("status") not in ("Out of Scope", "False Positive", "FALSE_POSITIVE")]
+        active_findings = [f for f in dict_findings if not _excluded_from_report(f)]
     else:
         # BUG-FIX: Never fall back to the in-memory registry (stale from previous scan).
         active_findings = []
@@ -1407,7 +1407,7 @@ def _export_pqc_pdf(session_title, findings, resolved_list, status, comments="",
         else:
             dict_findings.append(getattr(f, "__dict__", {}))
 
-    active = [f for f in dict_findings if f.get("status") not in ("Out of Scope", "False Positive", "FALSE_POSITIVE")]
+    active = [f for f in dict_findings if not _excluded_from_report(f)]
 
     vuln_findings  = [f for f in active if str(f.get("quantum_status") or "").upper() == "VULNERABLE"]
     weak_findings  = [f for f in active if str(f.get("quantum_status") or "").upper() == "WEAK"]
@@ -2181,7 +2181,7 @@ def _export_pqc_docx(session_title, findings, resolved_list, status, comments=""
         else:
             dict_findings.append(getattr(f, "__dict__", {}))
 
-    active       = [f for f in dict_findings if f.get("status") not in ("Out of Scope", "False Positive", "FALSE_POSITIVE")]
+    active       = [f for f in dict_findings if not _excluded_from_report(f)]
     vuln_list    = [f for f in active if str(f.get("quantum_status") or "").upper() == "VULNERABLE"]
     weak_list    = [f for f in active if str(f.get("quantum_status") or "").upper() == "WEAK"]
     safe_list    = [f for f in active if str(f.get("quantum_status") or "").upper() == "SAFE"]
@@ -2731,7 +2731,7 @@ def _export_vapt_docx(session_title, findings, resolved_list, status, comments="
     if parsed_reg:
         active_findings = parsed_reg
     else:
-        active_findings = [f for f in findings if f.get("status") not in ("Out of Scope", "False Positive", "FALSE_POSITIVE")]
+        active_findings = [f for f in findings if not _excluded_from_report(f)]
 
     critical_cnt = sum(1 for f in active_findings if str(f.get("severity", "")).strip().upper() == "CRITICAL")
     high_cnt = sum(1 for f in active_findings if str(f.get("severity", "")).strip().upper() == "HIGH")
@@ -3318,6 +3318,26 @@ _PLACEHOLDER_CLIENT  = "XYZ Organization"
 _PLACEHOLDER_ADDRESS = "XYZ Building, XYZ Street, XYZ City - 000000"
 _PLACEHOLDER_PHONE   = "+91-XXXXXXXXXX"
 _PLACEHOLDER_EMAIL   = "xyz@xyz.com"
+
+
+# ── Which findings a delivered report leaves out ─────────────────────────────
+# A finding the auditor has thrown out -- rejected, dismissed, marked a false
+# positive, or put out of scope -- must not reach the customer.
+#
+# Eight exporters each carried their own list and they disagreed. The ISO
+# template excluded "Rejected"; the VAPT PDF, VAPT DOCX, PQC PDF and PQC DOCX did
+# not, so a false positive the auditor had rejected was still printed in the VAPT
+# report the customer received. The lists also matched literally: "Out of Scope"
+# was excluded but "Out Of Scope" -- the spelling the Modify dialog sends -- was
+# not. The generic DOCX and the programmatic ISO PDF excluded only "False Positive".
+#
+# src/core/finding_status.py already owns this vocabulary as
+# WORKFLOW_ONLY_STATUSES (statuses that describe what happened to the finding,
+# not to the control), and normalise_status() folds case, spaces and hyphens, so
+# every spelling the UI can produce is caught by one rule.
+def _excluded_from_report(f):
+    from src.core.finding_status import WORKFLOW_ONLY_STATUSES, normalise_status
+    return normalise_status((f or {}).get("status")) in WORKFLOW_ONLY_STATUSES
 
 
 # Branding that ships inside the image.
@@ -4187,7 +4207,7 @@ def _export_iso_template_docx(session_title, findings, resolved_list, status, co
     # ── Count findings by risk level ──────────────────────────────────────────
     active_findings = [
         f for f in (findings or [])
-        if f.get("status", "Open") not in ("Dismissed", "Rejected", "Out of Scope", "Out Of Scope", "False Positive")
+        if not _excluded_from_report(f)
     ]
     accepted_findings = [
         f for f in (findings or [])
@@ -4950,7 +4970,7 @@ def export_docx_report(session_title, findings, resolved_list, status, comments=
         run.font.color.rgb = RGBColor(255, 255, 255)
         run.font.size = Pt(9)
 
-    active_findings = [f for f in findings if f.get("status") != "False Positive"]
+    active_findings = [f for f in findings if not _excluded_from_report(f)]
 
     for f_idx, f in enumerate(active_findings, 1):
         row_cells = tbl_obs.add_row().cells
@@ -5660,7 +5680,7 @@ def export_pdf_report(session_title, findings, resolved_list, status, comments="
     pdf.add_page()
     section_title("Audit conclusion/Observations:")
     
-    active_findings = [f for f in findings if f.get("status") != "False Positive"]
+    active_findings = [f for f in findings if not _excluded_from_report(f)]
 
     pdf.set_font("Helvetica", "", 7.5)
     # markdown=True lets the Observations/Impact cells carry **bold** on the facts
