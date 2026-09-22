@@ -6435,7 +6435,7 @@ function renderFindingsList() {
                            background:rgba(239,68,68,0.12); color:#f87171;
                            border:1px solid rgba(239,68,68,0.3); font-weight:700;
                            text-decoration:none; margin-right:4px;" title="View on NVD">${escapeHtml(cve)} ↗</a>`).join("")
-                : `<span style="font-size:0.74rem; padding:2px 8px; border-radius:4px; background:rgba(148,163,184,0.12); color:var(--text-muted); border:1px solid rgba(148,163,184,0.25); font-weight:600;">N/A — Vendor Security Advisory / End-of-Life Notice</span>`;
+                : `<span style="font-size:0.74rem; padding:2px 8px; border-radius:4px; background:rgba(148,163,184,0.12); color:var(--text-muted); border:1px solid rgba(148,163,184,0.25); font-weight:600;">No CVE — application-specific finding</span>`;
 
             let vectorHint = "";
             if (_cvssVec) {

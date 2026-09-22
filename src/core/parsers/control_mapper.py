@@ -371,6 +371,13 @@ _I_HIGH_KEYWORDS = (
     # Missing classes, as above:
     "ssti", "template injection", "broken access control",
     "privilege escalation", "arbitrary file write", "mass assignment",
+    # The spelled-out forms. The table carried the acronyms only, so a finding
+    # whose text says "Cross-Site Scripting" rather than "XSS" -- which is what
+    # the visual-PoC describer now writes -- matched confidentiality but not
+    # integrity, and reported I:NONE on a scripting flaw.
+    "cross-site scripting", "cross site scripting",
+    "cross-site request forgery", "cross site request forgery",
+    "sql injection", "os command injection",
 )
 _I_MEDIUM_KEYWORDS = ("open redirect", "clickjacking", "header injection")
 _A_HIGH_KEYWORDS = (

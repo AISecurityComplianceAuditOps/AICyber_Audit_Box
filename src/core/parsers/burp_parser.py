@@ -96,6 +96,91 @@ def _scrub_pdf_artifacts(text: str) -> str:
     return text
 
 
+
+# ── What a visual proof of concept is actually reporting ────────────────────
+# A finding recovered from a screenshot has no scanner metadata behind it, so
+# its description used to be the matched text repeated back:
+#
+#     "OCR extracted vulnerability proof-of-concept: Vulnerability Proof Stored XSSI"
+#
+# which tells a reader nothing they had not already seen in the title, and
+# carries an OCR artefact into the customer's report. Where the match names a
+# vulnerability class, the class is described instead.
+#
+# Matched with a tolerant suffix: the PoC regex ends in [A-Z]* precisely because
+# OCR runs the class name into the next character ("Stored XSS]" read as
+# "XSSI"), so the class has to be recognised through that.
+_POC_CLASSES = (
+    # (pattern, class name, description, remediation, developer steps)
+    (r'sql\s*injection|sqli', "SQL Injection",
+     "User-supplied input reaches a SQL query without parameterisation, so an "
+     "attacker can alter the query's structure. Depending on the query this "
+     "allows reading or modifying data the application should not expose, and "
+     "in some configurations command execution on the database host.",
+     "Use parameterised queries (prepared statements) for every database call so input can never be parsed as SQL. Where dynamic identifiers are unavoidable, validate them against an allow-list. Grant the application's database account only the privileges it needs.",
+     "1. Replace string-concatenated SQL with parameterised queries or the ORM's bound-parameter API. 2. Allow-list any dynamic table or column names. 3. Reduce the application database user's privileges. 4. Re-test the same endpoint with the original payload."),
+    (r'stored\s*xss|persistent\s*xss', "Stored Cross-Site Scripting",
+     "Attacker-supplied script is stored by the application and returned to "
+     "other users without being encoded for its output context, so it executes "
+     "in each victim's browser under the application's origin. It is commonly "
+     "used to steal session cookies and act as the victim.",
+     'Encode all stored user content for the context it is rendered into, at the point of output rather than on input. Do not render user content as HTML unless it has been sanitised with a vetted library. Add a Content-Security-Policy that forbids inline script, and set session cookies HttpOnly so they cannot be read by script.',
+     '1. Apply context-aware output encoding where the stored field is rendered. 2. If HTML is genuinely required, sanitise it server-side with a maintained allow-list sanitiser. 3. Set HttpOnly, Secure and SameSite on session cookies. 4. Deploy a Content-Security-Policy that blocks inline script. 5. Re-submit the original payload and confirm it is rendered as text.'),
+    (r'reflected\s*xss', "Reflected Cross-Site Scripting",
+     "Input from the request is echoed into the response without output "
+     "encoding, so a crafted link executes script in the victim's browser under "
+     "the application's origin, commonly to steal session cookies.",
+     'Encode request-derived values for the context they are written into, at the point of output. Add a Content-Security-Policy that forbids inline script, and set session cookies HttpOnly.',
+     '1. Apply context-aware output encoding to every reflected parameter. 2. Set HttpOnly, Secure and SameSite on session cookies. 3. Deploy a Content-Security-Policy that blocks inline script. 4. Re-test with the original crafted URL.'),
+    (r'dom[\s-]*based\s*xss', "DOM-Based Cross-Site Scripting",
+     "Client-side script writes untrusted input into a dangerous sink, so the "
+     "payload executes in the victim's browser without the server ever seeing "
+     "it.",
+     'Avoid writing untrusted values into dangerous sinks (innerHTML, document.write, eval). Use textContent or a framework binding that escapes by default, and add a Content-Security-Policy that forbids inline script.',
+     '1. Replace innerHTML / document.write / eval with textContent or a safe framework binding. 2. Validate any value taken from location, referrer or postMessage. 3. Deploy a Content-Security-Policy. 4. Re-test the payload.'),
+    (r'cross[\s-]*site\s*scripting|xss', "Cross-Site Scripting",
+     "Untrusted input is rendered without encoding for its output context, so "
+     "script supplied by an attacker executes in a victim's browser under the "
+     "application's origin, commonly to steal session cookies.",
+     'Encode untrusted input for the context it is rendered into, at the point of output. Add a Content-Security-Policy that forbids inline script, and set session cookies HttpOnly so they cannot be read by script.',
+     '1. Apply context-aware output encoding wherever the value is rendered. 2. Set HttpOnly, Secure and SameSite on session cookies. 3. Deploy a Content-Security-Policy that blocks inline script. 4. Re-test the payload.'),
+    (r'cross[\s-]*site\s*request\s*forgery|csrf', "Cross-Site Request Forgery",
+     "A state-changing request is accepted without a token tying it to the "
+     "user's session, so another site can cause the victim's browser to perform "
+     "it while authenticated.",
+     'Require an anti-CSRF token on every state-changing request and verify it server-side. Set SameSite on session cookies, and re-authenticate for sensitive operations.',
+     '1. Issue a per-session anti-CSRF token and verify it on every POST, PUT, PATCH and DELETE. 2. Set SameSite=Lax or Strict on session cookies. 3. Re-authenticate before sensitive actions. 4. Replay the original cross-site request and confirm it is rejected.'),
+    (r'command\s*injection|os\s*command', "OS Command Injection",
+     "User-supplied input reaches a shell command, allowing an attacker to run "
+     "commands on the host with the application's privileges.",
+     'Do not pass user input to a shell. Call the target program directly with an argument array, and validate any user-supplied argument against an allow-list. Run the application with least privilege.',
+     "1. Replace shell invocations with a direct exec that takes an argument array. 2. Allow-list any user-controlled argument. 3. Drop the process's privileges. 4. Re-test with the original payload."),
+    (r'path\s*traversal|directory\s*traversal', "Path Traversal",
+     "A file path is built from user input without constraining it to the "
+     "intended directory, so an attacker can read files elsewhere on the host.",
+     'Resolve the requested path and confirm it stays inside the intended directory before opening it. Prefer an identifier that maps to a file server-side over accepting a path from the user.',
+     '1. Canonicalise the path and reject anything outside the base directory. 2. Replace user-supplied paths with an indirect identifier where possible. 3. Re-test with traversal sequences.'),
+    (r'ssrf|server[\s-]*side\s*request\s*forgery', "Server-Side Request Forgery",
+     "The application fetches a URL supplied by the user, so an attacker can "
+     "reach internal services that are not otherwise exposed.",
+     'Validate the destination against an allow-list of permitted hosts and schemes, resolve it before use, and block internal address ranges and cloud metadata endpoints. Do not follow redirects to unvalidated hosts.',
+     '1. Allow-list permitted hosts and schemes. 2. Resolve the host and reject private, loopback and link-local ranges. 3. Disable or re-validate redirects. 4. Re-test against an internal address.'),
+)
+
+
+def _describe_poc(match_str: str):
+    """(name, description, remediation, steps) for a match, or four Nones.
+
+    Ordered most specific first: "stored xss" must be recognised as stored XSS
+    rather than falling through to the generic cross-site scripting entry.
+    """
+    text = str(match_str or "").lower()
+    for pattern, name, description, remediation, steps in _POC_CLASSES:
+        if re.search(r'(?<![a-z0-9])(?:' + pattern + r')', text):
+            return name, description, remediation, steps
+    return None, None, None, None
+
+
 def _clean_poc_title(raw: str) -> str:
     """Trim a screenshot/PoC title down to the vulnerability name.
 
@@ -665,15 +750,44 @@ class BurpParser(BaseParser):
                 match_str = _clean_poc_title(ph.group(0))
                 if not match_str:
                     continue
+                _cls_name, _cls_desc, _cls_remed, _cls_steps = _describe_poc(match_str)
+                # The class name, when it was recognised, rather than the OCR's
+                # rendering of it -- "Stored XSS]" arrives as "XSSI", and that
+                # string was going into the customer's report and into the
+                # keyword tables that derive CIA impact from it.
+                _title = f"Visual PoC: {_cls_name or match_str}"
+                if _cls_desc:
+                    _description = (
+                        f"{_cls_desc} Identified from a proof-of-concept "
+                        f"screenshot; the captured request and response are "
+                        f"reproduced below. Confirm against the live target "
+                        f"before reporting."
+                    )
+                else:
+                    # Nothing recognisable: say what is actually known rather
+                    # than dressing the matched text up as a description.
+                    _description = (
+                        f"A proof-of-concept screenshot was supplied showing "
+                        f"{match_str}. The vulnerability class could not be "
+                        f"determined automatically -- review the captured "
+                        f"evidence below and classify this finding."
+                    )
                 f_poc = Finding(
-                    title=f"Visual PoC: {match_str}",
+                    title=_title,
                     severity="HIGH",
                     severity_score=7.5,
                     target="Web Application Endpoint",
-                    description=f"OCR extracted vulnerability proof-of-concept: {match_str}",
+                    description=_description,
                     evidence=content[:800],
                     source_tool="Burp Suite / Visual OCR"
                 )
+                # The fix for THIS class of flaw. Left unset, control_mapper
+                # fills in its generic VAPT template, which told the reader to
+                # run another scan and to apply a vendor patch -- advice that
+                # does not apply to a flaw in the customer's own application.
+                if _cls_remed:
+                    f_poc.remediation = _cls_remed
+                    f_poc.remediation_actionable = _cls_steps
                 actionable_findings.append(f_poc)
 
         map_findings_list(actionable_findings)
