@@ -2422,9 +2422,23 @@ def api_commit_session_findings(session_id: str, request: Request, force: bool =
             if not findings:
                 findings = all_findings
 
+            # Per finding, from the flags the finding-edit endpoint sets when an
+            # auditor acts on it (Accept / Modify / Reject all mark it
+            # human_verified and is_saved_to_shakthi).
+            #
+            # There used to be a second line here: if nothing came out unreviewed
+            # AND report.status was not yet "Reviewed & Finalized", it replaced
+            # the empty list with EVERY finding. report.status only becomes
+            # "Reviewed & Finalized" at the end of this very function, so on the
+            # first commit of a session it was never set -- which made the
+            # warning unavoidable no matter how carefully the auditor had
+            # reviewed. An auditor who accepted every control was still told
+            # none had been reviewed, and the only way past it was "Force Accept
+            # & Save All", which writes a FORCE_ACCEPT_UNREVIEWED_CONTROLS entry
+            # into the Admin Audit Log against them. The flags are the record of
+            # review; the report status is the result of committing, not a
+            # precondition for it.
             unreviewed = [f for f in findings if not bool(f.human_verified) or not bool(f.is_saved_to_shakthi)]
-            if not unreviewed and report.status != "Reviewed & Finalized":
-                unreviewed = findings
 
             # If there are unreviewed controls and auditor hasn't forced acceptance, trigger warning response!
             if unreviewed and not is_force:
@@ -2458,7 +2472,15 @@ def api_commit_session_findings(session_id: str, request: Request, force: bool =
             
             # Recalculate Compliance Score
             total_ctrls = len(findings)
-            compliant_count = sum(1 for f in findings if (f.status or "").upper() in ("COMPLIANT", "ACCEPTED", "PASS"))
+            # The recorded verdict, not the auditor's action. This counted
+            # "ACCEPTED" as a pass -- the same mistake as the finding card's
+            # counter -- so accepting a non-compliance raised the session's
+            # stored compliance score. src/core/finding_status.py owns this
+            # vocabulary; final_result is what it resolves to.
+            compliant_count = sum(
+                1 for f in findings
+                if (str(f.final_result or "").strip().upper() or
+                    _derive_final_result(f.status, None)) == "COMPLIANT")
             score_pct = int((compliant_count / total_ctrls) * 100) if total_ctrls > 0 else 0
             
             score_row = db.query(ComplianceScore).filter(ComplianceScore.report_id == report.id).first()
