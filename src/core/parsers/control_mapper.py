@@ -355,6 +355,11 @@ _C_HIGH_KEYWORDS = (
     "idor", "insecure direct object", "broken access control",
     "path traversal", "directory traversal", "local file inclusion", "lfi",
     "xxe", "xml external entity", "arbitrary file read",
+    # Cross-site scripting was listed only under integrity, so the textbook
+    # payload -- stealing document.cookie and posting it to the attacker --
+    # reported C:NONE. Session theft is a confidentiality loss.
+    "xss", "cross-site scripting", "cross site scripting",
+    "session hijack", "cookie theft", "document.cookie", "session token",
 )
 _C_MEDIUM_KEYWORDS = (
     "version disclosure", "banner", "stack trace", "error message",
@@ -493,6 +498,28 @@ def evaluate_cia_and_pii_impact(finding: Finding) -> tuple:
 
     if is_pii:
         c_impact = "Confidential (High - PII Data Present)"
+
+    # "C:NONE | I:NONE | A:NONE" asserts that the finding has no impact at all.
+    # Reaching here with all three still NONE means the opposite: no CVSS vector
+    # was supplied and no keyword matched, so nothing was established either way.
+    # Printing it as NONE turns "not determined" into "determined to be harmless",
+    # which an auditor may reasonably act on by deprioritising a live finding.
+    #
+    # It is also self-contradictory on any finding that carries a real severity:
+    # C:N/I:N/A:N scores 0.0 under CVSS 3.1 and cannot coexist with a High
+    # rating -- the same contradiction already noted above for SSRF, where the
+    # fix was to let the vector win. There is no vector here to win, so the
+    # honest answer is to say so.
+    #
+    # It happens most often on findings recovered from a screenshot by OCR,
+    # where the class name survives imperfectly ("Stored XSS]" read as "XSSI")
+    # and no keyword can match, which is precisely when a confident "no impact"
+    # is least warranted.
+    if c_impact == "NONE" and i_impact == "NONE" and a_impact == "NONE":
+        _sev = str(getattr(finding, "severity", "") or "").upper()
+        if _sev and "INFO" not in _sev:
+            return "Not determined - requires auditor assessment", is_pii
+
     cia_str = f"C:{c_impact} | I:{i_impact} | A:{a_impact}"
     return cia_str, is_pii
 
