@@ -712,7 +712,14 @@
                                 </div>
 
                                 <!-- Target Controls to Audit Accordions -->
-                                <div style="margin-bottom: 10px;">
+                                <!-- _setControlScopeVisible() in app.js hides this whole block in
+                                     Checklist (CUSTOMIZE) mode, which audits the auditor's questions
+                                     and resolves no controls -- a control picker there describes a
+                                     scope the run does not use. The id it looks for existed nowhere
+                                     in this file, so getElementById returned null, the `if (box)`
+                                     guard swallowed it, and the picker stayed on screen in exactly
+                                     the mode it was written to leave. -->
+                                <div id="target-controls-container-box" style="margin-bottom: 10px;">
                                     <div
                                         style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
                                         <label
