@@ -2862,6 +2862,20 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
                 db_write = SessionLocal()
                 report = db_write.query(AuditReport).filter(AuditReport.session_id == bg_key).first()
                 if report:
+                    # Carry forward any finding an auditor threw out in an earlier
+                    # scan of the same target. It is still saved and listed, marked
+                    # with the decision and who made it; see vapt_suppression.py.
+                    try:
+                        from src.core import vapt_suppression as _supp
+                        _carried = _supp.apply(all_findings, _supp.load(db_write))
+                        if _carried:
+                            print(f"[VAPT SUPPRESSION] {_carried} finding(s) carried forward "
+                                  f"as previously thrown out by an auditor.", flush=True)
+                    except Exception as _supp_err:
+                        # Never lose a scan over this: without it the findings are
+                        # simply reported as new, which is the old behaviour.
+                        print(f"[VAPT SUPPRESSION] Not applied: {_supp_err}", flush=True)
+
                     for f in all_findings:
                         finding_kwargs = dict(
                             report_id=report.id,
@@ -2920,6 +2934,14 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
                             migration_dependency_flag=bool(f.get("migration_dependency_flag") or False),
                             nist_80053_controls=f.get("nist_80053_controls") or "",
                         )
+                        # Set only by a carried-forward suppression. Every other
+                        # finding keeps the column defaults it always had.
+                        if f.get("review_note"):
+                            finding_kwargs["review_note"] = f["review_note"]
+                        if f.get("human_verified"):
+                            finding_kwargs["human_verified"] = True
+                        if f.get("is_saved_to_shakthi"):
+                            finding_kwargs["is_saved_to_shakthi"] = True
                         # Strip NUL bytes (0x00) from every text field -- PDFs, HTML, and OCR
                         # text occasionally extract with embedded NUL bytes, which SQLite/
                         # Postgres both reject outright ("string literal cannot contain NUL

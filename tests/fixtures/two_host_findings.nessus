@@ -1,0 +1,25 @@
+<?xml version="1.0" ?>
+<NessusClientData_v2>
+<Report name="suppression-fixture">
+<ReportHost name="10.20.30.40">
+<HostProperties><tag name="host-ip">10.20.30.40</tag></HostProperties>
+<ReportItem port="443" svc_name="www" protocol="tcp" severity="3" pluginID="42873" pluginName="SSL Medium Strength Cipher Suites Supported (SWEET32)" pluginFamily="General">
+<cve>CVE-2016-2183</cve>
+<cvss3_base_score>7.5</cvss3_base_score>
+<risk_factor>High</risk_factor>
+<synopsis>The remote service supports the use of medium strength SSL ciphers.</synopsis>
+<description>The remote host supports the use of SSL ciphers that offer medium strength encryption, including 64-bit block ciphers.</description>
+<solution>Reconfigure the affected application to avoid the use of medium strength ciphers.</solution>
+<plugin_output>Medium Strength Ciphers: DES-CBC3-SHA</plugin_output>
+</ReportItem>
+<ReportItem port="443" svc_name="www" protocol="tcp" severity="2" pluginID="57582" pluginName="SSL Self-Signed Certificate" pluginFamily="General">
+<cvss3_base_score>6.5</cvss3_base_score>
+<risk_factor>Medium</risk_factor>
+<synopsis>The SSL certificate chain for this service ends in an unrecognized self-signed certificate.</synopsis>
+<description>The X.509 certificate chain for this service is not signed by a recognized certificate authority.</description>
+<solution>Purchase or generate a proper SSL certificate for this service.</solution>
+<plugin_output>Subject : CN=web01.internal</plugin_output>
+</ReportItem>
+</ReportHost>
+</Report>
+</NessusClientData_v2>

@@ -2407,6 +2407,27 @@ def api_update_finding(finding_id: int, req: UpdateFindingRequest, request: Requ
                 print(f"[UPDATE FINDING] Finding #{finding_id} saved; its knowledge-loop "
                       f"feedback row was not: {_fb_err}", flush=True)
 
+            # VAPT / PQC: remember a thrown-out finding for later scans, or forget
+            # it when the auditor restores it. The ISO path learns through the
+            # knowledge loop instead and is left alone. Same savepoint reasoning
+            # as the feedback row: this is a memory aid, never a reason to lose
+            # the edit. See src/core/vapt_suppression.py.
+            if report and _session_is_technical(report.framework, []) and finding.dedup_key:
+                try:
+                    from src.core import vapt_suppression as _supp
+                    with db.begin_nested():
+                        if _supp.is_thrown_out(req.status):
+                            _supp.record(db, finding.dedup_key, req.status,
+                                         title=finding.control_name or "",
+                                         decided_by=(auth_user or {}).get("username", ""),
+                                         source_session=report.session_id or "")
+                        else:
+                            _supp.clear(db, finding.dedup_key)
+                        db.flush()
+                except Exception as _supp_err:
+                    print(f"[UPDATE FINDING] Finding #{finding_id} saved; its VAPT "
+                          f"suppression was not updated: {_supp_err}", flush=True)
+
             db.commit()
             log_system_event("FINDING_UPDATED", "INFO", f"Finding #{finding_id} updated to '{req.status}' (control: {finding.control_id})", session_id=str(finding.report_id))
             return {"success": True, "message": "Finding successfully updated and saved to Shakthi DB."}

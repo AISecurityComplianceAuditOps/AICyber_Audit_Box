@@ -382,6 +382,23 @@ class AuditorFeedback(Base):
     auditor_comments = Column(Text, nullable=True)
     created_at       = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
+class VaptSuppression(Base):
+    """A VAPT finding an auditor threw out, carried forward to later scans.
+
+    Keyed by the parser's dedup_key -- CVE, plugin or tool + title, joined to the
+    target -- so the same issue on another host is never matched. See
+    src/core/vapt_suppression.py for why a placeholder target is never keyed and
+    why a suppressed finding is carried forward rather than dropped.
+    """
+    __tablename__ = "vapt_suppressions"
+    id             = Column(Integer, primary_key=True, autoincrement=True)
+    dedup_key      = Column(String(500), unique=True, index=True, nullable=False)
+    status         = Column(String(50))
+    title          = Column(Text, nullable=True)
+    decided_by     = Column(String(100), nullable=True)
+    source_session = Column(String(100), nullable=True)
+    created_at     = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
 class AuditTrail(Base):
     __tablename__ = "audit_trail"
     id                    = Column(Integer, primary_key=True, autoincrement=True)
