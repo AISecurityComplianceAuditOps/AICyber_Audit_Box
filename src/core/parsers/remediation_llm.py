@@ -126,6 +126,16 @@ def _format_finding_block(idx: int, f: Dict) -> str:
     )
 
 
+# A backslash JSON does not permit: one not followed by " \\ / b f n r t,
+# nor by a u with four hex digits after it.
+#
+# Every alternative sits inside the lookahead so the match is the BACKSLASH
+# ALONE. An earlier version consumed the character too, which turned
+# C:\users into C:\sers -- a repair that silently corrupted the text it
+# was rescuing.
+_INVALID_ESCAPE_RE = re.compile(r'\\(?!["\\/bfnrt]|u[0-9a-fA-F]{4})')
+
+
 def _extract_json_object(raw: str):
     """Same tolerance the ISO chain already applies to LLM output: strip a
     ```json fence if present, otherwise take the outermost {...}. A local model
@@ -141,7 +151,23 @@ def _extract_json_object(raw: str):
         if start == -1 or end == -1 or end <= start:
             raise ValueError("no JSON object found in response")
         text = text[start:end + 1]
-    return json.loads(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # A stray backslash, repaired rather than thrown away.
+        #
+        # JSON permits only a handful of escapes. A model writing remediation
+        # text reaches for backslashes constantly and legitimately -- a Windows
+        # path (C:\Program Files), a regex (\d+), an escape sequence it is
+        # telling a developer to use -- and any one of them makes the whole
+        # reply unparseable. Measured on a real scan: 25 of 61 batches lost
+        # with ONE user on an idle machine, every one of them 'Invalid escape'.
+        # Each failure discards the AI text for four findings and silently
+        # falls back to the generic wording.
+        #
+        # Tried only after a normal parse has failed, so well-formed output is
+        # never touched.
+        return json.loads(_INVALID_ESCAPE_RE.sub(r'\\\\', text))
 
 
 def _enrich_budget() -> int:
