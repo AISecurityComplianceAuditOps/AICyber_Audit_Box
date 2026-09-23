@@ -3628,8 +3628,15 @@ async function triggerAuditAnalysis() {
         // still starts and queues normally; this just tells the auditor upfront
         // instead of them only discovering it via a slow-moving progress bar.
         const cap = data.llm_capacity;
+        const acap = data.audit_capacity;
         if (cap && cap.reachable && cap.at_capacity) {
             showToastBanner(`⏳ All ${cap.total_slots} compute slot(s) busy right now — this scan will start as soon as one frees up.`);
+        } else if (acap && acap.advice && acap.limit && acap.running >= acap.limit) {
+            // This scan just took the last audit the machine is rated for, so the
+            // next auditor will be refused. Said here, while there is still time
+            // to act on it, rather than only in the refusal itself -- the advice
+            // names whether cores or memory is what would raise the number.
+            showToastBanner(`⚠ This server is now running its maximum of ${acap.limit} simultaneous audit(s). ${acap.advice}`);
         }
 
         // Freeze the inputs for the duration of the run. The server refuses

@@ -55,8 +55,18 @@ def _default_concurrent_audits() -> int:
 
     Slots decide how many audits can START; cores decide whether they FINISH.
     Roughly one audit per two physical cores keeps each one responsive, floored
-    at 2 (so a small box still allows a second audit) and capped at 16 (past that
-    the model server's own batching, not this limit, is the constraint).
+    at 2 so a small box still allows a second audit.
+
+    The arithmetic itself lives in deployment_sizing, which is its one owner.
+    This used to hold a second, independent copy of the same formula. The two
+    agreed, but nothing held them together, and nothing outside that module
+    called its version -- so the figure the product enforced and the figure a
+    build log reported were free to drift apart while looking authoritative.
+
+    This value is the STARTING point only, from cores alone: it is computed at
+    import, when the model server is still loading its weights and cannot say
+    how many slots it has. current_audit_limit() refines it once the server can
+    answer. Anything admitting work should call that, not read this.
 
     MAX_CONCURRENT_AUDITS in the environment always wins -- an operator who has
     measured their own hardware should override this.
@@ -70,7 +80,80 @@ def _default_concurrent_audits() -> int:
         physical = psutil.cpu_count(logical=False) or psutil.cpu_count() or 4
     except Exception:
         physical = os.cpu_count() or 4
-    return max(2, min(16, physical // 2))
+    from src.core.deployment_sizing import max_concurrent_audits
+    return max_concurrent_audits(physical, cores_per_audit=_cores_per_audit())
+
+
+def _cores_per_audit() -> int:
+    """Physical cores one audit needs, overridable by an operator who measured.
+
+    The default is a measurement from a small host and deliberately a parameter
+    rather than a constant: a deployment that has load-tested its own hardware
+    should be able to lower it on evidence without a code change.
+    """
+    import os
+    from src.core.deployment_sizing import DEFAULT_CORES_PER_AUDIT
+    env = os.environ.get("CORES_PER_AUDIT")
+    if env and str(env).strip().isdigit() and int(env) > 0:
+        return int(env)
+    return DEFAULT_CORES_PER_AUDIT
+
+
+def _physical_cores() -> int:
+    import os
+    try:
+        import psutil
+        return psutil.cpu_count(logical=False) or psutil.cpu_count() or 4
+    except Exception:
+        return os.cpu_count() or 4
+
+
+def _total_ram_gb():
+    """Total memory, for describing the machine. None if it cannot be read."""
+    try:
+        import psutil
+        return psutil.virtual_memory().total / (1024.0 ** 3)
+    except Exception:
+        return None
+
+
+def current_audit_limit() -> tuple:
+    """(limit, advice) for right now, sized from the live machine.
+
+    Returns the cap to admit against and the sentence explaining what is holding
+    it there, so a refusal can tell the customer what to add instead of only
+    saying no.
+
+    Why this is a function and not the constant above: the real slot count can
+    only be read once the model server is up, which it is not at import. The
+    first call after that learns it, and the port pool caches it, so the cost is
+    one probe for the life of the process.
+
+    An explicit MAX_CONCURRENT_AUDITS is an operator's decision and is returned
+    unchanged -- the hardware is still described in the advice, so an operator
+    who has pinned a number below what the machine can do can see that they did.
+    """
+    import os
+    env = os.environ.get("MAX_CONCURRENT_AUDITS")
+    cores = _physical_cores()
+    per_audit = _cores_per_audit()
+
+    slots = None
+    try:
+        from src.core.port_pool import port_pool_manager
+        slots = port_pool_manager.known_slot_count()
+    except Exception:
+        # Never let sizing take audits down; cores alone is the old behaviour.
+        slots = None
+
+    from src.core.deployment_sizing import audit_capacity
+    cap = audit_capacity(cores, available_slots=slots, cores_per_audit=per_audit,
+                         total_ram_gb=_total_ram_gb())
+    if env and str(env).strip().isdigit():
+        pinned = int(env)
+        return pinned, (f"This installation is pinned to {pinned} simultaneous audit(s) "
+                        f"by MAX_CONCURRENT_AUDITS. {cap['advice']}")
+    return cap["limit"], cap["advice"]
 
 
 MAX_CONCURRENT_AUDITS = _default_concurrent_audits()

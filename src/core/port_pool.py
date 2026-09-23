@@ -75,6 +75,11 @@ class LLMPortPoolManager:
         self._limit_is_explicit = bool(_env_limit)
         self._limit_checked = False
         self._limit_lock = threading.Lock()
+        # The server's real slot count once known, or None. Recorded even when
+        # an explicit limit means we do not act on it, because the audit
+        # admission cap is sized from this number too and an operator capping
+        # connections did not ask to distort the machine's stated capacity.
+        self._server_slot_count = None
 
         print(f"[PORT POOL INITIALIZED] Configured {len(self.ports)} LLM worker ports: {self.ports} "
               f"({_slots_per_port} max concurrent connections per port"
@@ -93,7 +98,7 @@ class LLMPortPoolManager:
         same hardware. A host that happens to have fewer slots falls back to
         that same internal queue.
         """
-        if self._limit_checked or self._limit_is_explicit:
+        if self._limit_checked:
             return
         with self._limit_lock:
             if self._limit_checked:
@@ -108,11 +113,14 @@ class LLMPortPoolManager:
                 if r.status_code != 200:
                     return
                 server_slots = len(r.json() or [])
+                self._server_slot_count = server_slots or None
             except Exception as e:
                 print(f"[PORT POOL] Could not read the server's slot count "
                       f"({type(e).__name__}); staying at {self._limit_per_port} "
                       f"per port.", flush=True)
                 return
+            if self._limit_is_explicit:
+                return                          # operator's number; only recorded
             extra = server_slots - self._limit_per_port
             if extra <= 0:
                 return
@@ -124,6 +132,24 @@ class LLMPortPoolManager:
             print(f"[PORT POOL] LLM server reports {server_slots} slot(s); raising the "
                   f"per-port limit from {old} to {server_slots}. Set "
                   f"MAX_LLM_CONNECTIONS to override.", flush=True)
+
+    def known_slot_count(self):
+        """The model server's real slot count, or None if it could not be read.
+
+        Shares the one-time probe that sizes the semaphore, so asking costs
+        nothing after the first call. Callers use it to derive limits from what
+        the machine actually has instead of from a constant -- the audit
+        admission cap is the one that matters, since admitting more audits than
+        there are slots pushes the excess into llama-server's own unbounded
+        queue, where requests time out and their controls come back empty.
+
+        None means "could not find out", which callers must treat as unknown
+        rather than as zero: falling back to a cores-only figure is the old
+        behaviour and is safe, while reading None as no capacity would refuse
+        every audit on a server that is merely slow to answer.
+        """
+        self._match_server_slot_count()
+        return self._server_slot_count
 
     def _increment_queue_depth(self):
         """Atomically increments the queue depth counter and returns the new position."""

@@ -23,7 +23,7 @@ from src.db.database import (
     AuditorFeedback,
     force_master
 )
-from src.core.bg_state import _bg_store, _bg_results, _bg_running, _bg_lock, _bg_stop_flags, _auditor_sessions, MAX_AUDITS_PER_AUDITOR, MAX_CONCURRENT_AUDITS
+from src.core.bg_state import _bg_store, _bg_results, _bg_running, _bg_lock, _bg_stop_flags, _auditor_sessions, MAX_AUDITS_PER_AUDITOR, MAX_CONCURRENT_AUDITS, current_audit_limit
 from src.core.bg_worker import (
     _run_ollama_bg,
     _run_fast_technical_vapt_bg,
@@ -1524,6 +1524,31 @@ def api_undo_delete_evidence_file(req: UndoDeleteEvidenceRequest, request: Reque
     finally:
         db.close()
 
+def _capacity_refusal_detail(active: int, limit: int, licensed: bool, advice: str = "") -> str:
+    """What the customer is told when an audit cannot be admitted.
+
+    Kept as a function so it can be tested directly; it used to be built inline
+    inside the endpoint, where the only way to see the sentence was to saturate
+    a real server.
+
+    It used to say "the system is at capacity (limit 16)" and stop there, which
+    gives the reader nothing to act on: not why 16, not whether the machine or
+    the licence is the constraint, not what to add. The appliance knows all
+    three, so it says them. The hardware advice is omitted when a LICENCE is
+    what binds -- telling someone to buy CPU when more cores would change
+    nothing is worse than saying nothing.
+    """
+    if licensed:
+        why = f"this installation is licensed for {limit} simultaneous audit(s)"
+    else:
+        why = f"the system is at capacity (limit {limit})"
+    detail = (f"{active} audits are currently running or queued across all auditors "
+              f"and {why}. Please wait for one to finish before starting a new one.")
+    if advice and not licensed:
+        detail += f" {advice}"
+    return detail
+
+
 @router.post("/start")
 def api_start_audit(req: StartAuditRequest, request: Request):
     auth_user = _require_auth(request)
@@ -1582,25 +1607,31 @@ def api_start_audit(req: StartAuditRequest, request: Request):
         # this machine can finish; the licence says how many were bought. Neither
         # replaces the other: sixteen bought on a four-core box still cannot
         # finish more than four, and a large box may not exceed what was sold.
+        # Sized from the live machine, not from the import-time constant: the
+        # real slot count cannot be read until the model server has finished
+        # loading its weights, which it has not at import. Cached after the
+        # first call, so this costs one probe for the life of the process.
+        try:
+            _hardware_limit, _hardware_advice = current_audit_limit()
+        except Exception:
+            _hardware_limit, _hardware_advice = MAX_CONCURRENT_AUDITS, ""
         try:
             from src.core.licence_entitlements import load_entitlements
             _ent = load_entitlements()
-            _effective_limit = _ent.concurrent_limit(MAX_CONCURRENT_AUDITS)
+            _effective_limit = _ent.concurrent_limit(_hardware_limit)
             _licensed = bool(_ent.enforcing and _ent.seats
-                             and _ent.seats <= MAX_CONCURRENT_AUDITS)
+                             and _ent.seats <= _hardware_limit)
         except Exception:
             # A licensing fault must not take audits down; the hardware limit
             # still applies and the framework gate has already run by here.
-            _effective_limit, _licensed = MAX_CONCURRENT_AUDITS, False
+            _effective_limit, _licensed = _hardware_limit, False
         if global_active_count >= _effective_limit:
-            _why = (f"this installation is licensed for {_effective_limit} simultaneous audit(s)"
-                    if _licensed else
-                    f"the system is at capacity (limit {_effective_limit})")
-            raise HTTPException(
-                status_code=429,
-                detail=f"{global_active_count} audits are currently running or queued across all "
-                       f"auditors and {_why}. Please wait for one to finish before starting a new one."
-            )
+            # Say what is holding the limit there and what would raise it. The
+            # message used to be "the system is at capacity (limit 16)", which
+            # gives the customer nothing to act on -- not why 16, not whether
+            # the machine or the licence is the constraint, not what to add.
+            raise HTTPException(status_code=429, detail=_capacity_refusal_detail(
+                global_active_count, _effective_limit, _licensed, _hardware_advice))
         # ─────────────────────────────────────────────────────────────────────────
 
         _auditor_sessions[auditor_id].add(bg_key)
@@ -1882,11 +1913,24 @@ def api_start_audit(req: StartAuditRequest, request: Request):
             _llm_capacity = port_pool_manager.get_capacity_snapshot()
         except Exception:
             _llm_capacity = None
+        # What this machine is rated for, and what would raise it. Sent on every
+        # start so the auditor learns the number from the product rather than by
+        # being refused later -- an appliance that has outgrown its hardware
+        # should say so while there is still time to order more.
+        try:
+            _audit_capacity = {
+                "limit": _effective_limit,
+                "running": len(_bg_running),
+                "advice": "" if _licensed else _hardware_advice,
+            }
+        except Exception:
+            _audit_capacity = None
         return {
             "success": True,
             "status": "started",
             "message": "Background RAG scan initialized.",
             "llm_capacity": _llm_capacity,
+            "audit_capacity": _audit_capacity,
         }
     except HTTPException:
         # Deliberate errors raised inside this try block (e.g. the zero-evidence

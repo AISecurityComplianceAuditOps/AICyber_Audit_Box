@@ -47,11 +47,35 @@ _UNKNOWN_MODEL_GB = 4.5
 DEFAULT_CTX_PER_REQUEST = 32768
 
 # Global audit cap: roughly one audit per two physical cores, floored so a small
-# box still allows a second, capped because past this the model server's own
-# batching is the constraint rather than this limit.
-_AUDITS_PER_CORES = 2
+# box still allows a second, and bounded by the slots the model server actually
+# has rather than by a constant.
+#
+# There used to be a flat ceiling of 16 here. It was written when a machine had
+# about 8 slots, and it silently became the binding limit on hardware that had
+# outgrown it: a customer's 32-core/126GB server sized itself to 49 slots and
+# was still admitting 16 audits, with no way to tell from the product that the
+# number came from a constant rather than from the machine. A appliance sold on
+# its hardware should use the hardware it is given.
+#
+# What replaces it is not "no limit" -- that is worse. Cores decide whether an
+# audit FINISHES, and admitting more than the model server has slots for means
+# the excess queues inside llama-server, which has no queue limit of its own,
+# until each request times out and its control comes back empty. An empty
+# control is a missing finding on a compliance report. So the cap is now the
+# lower of what the cores can drive and what the server can hold, both measured.
 _MIN_CONCURRENT_AUDITS = 2
-_MAX_CONCURRENT_AUDITS = 16
+
+# How many physical cores one audit needs to make progress. This is the one
+# number here that hardware cannot tell us, so it is a measured default rather
+# than a derivation: on a 4-physical-core host, three concurrent single-control
+# audits (1.33 cores each) were all still running after 900 seconds having
+# finished nothing, while one alone takes about five minutes.
+#
+# That measurement is from a small box, and large machines amortise weight reads
+# across batched requests, so the true floor there may be lower. It is a
+# parameter, not a constant, precisely so a deployment that has measured its own
+# hardware can lower it with evidence instead of editing this file.
+DEFAULT_CORES_PER_AUDIT = 2
 
 # Per auditor, so one person cannot occupy the whole machine.
 DEFAULT_AUDITS_PER_AUDITOR = 2
@@ -78,7 +102,9 @@ class DeploymentSizing:
     ram_allowed_slots: int
     projected_llm_gb: float
     headroom_gb: float
-    limited_by: str               # "cores" | "ram"
+    limited_by: str               # slots: "cores" | "ram"
+    audits_limited_by: str        # audits: "cores" | "slots" | "floor"
+    audit_advice: str             # the sentence shown when an audit is refused
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -122,18 +148,74 @@ def model_size_gb(model_path: Optional[str]) -> float:
         return _UNKNOWN_MODEL_GB
 
 
-def max_concurrent_audits(physical_cores: int) -> int:
-    """Global cap on simultaneous audits, from physical cores.
+def max_concurrent_audits(physical_cores: int,
+                          available_slots: Optional[int] = None,
+                          cores_per_audit: int = DEFAULT_CORES_PER_AUDIT) -> int:
+    """Global cap on simultaneous audits: the lower of cores and slots.
 
     Slots decide how many audits can START; cores decide whether they FINISH.
-    Measured on a 4-physical-core host: three concurrent single-control audits
-    were all still running after 900 seconds having completed nothing, while one
-    alone takes about five minutes. An honest refusal beats three progress bars
-    that never move.
+    An honest refusal beats progress bars that never move.
+
+    `available_slots` is the model server's real slot count, read from its
+    /slots endpoint. Omitted, the cap comes from cores alone -- the answer for a
+    machine being sized before its server exists, and the fallback when the
+    probe cannot reach it.
     """
     cores = max(1, int(physical_cores))
-    return max(_MIN_CONCURRENT_AUDITS,
-               min(_MAX_CONCURRENT_AUDITS, cores // _AUDITS_PER_CORES))
+    per_audit = max(1, int(cores_per_audit))
+    limit = cores // per_audit
+    if available_slots is not None and int(available_slots) > 0:
+        limit = min(limit, int(available_slots))
+    return max(_MIN_CONCURRENT_AUDITS, limit)
+
+
+def audit_capacity(physical_cores: int,
+                   available_slots: Optional[int] = None,
+                   cores_per_audit: int = DEFAULT_CORES_PER_AUDIT,
+                   slots_limited_by: Optional[str] = None,
+                   total_ram_gb: Optional[float] = None) -> dict:
+    """The cap, what is holding it there, and what would raise it.
+
+    The product used to refuse an audit with "the system is at capacity (limit
+    16)", which tells the customer nothing they can act on: not why 16, not
+    whether their machine is the constraint, not what to add. This returns the
+    sentence that answers those, so an appliance that has outgrown its hardware
+    says so instead of merely saying no.
+
+    `slots_limited_by` is a DeploymentSizing.limited_by value ("cores" or
+    "ram"), which distinguishes "add CPU" from "add memory" when the slot count
+    is the binding factor rather than the cores.
+    """
+    cores = max(1, int(physical_cores))
+    per_audit = max(1, int(cores_per_audit))
+    from_cores = cores // per_audit
+    limit = max_concurrent_audits(cores, available_slots, per_audit)
+
+    machine = f"{cores} physical core(s)"
+    if total_ram_gb:
+        machine += f" and {float(total_ram_gb):.0f}GB RAM"
+
+    if limit <= _MIN_CONCURRENT_AUDITS and from_cores < _MIN_CONCURRENT_AUDITS:
+        # The floor is holding it up, not the hardware holding it down.
+        return {"limit": limit, "limited_by": "floor",
+                "advice": (f"This server has {machine}, below what one audit needs. "
+                           f"The minimum of {_MIN_CONCURRENT_AUDITS} is being allowed "
+                           f"anyway; expect them to run slowly.")}
+
+    if available_slots is not None and int(available_slots) > 0 and int(available_slots) < from_cores:
+        # Slots bind. Say which half of the hardware produced them.
+        what = ("more RAM raises it" if slots_limited_by == "ram"
+                else "more CPU cores raise it" if slots_limited_by == "cores"
+                else "more RAM or CPU cores raise it")
+        return {"limit": limit, "limited_by": "slots",
+                "advice": (f"This server ({machine}) supports {limit} simultaneous audit(s). "
+                           f"The AI engine has {int(available_slots)} slot(s), which is the "
+                           f"limiting factor -- {what}.")}
+
+    return {"limit": limit, "limited_by": "cores",
+            "advice": (f"This server ({machine}) supports {limit} simultaneous audit(s). "
+                       f"CPU cores are the limiting factor at {per_audit} core(s) per audit "
+                       f"-- more cores raise it; more RAM will not.")}
 
 
 def size_deployment(
@@ -172,11 +254,13 @@ def size_deployment(
     limited_by = "cores" if slots == cores and ram_slots >= cores else "ram"
 
     projected = resolved_model_gb + (slots * per_slot)
+    _cap = audit_capacity(cores, available_slots=slots, slots_limited_by=limited_by,
+                          total_ram_gb=total_ram_gb)
     return DeploymentSizing(
         np_slots=slots,
         shared_pool=slots * ctx_per_request,
         ctx_per_request=ctx_per_request,
-        max_concurrent_audits=max_concurrent_audits(cores),
+        max_concurrent_audits=_cap["limit"],
         max_audits_per_auditor=max(1, int(max_audits_per_auditor)),
         physical_cores=cores,
         total_ram_gb=round(total_ram_gb, 2),
@@ -187,6 +271,8 @@ def size_deployment(
         projected_llm_gb=round(projected, 2),
         headroom_gb=round(total_ram_gb - projected, 2),
         limited_by=limited_by,
+        audits_limited_by=_cap["limited_by"],
+        audit_advice=_cap["advice"],
     )
 
 

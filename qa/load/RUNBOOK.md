@@ -90,6 +90,64 @@ time. Keep everything else identical, or the runs are not comparable.
 
 ---
 
+## Step 3a - raising the cap for the 20 and 30 runs
+
+**The 20 and 30 runs do not work out of the box, and fail in a way that looks
+like a pass.** Two limits refuse the extra audits at the API before any work
+starts, so the run finishes fast with most users rejected:
+
+| Limit | Default | What it does |
+|---|---|---|
+| `MAX_CONCURRENT_AUDITS` | physical cores / 2, capped at **16** | rejects the 17th audit across everyone |
+| `MAX_AUDITS_PER_AUDITOR` | **2** | rejects a third audit from the same login |
+
+A rejected user returns "system busy" in seconds. If a 30-user run finishes
+much faster than the 10-user run, this is why - read the per-user results
+before believing the wall time.
+
+**On the server**, edit `docker-compose.customer.yml`, find these two lines near
+the end of the `app:` service, and uncomment them (remove the `# `, keep the
+leading spaces exactly as they are - YAML counts them):
+
+```yaml
+      - MAX_AUDITS_PER_AUDITOR=2
+      - MAX_CONCURRENT_AUDITS=30
+```
+
+Set `MAX_CONCURRENT_AUDITS` to at least the number of users you are testing.
+Raise `MAX_AUDITS_PER_AUDITOR` only if your users share logins; with one account
+per user, leave it at 2.
+
+Apply it - this recreates the app container only, and takes a few seconds:
+
+```bash
+docker compose -f docker-compose.customer.yml up -d app
+```
+
+Confirm it actually took effect, rather than assuming:
+
+```bash
+docker exec aicyberauditbox_app env | grep MAX_
+```
+
+If that prints nothing, the edit did not reach the container - check the
+indentation and that the `- ` is still there.
+
+**Put it back afterwards.** Re-comment both lines and run the same `up -d app`.
+The default of 16 is a measured safety limit, not a placeholder: on a
+4-physical-core host, three concurrent audits were all still running after 900
+seconds having finished nothing, while one audit alone takes about five minutes.
+Leaving the cap at 30 on a customer machine means accepting work it cannot
+finish.
+
+**What the 20 and 30 runs actually measure.** Past the slot count the engine is
+saturated, so the extra users queue. Throughput stays roughly flat and latency
+per user rises in proportion. That is the honest finding, and it is worth
+reporting as one - it is the answer to "how many users can this take", which is
+what the exercise is for.
+
+---
+
 ## Step 4 — file size as a variable
 
 File size is one of the metrics, so vary it deliberately rather than leaving it
