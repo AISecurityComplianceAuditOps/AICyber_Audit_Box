@@ -44,8 +44,44 @@ import os
 import requests
 import pyotp
 
-SAMPLE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "samples", "10 -Multi-factor authentication operator.docx")
+# The evidence every simulated auditor uploads. --file overrides it, which is
+# how a run varies file size: the same 10/20/30 users against a 44KB policy and
+# against a 912KB one are two different measurements.
+#
+# Resolved by searching rather than by a fixed path: the sample lives a couple of
+# directories down inside samples/, and the literal path here pointed at
+# samples/<name>, so every run died on a missing file before measuring anything.
+_SAMPLE_NAME = "10 -Multi-factor authentication operator.docx"
+_HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _find_sample(name=_SAMPLE_NAME):
+    """The named sample anywhere under samples/, or None."""
+    direct = os.path.join(_HERE, "samples", name)
+    if os.path.isfile(direct):
+        return direct
+    for root, _dirs, files in os.walk(os.path.join(_HERE, "samples")):
+        if name in files:
+            return os.path.join(root, name)
+    return None
+
+
+def resolve_evidence_file(explicit=None):
+    """The file to upload. Raises with something actionable when there is none."""
+    if explicit:
+        if not os.path.isfile(explicit):
+            raise SystemExit("--file not found: %s" % explicit)
+        return explicit
+    found = _find_sample()
+    if found:
+        return found
+    raise SystemExit(
+        "No evidence file to upload. samples/ is gitignored, so it may not be on\n"
+        "this machine. Pass one explicitly:\n"
+        "    python load_test.py --file <path to a .docx or .pdf> ...")
+
+
+SAMPLE_FILE = None   # set from --file (or resolved) in main()
 
 
 def _post_with_rate_backoff(url, json_body, max_wait=70):
@@ -230,10 +266,18 @@ def main():
     ap.add_argument("--controls", default="64", help="comma-separated control SL numbers, e.g. 64,1,17")
     ap.add_argument("--mode", default="Quick", choices=["Quick", "Deep", "Normal"])
     ap.add_argument("--smoke", action="store_true", help="only test upload concurrency, skip real audits")
+    ap.add_argument("--file", default=None,
+                    help="evidence file every user uploads; vary it to measure the "
+                         "effect of file size (default: a sample from samples/)")
     ap.add_argument("--admin-user", default=None, help="existing admin account username, for the Phase 3 detailed report")
     ap.add_argument("--admin-pass", default=None, help="existing admin account password")
     ap.add_argument("--admin-totp-secret", default=None, help="existing admin account's raw base32 TOTP secret (not a live 6-digit code)")
     args = ap.parse_args()
+
+    global SAMPLE_FILE
+    SAMPLE_FILE = resolve_evidence_file(args.file)
+    print("Evidence file: %s (%.1f KB)"
+          % (os.path.basename(SAMPLE_FILE), os.path.getsize(SAMPLE_FILE) / 1024.0))
 
     control_ids = [int(x) for x in args.controls.split(",")]
 

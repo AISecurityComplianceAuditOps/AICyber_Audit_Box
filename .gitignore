@@ -64,3 +64,4 @@ docx_preview.html
 aicyberauditbox_bundle_*/
 aicyberauditbox-*.tar
 *.tar.enc
+qa/load/results/
