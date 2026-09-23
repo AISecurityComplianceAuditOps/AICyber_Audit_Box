@@ -5,6 +5,13 @@ import threading
 from contextlib import contextmanager
 
 class LLMPortPoolManager:
+    # Probing for the server's slot count: how many times, and how far apart.
+    # Sized from the measured worst case -- the 12B model answers 503 for about
+    # 41 seconds while loading -- with room to spare, and bounded so an absent
+    # server costs at most this many 5-second timeouts in total.
+    _LIMIT_MAX_ATTEMPTS = 12
+    _LIMIT_RETRY_AFTER_SEC = 20.0
+
     """Enterprise LLM Worker Port Pool & Control-Level Mutex Lock Manager.
 
     Manages pre-warmed LLM worker ports (e.g., 11434, 11435) with per-port mutex locking.
@@ -74,6 +81,8 @@ class LLMPortPoolManager:
         self._limit_per_port = _slots_per_port
         self._limit_is_explicit = bool(_env_limit)
         self._limit_checked = False
+        self._limit_attempts = 0
+        self._limit_last_attempt = 0.0
         self._limit_lock = threading.Lock()
         # The server's real slot count once known, or None. Recorded even when
         # an explicit limit means we do not act on it, because the audit
@@ -97,13 +106,33 @@ class LLMPortPoolManager:
         llama-server comes from the same entrypoint and sizes itself from the
         same hardware. A host that happens to have fewer slots falls back to
         that same internal queue.
+
+        RETRIED, because the usual reason for failure is temporary. Measured on
+        this machine: while llama-server loads its weights, /slots answers
+
+            HTTP 503  {"error":{"message":"Loading model",...}}
+
+        for 41 seconds with the 12B model. An audit started in that window is
+        exactly when a first probe happens, and a single attempt would mark the
+        count unknowable for the life of the process -- the app would sit at its
+        default for hours after the server was ready, with nothing to show the
+        measurement had been skipped. Attempts are capped and spaced so a
+        genuinely absent server costs a bounded number of short timeouts rather
+        than one per request.
         """
         if self._limit_checked:
             return
         with self._limit_lock:
             if self._limit_checked:
                 return
-            self._limit_checked = True          # one attempt, whatever happens
+            now = time.time()
+            if self._limit_attempts >= self._LIMIT_MAX_ATTEMPTS:
+                self._limit_checked = True      # give up, quietly and for good
+                return
+            if now - self._limit_last_attempt < self._LIMIT_RETRY_AFTER_SEC:
+                return                          # too soon; try on a later call
+            self._limit_attempts += 1
+            self._limit_last_attempt = now
             try:
                 # Imported here, as get_capacity_snapshot does: this module is
                 # imported during startup and must not depend on requests being
@@ -111,13 +140,25 @@ class LLMPortPoolManager:
                 import requests
                 r = requests.get(f"{self.ports[0]}/slots", timeout=5)
                 if r.status_code != 200:
+                    # 503 "Loading model" lands here. Not an answer, so not
+                    # final: the attempt counter above bounds the retrying.
                     return
-                server_slots = len(r.json() or [])
-                self._server_slot_count = server_slots or None
+                payload = r.json()
+                if not isinstance(payload, list):
+                    # While loading, the body is an error OBJECT. len() of a
+                    # dict counts its keys, so treating it as slots would read
+                    # {"error": {...}} as one slot and cap the whole appliance.
+                    return
+                server_slots = len(payload)
+                if server_slots <= 0:
+                    return
+                self._server_slot_count = server_slots
+                self._limit_checked = True      # a real answer; stop asking
             except Exception as e:
                 print(f"[PORT POOL] Could not read the server's slot count "
-                      f"({type(e).__name__}); staying at {self._limit_per_port} "
-                      f"per port.", flush=True)
+                      f"({type(e).__name__}, attempt {self._limit_attempts} of "
+                      f"{self._LIMIT_MAX_ATTEMPTS}); staying at "
+                      f"{self._limit_per_port} per port.", flush=True)
                 return
             if self._limit_is_explicit:
                 return                          # operator's number; only recorded
