@@ -54,10 +54,76 @@ class LLMPortPoolManager:
         # generous limit here — llama-server queues excess requests internally.
         # The resource guard's check_memory_pressure() is the real crash
         # protector, not this semaphore.
-        _slots_per_port = int(os.environ.get("MAX_LLM_CONNECTIONS", "32"))
+        _env_limit = os.environ.get("MAX_LLM_CONNECTIONS")
+        _slots_per_port = int(_env_limit) if _env_limit else 32
         self.port_locks = {port: threading.Semaphore(_slots_per_port) for port in self.ports}
+
+        # The default of 32 is a guess made before the server exists, and on a
+        # large machine it is the binding constraint rather than a generous one:
+        # measured on a customer box, llama-server sized itself to 49 slots from
+        # 125.64GB and 64 cores while this capped the app at 32, leaving a third
+        # of the hardware idle and queueing users who did not need to wait.
+        #
+        # The real number cannot be read here. This runs at import, when the LLM
+        # container is still loading 12.7GB of weights, so /slots would not
+        # answer and every probe would fall back to the same guess. It is read
+        # once instead, on the first acquire, by which time the server is up.
+        #
+        # An explicit MAX_LLM_CONNECTIONS is an operator decision and is never
+        # second-guessed.
+        self._limit_per_port = _slots_per_port
+        self._limit_is_explicit = bool(_env_limit)
+        self._limit_checked = False
+        self._limit_lock = threading.Lock()
+
         print(f"[PORT POOL INITIALIZED] Configured {len(self.ports)} LLM worker ports: {self.ports} "
-              f"({_slots_per_port} max concurrent connections per port)", flush=True)
+              f"({_slots_per_port} max concurrent connections per port"
+              f"{'' if _env_limit else ', pending the server\'s own slot count'})", flush=True)
+
+    def _match_server_slot_count(self):
+        """Raise the per-port limit to the server's slot count, once.
+
+        Only ever upward: a Semaphore's capacity grows by releasing extra
+        permits, and lowering it would strand requests already holding one. If
+        the server answers with fewer slots than we assumed, its own internal
+        queue handles the excess, which is what it did before this existed.
+
+        One port is asked and the answer applied to all of them: every
+        llama-server comes from the same entrypoint and sizes itself from the
+        same hardware. A host that happens to have fewer slots falls back to
+        that same internal queue.
+        """
+        if self._limit_checked or self._limit_is_explicit:
+            return
+        with self._limit_lock:
+            if self._limit_checked:
+                return
+            self._limit_checked = True          # one attempt, whatever happens
+            try:
+                # Imported here, as get_capacity_snapshot does: this module is
+                # imported during startup and must not depend on requests being
+                # importable at that moment.
+                import requests
+                r = requests.get(f"{self.ports[0]}/slots", timeout=5)
+                if r.status_code != 200:
+                    return
+                server_slots = len(r.json() or [])
+            except Exception as e:
+                print(f"[PORT POOL] Could not read the server's slot count "
+                      f"({type(e).__name__}); staying at {self._limit_per_port} "
+                      f"per port.", flush=True)
+                return
+            extra = server_slots - self._limit_per_port
+            if extra <= 0:
+                return
+            for lock in self.port_locks.values():
+                for _ in range(extra):
+                    lock.release()
+            old = self._limit_per_port
+            self._limit_per_port = server_slots
+            print(f"[PORT POOL] LLM server reports {server_slots} slot(s); raising the "
+                  f"per-port limit from {old} to {server_slots}. Set "
+                  f"MAX_LLM_CONNECTIONS to override.", flush=True)
 
     def _increment_queue_depth(self):
         """Atomically increments the queue depth counter and returns the new position."""
@@ -166,6 +232,9 @@ class LLMPortPoolManager:
 
         start_ts = time.time()
         leased_port = None
+
+        # First use: the LLM is up by now, so ask how many slots it really has.
+        self._match_server_slot_count()
 
         # Round-Robin port selection
         with self._pool_lock:
