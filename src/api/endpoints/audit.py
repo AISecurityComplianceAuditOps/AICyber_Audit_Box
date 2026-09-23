@@ -4221,7 +4221,29 @@ def api_export_token_benchmark(request: Request, session_id: Optional[str] = Non
     if session_id and session_id.lower() != "all":
         records = [r for r in records if str(r.get("session_id", "")).lower() == session_id.lower()]
 
-    # If session_id is specified, pull actual DB session findings to ensure 100% precision
+    # A session's figures come from what was measured when the audit ran, not
+    # from a reconstruction.
+    #
+    # This block used to rebuild the record out of the findings table, which
+    # holds no telemetry at all: Finding has no latency_sec, prompt_tokens or
+    # completion_tokens column, so every getattr fell through to its default and
+    # each control was published as exactly 252.0 seconds, 490 prompt tokens and
+    # 140 completion tokens. A six-control session reported 1512 seconds of
+    # latency that never happened, identical for every session and every
+    # control. extracted_text_chars was the constant 28809; scoping_mode came
+    # from a ternary whose two branches were the same string; and a session with
+    # no data produced a fully invented DEMO-BENCHMARK row that looked like a
+    # real measurement.
+    #
+    # Worse, it did this by DISCARDING the honest record: record_token_metrics()
+    # writes the real controls, latency, characters and mode when the run
+    # finishes, and this replaced it.
+    #
+    # An audit appliance must not publish measurements that were never taken.
+    # The recorded run is used as-is; the database contributes only facts it
+    # genuinely holds (evidence files on disk, finding verdicts as they stand
+    # after review); anything neither source has is left absent, so a reader can
+    # tell "not measured" from "zero".
     if session_id and session_id.lower() != "all":
         db = SessionLocal()
         try:
@@ -4230,80 +4252,70 @@ def api_export_token_benchmark(request: Request, session_id: Optional[str] = Non
                 if report:
                     findings = db.query(Finding).filter(Finding.report_id == report.id).all()
                     ev_files = db.query(EvidenceFile).filter(EvidenceFile.report_id == report.id).all()
-                    
-                    files_cnt = len(ev_files) if ev_files else 8
+
                     tot_bytes = 0
                     for ev in ev_files:
                         if ev.file_path and os.path.exists(ev.file_path):
                             tot_bytes += os.path.getsize(ev.file_path)
-                    if tot_bytes == 0: tot_bytes = 2549391
 
-                    ctrls_detail = []
-                    tot_p_toks = 0
-                    tot_c_toks = 0
-                    tot_lat = 0.0
-
-                    sc_mode = "Excel Upload Scope" if "excel" in (report.framework or "").lower() or "manual" in (report.framework or "").lower() else "Excel Upload Scope"
-
-                    if findings:
-                        for f in findings:
-                            p_t = int(getattr(f, "prompt_tokens", 490) or 490)
-                            c_t = int(getattr(f, "completion_tokens", 140) or 140)
-                            l_s = float(getattr(f, "latency_sec", 252.0) or 252.0)
-                            tot_p_toks += p_t
-                            tot_c_toks += c_t
-                            tot_lat += l_s
-
-                            ctrls_detail.append({
-                                "control_id": getattr(f, "control_id", "") or "",
-                                "control_name": getattr(f, "control_name", None) or getattr(f, "title", None) or getattr(f, "control_id", ""),
-                                "status": getattr(f, "status", None) or "COMPLIANT",
-                                "prompt_tokens": p_t,
-                                "completion_tokens": c_t,
-                                "latency_sec": l_s
-                            })
-
-                    db_rec = {
-                        "timestamp": str(report.created_at or datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
-                        "session_id": session_id,
-                        "folder_name": report.session_title or "src/aa audit evidence samples",
-                        "scoping_mode": sc_mode,
-                        "files_count": files_cnt,
-                        "file_size_kb": round(tot_bytes / 1024, 2),
-                        "file_size_mb": round(tot_bytes / (1024 * 1024), 3),
-                        "extracted_text_chars": 28809,
-                        "controls_audited_count": len(findings) if findings else 6,
-                        "prompt_input_tokens": tot_p_toks or 3060,
-                        "completion_output_tokens": tot_c_toks or 855,
-                        "total_tokens": (tot_p_toks + tot_c_toks) or 3915,
-                        "total_latency_seconds": tot_lat or 1524.0,
-                        "ai_model": "Gemma 4 (e4b)",
-                        "controls_detail": ctrls_detail
+                    # The same resolution the compliance score uses, from the
+                    # one module that owns this vocabulary -- not a second
+                    # counting rule that can drift from it.
+                    def _verdict(f):
+                        return (str(getattr(f, "final_result", "") or "").strip().upper()
+                                or _derive_final_result(getattr(f, "status", None), None))
+                    verdicts = {
+                        "compliant_count": sum(1 for f in findings if _verdict(f) == "COMPLIANT"),
+                        "non_compliant_count": sum(1 for f in findings if _verdict(f) == "NON_COMPLIANT"),
+                        "out_of_scope_count": sum(
+                            1 for f in findings
+                            if "SCOPE" in (str(getattr(f, "status", "") or "")).upper()),
                     }
+                    # Per-control rows carry what a finding actually stores. The
+                    # token and latency columns are absent rather than filled
+                    # with a constant: the model never recorded them per control.
+                    ctrls_detail = [{
+                        "control_id": getattr(f, "control_id", "") or "",
+                        "control_name": (getattr(f, "control_name", None)
+                                         or getattr(f, "control_id", "") or ""),
+                        "status": getattr(f, "status", None) or "",
+                    } for f in findings]
+
+                    measured = dict(records[0]) if records else None
+                    if measured is not None:
+                        # Every measured figure is kept. Only what the database
+                        # holds more currently -- evidence on disk, verdicts
+                        # after the auditor has reviewed them -- is refreshed.
+                        db_rec = measured
+                        if ev_files:
+                            db_rec["files_count"] = len(ev_files)
+                        if tot_bytes:
+                            db_rec["file_size_kb"] = round(tot_bytes / 1024, 2)
+                            db_rec["file_size_mb"] = round(tot_bytes / (1024 * 1024), 3)
+                        if findings:
+                            db_rec.update(verdicts)
+                        db_rec["controls_detail"] = ctrls_detail
+                    else:
+                        # No telemetry was recorded for this session: an audit
+                        # from before tracking existed, or one that never
+                        # finished. Report what the database holds and say
+                        # plainly that the rest was not measured.
+                        db_rec = {
+                            "timestamp": str(report.created_at or ""),
+                            "session_id": session_id,
+                            "folder_name": report.session_title or "",
+                            "scoping_mode": report.framework or "",
+                            "files_count": len(ev_files),
+                            "file_size_kb": round(tot_bytes / 1024, 2),
+                            "file_size_mb": round(tot_bytes / (1024 * 1024), 3),
+                            "controls_audited_count": len(findings),
+                            "telemetry_recorded": False,
+                            "controls_detail": ctrls_detail,
+                        }
+                        db_rec.update(verdicts)
                     records = [db_rec]
         finally:
             db.close()
-
-    if not records:
-        records = [{
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "session_id": session_id or "DEMO-BENCHMARK-001",
-            "folder_name": "src/aa audit evidence samples",
-            "scoping_mode": "Excel Upload Scope",
-            "files_count": 8,
-            "file_size_kb": 2489.64,
-            "file_size_mb": 2.43,
-            "extracted_text_chars": 28809,
-            "controls_audited_count": 6,
-            "prompt_input_tokens": 3060,
-            "completion_output_tokens": 855,
-            "total_tokens": 3915,
-            "total_latency_seconds": 1524.0,
-            "ai_model": "Gemma 4 (e4b)",
-            "compliant_count": 5,
-            "non_compliant_count": 1,
-            "out_of_scope_count": 0
-        }]
 
     short_sid = session_id[:8] if session_id else "full"
     target_filename = f"audit_token_benchmark_{short_sid}.xlsx"

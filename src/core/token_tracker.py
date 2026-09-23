@@ -280,12 +280,17 @@ def generate_excel_benchmark_report(records: list, output_path: str = BENCHMARK_
 
     # Gather metadata from records
     first_r = records[0] if records else {}
-    folder_name = first_r.get("folder_name", "src/aa audit evidence samples")
-    files_cnt = first_r.get("files_count", 8)
-    file_size_mb = first_r.get("file_size_mb", 2.43)
-    file_size_kb = first_r.get("file_size_kb", 2489.64)
-    ai_model = first_r.get("ai_model", "Gemma 4 (e4b)")
-    scoping_mode_str = first_r.get("scoping_mode", "Excel Upload Scope")
+    # Defaults say "not recorded", never a plausible-looking number. These used
+    # to read 8 files, 2.43 MB, 2489.64 KB, "Gemma 4 (e4b)" and "Excel Upload
+    # Scope" -- so a session missing any of them published someone else's
+    # figures as its own, with nothing to show they were invented. A blank is
+    # honest; a number is a claim.
+    folder_name = first_r.get("folder_name") or "Not recorded"
+    files_cnt = first_r.get("files_count", "Not recorded")
+    file_size_mb = first_r.get("file_size_mb", "Not recorded")
+    file_size_kb = first_r.get("file_size_kb", "Not recorded")
+    ai_model = first_r.get("ai_model") or "Not recorded"
+    scoping_mode_str = first_r.get("scoping_mode") or "Not recorded"
 
     checklist_file = "Audit checklist and evidence files.xlsx" if "excel" in scoping_mode_str.lower() or "manual" in scoping_mode_str.lower() else "N/A (AI Auto-Scoping)"
 
@@ -305,8 +310,8 @@ def generate_excel_benchmark_report(records: list, output_path: str = BENCHMARK_
     folder_row_data = [
         folder_name,
         files_cnt,
-        f"{file_size_mb} MB",
-        f"{file_size_kb} KB",
+        f"{file_size_mb} MB" if isinstance(file_size_mb, (int, float)) else file_size_mb,
+        f"{file_size_kb} KB" if isinstance(file_size_kb, (int, float)) else file_size_kb,
         ai_model,
         checklist_file
     ]
