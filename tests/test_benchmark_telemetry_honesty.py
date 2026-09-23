@@ -137,3 +137,31 @@ def test_the_admin_table_still_reads_the_fields_it_always_did():
     js = _src("src", "api", "static", "app.js")
     for field in ("total_latency_seconds", "files_count", "extracted_text_chars"):
         assert field in js, f"the admin table no longer shows {field}"
+
+
+# ── the scope mode is the scope mode ─────────────────────────────────────────
+
+def _label(scoping_mode, audit_mode):
+    from src.core.bg_worker import _scoping_label
+    return _scoping_label(scoping_mode, audit_mode)
+
+
+@pytest.mark.parametrize("scope,depth,expected", [
+    ("MANUAL", "Quick", "Excel / Manual Scoping"),
+    ("MANUAL", "Deep", "Excel / Manual Scoping"),
+    ("EXCEL", "Quick", "Excel / Manual Scoping"),
+    ("CUSTOMIZE", "Quick", "Checklist (Document Q&A)"),
+    ("CUSTOMIZE", "Deep", "Checklist (Document Q&A)"),
+])
+def test_the_recorded_mode_is_the_scope_not_the_depth(scope, depth, expected):
+    """A MANUAL-scoped Quick run recorded itself as "AI Auto-Scoping"."""
+    assert _label(scope, depth) == expected
+
+
+@pytest.mark.parametrize("depth,expected", [
+    ("Quick", "AI Auto-Scoping"),
+    ("Deep", "Excel / Manual Scoping"),
+])
+def test_a_run_with_no_scope_mode_keeps_the_old_label(depth, expected):
+    """Unchanged for records already on disk, which carry no scope mode."""
+    assert _label(None, depth) == expected

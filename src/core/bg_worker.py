@@ -888,6 +888,35 @@ def get_global_resumable_checkpoint():
         finally:
             db.close()
 
+def _scoping_label(scoping_mode, audit_mode):
+    """How a run's SCOPE is filed in the telemetry record.
+
+    From the scope mode -- not from audit_mode, which is the DEPTH (Quick or
+    Deep). Reading depth here filed every Quick run as "AI Auto-Scoping" and
+    every Deep run as "Excel / Manual Scoping", whatever scope the auditor
+    actually chose. Confirmed by running one: a MANUAL-scoped Quick audit
+    recorded itself as AI Auto-Scoping while the worker's own log line above it
+    read "[MANUAL/EXCEL SCOPE] ... without auto-scoping pre-filter".
+
+    The vocabulary is unchanged, so these records stay comparable with the ones
+    already on disk, and a run carrying no scope mode keeps the old depth-based
+    guess rather than being relabelled retroactively.
+    """
+    scope_str = str(scoping_mode or "").strip().upper()
+    if scope_str.startswith("CUSTOM"):
+        return "Checklist (Document Q&A)"
+    if scope_str.startswith("EXCEL") or scope_str.startswith("MANUAL"):
+        return "Excel / Manual Scoping"
+    if scope_str:
+        return scope_str
+    mode_str = str(audit_mode).lower()
+    if "excel" in mode_str or "manual" in mode_str:
+        return "Excel / Manual Scoping"
+    if "auto" in mode_str or "quick" in mode_str:
+        return "AI Auto-Scoping"
+    return "Excel / Manual Scoping"
+
+
 def generate_ollama_findings(context, file_names_list, selected_sls, model_choice, bg_key=None, batch_size=None, checkpoint_session_id=None, audit_mode="Deep", custom_docs=None, custom_evidence=None, file_registry=None, already_done_ids=None, username=None, scoping_mode=None):
     os.environ["RAG_RERANK_MODE"] = "quick" if "quick" in str(audit_mode).lower() else "deep"
     llm_model = _resolve_llm_model(model_choice)
@@ -1952,13 +1981,7 @@ Return format: ["topic1", "topic2", ...]"""
         avg_secs = round(avg_lat_sec % 60, 1)
         avg_lat_str = f"{avg_mins}m {avg_secs}s" if avg_mins > 0 else f"0m {avg_secs}s"
         
-        mode_str = str(audit_mode).lower()
-        if "excel" in mode_str or "manual" in mode_str:
-            scoping_label = "Excel / Manual Scoping"
-        elif "auto" in mode_str or "quick" in mode_str:
-            scoping_label = "AI Auto-Scoping"
-        else:
-            scoping_label = "Excel / Manual Scoping"
+        scoping_label = _scoping_label(scoping_mode, audit_mode)
 
         record_token_metrics(
             session_id=checkpoint_session_id or bg_key or "SESSION-LATEST",
