@@ -90,9 +90,14 @@ class LLMPortPoolManager:
         # connections did not ask to distort the machine's stated capacity.
         self._server_slot_count = None
 
+        # Built outside the f-string on purpose. Written inline it needed an
+        # escaped apostrophe, and a backslash inside an f-string expression is a
+        # SyntaxError on Python 3.11 -- the version the shipped image runs --
+        # while 3.12 onwards accepts it (PEP 701). It therefore passed every
+        # test on a 3.14 workstation and crashed the container on import.
+        _pending = "" if _env_limit else ", pending the server's own slot count"
         print(f"[PORT POOL INITIALIZED] Configured {len(self.ports)} LLM worker ports: {self.ports} "
-              f"({_slots_per_port} max concurrent connections per port"
-              f"{'' if _env_limit else ', pending the server\'s own slot count'})", flush=True)
+              f"({_slots_per_port} max concurrent connections per port{_pending})", flush=True)
 
     def _match_server_slot_count(self):
         """Raise the per-port limit to the server's slot count, once.
