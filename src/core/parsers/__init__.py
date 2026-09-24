@@ -78,6 +78,16 @@ def parse_tool_file(filename: str, content: str, framework: str = "") -> Tuple[L
     _fw = str(framework or "").strip().lower()
     _is_vapt_framework = _fw == "vapt"
 
+    # An XML scan arrives as a readable summary with the original document
+    # appended under this marker (see doc_parsers' .xml branch). The summary is
+    # for retrieval; the parsers recognise a scan by its SCHEMA, and they need
+    # the document itself -- NessusParser looks for NessusClientData_v2, and its
+    # XML reader cannot start on a page of prose. Splitting here keeps that one
+    # concern in one place instead of teaching every parser to skip a preamble.
+    _RAW_XML_MARKER = "\n[RAW XML]\n"
+    if content and _RAW_XML_MARKER in content:
+        content = content.split(_RAW_XML_MARKER, 1)[1]
+
     # ── Stage 1: Binary document fast-path (PDF / DOCX / images) ─────────────
     # Route to PQCParser FIRST for PQC-relevant binary formats ONLY when the
     # active framework is PQC (or unknown).  When the caller is running a VAPT

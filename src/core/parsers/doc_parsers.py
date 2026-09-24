@@ -23,6 +23,11 @@ _GRID_ROW_OVERLAP = 0.35      # share of height two fragments must share to be
                               # on the same visual line
 _GRID_ROW_GAP_FACTOR = 1.6    # a gap this many times the median ends a row
 
+# How much raw XML is appended after the structured summary so the tool parsers
+# can still recognise a scan by its schema. Large enough for any ordinary Burp,
+# ZAP or Nessus export; past it the summary alone is what the file is for.
+_XML_RAW_APPEND_MAX = 8 * 1024 * 1024
+
 
 def _grid_rows(cells):
     """Rebuild a table from OCR fragments, or None if the page holds no grid.
@@ -644,8 +649,19 @@ def extract_text(f):
         except Exception as e:
             return f"[Error extracting ZIP {f.name}: {e}]"
 
-    # ── Image files (PNG / JPG / JPEG) ──────────────────────────────────────
-    if name_lower.endswith((".png", ".jpg", ".jpeg")):
+    # ── Image files ─────────────────────────────────────────────────────────
+    #
+    # WEBP, BMP, TIFF and TIF are here because bg_worker already treats them as
+    # evidence images -- it lists them in three places -- while this only
+    # accepted PNG and JPEG. An unlisted extension falls through to the Word
+    # branch at the end of this function, so uploading a .tiff scan of a
+    # findings table answered
+    #
+    #     [Error parsing file report.tiff: File is not a zip file]
+    #
+    # and the audit ran on nothing. TIFF is what a scanner or a fax produces,
+    # which is exactly the evidence an auditor is handed.
+    if name_lower.endswith((".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif")):
         try:
             import PIL.Image
             import numpy as np
@@ -1065,7 +1081,11 @@ def extract_text(f):
         except Exception as e:
             return f"[Error parsing PowerPoint file {f.name}: {e}]"
 
-    elif name_lower.endswith((".txt", ".nessus", ".gnmap", ".nmap", ".log")):
+    # .md is here because an unlisted extension falls through to the Word branch
+    # at the end of this function and answers "File is not a zip file". Markdown
+    # is plain text; a scanner's notes or a hand-written finding list arrives as
+    # one often enough to be worth the two words it costs.
+    elif name_lower.endswith((".txt", ".nessus", ".gnmap", ".nmap", ".log", ".md", ".markdown")):
         # Plain-text VAPT scanner exports — fast path, no structure needed.
         try:
             txt_content = f.read().decode("utf-8", errors="ignore")
@@ -1359,11 +1379,33 @@ def extract_text(f):
                     "chunk_id": ""
                 }))
             _ingested_chunks_cache[_cache_key(f.name)] = xml_chunks
+
+            # The raw XML goes back on the end, because two different consumers
+            # read this text and they need opposite things. The structured
+            # summary above is for retrieval -- field-level tokens instead of
+            # angle-bracket soup -- and the chunks written to the store keep
+            # only that. The tool parsers, though, recognise a scan by its
+            # schema: NessusParser looks for NessusClientData_v2 or <ReportItem.
+            # Digesting the XML away hid that, so the SAME Nessus export gave a
+            # finding when it was named .nessus and nothing at all when it was
+            # named .xml -- which is how Burp, ZAP and Nessus itself all export.
+            #
+            # Capped, because a Nessus XML can run to tens of megabytes and the
+            # summary alone is what a large one is for.
+            if xml_bytes and len(xml_bytes) <= _XML_RAW_APPEND_MAX:
+                try:
+                    raw = xml_bytes.decode("utf-8", errors="ignore")
+                except Exception:
+                    raw = ""
+                if raw.strip():
+                    return structured_text + "\n\n[RAW XML]\n" + raw
             return structured_text
         except Exception as e:
             return f"[Error parsing XML file {f.name}: {e}]"
 
-    elif name_lower.endswith(".json"):
+    # .sarif is JSON: the format every modern code scanner emits (CodeQL,
+    # Semgrep, Trivy's sarif output). It fell through to the Word branch.
+    elif name_lower.endswith((".json", ".sarif")):
         # ── Smart JSON flattener: Trivy / ZAP JSON / generic nested reports ──
         # Recursively flattens nested JSON into "path.to.key: value" lines so the
         # LLM retriever sees CVE IDs, severities, and fix versions as plain tokens
