@@ -2585,7 +2585,27 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
                 except Exception:
                     ftext = ""
 
-            actionable, info = parse_tool_file(fname, ftext or "", framework=_dispatch_framework)
+            # A PDF's ruled tables, read from the page geometry and handed to
+            # the parsers alongside the text. Built into a separate variable so
+            # ftext -- and file_registry, and everything downstream of it -- is
+            # exactly what it was; only the parser dispatch sees the rows.
+            #
+            # A findings table does not survive either text extractor this
+            # worker uses: a real report's rows came out with titles cut to one
+            # word and a CVSS of 17.0 read from an IP address beside it.
+            _parse_text = ftext or ""
+            if fname_lower.endswith(".pdf") and fd.get("bytes"):
+                try:
+                    from src.core.parsers.doc_parsers import extract_pdf_table_rows
+                    from src.core.parsers.pentest_report_parser import PDF_TABLES_MARKER
+                    _rows = extract_pdf_table_rows(fd["bytes"])
+                    if _rows:
+                        _parse_text = _parse_text + PDF_TABLES_MARKER + "\n".join(_rows)
+                except Exception as _tbl_err:
+                    print(f"[VAPT] PDF table extraction skipped for '{fname}': "
+                          f"{type(_tbl_err).__name__}", flush=True)
+
+            actionable, info = parse_tool_file(fname, _parse_text, framework=_dispatch_framework)
 
 
             # parse_tool_file's second return value differs by parser: a list of

@@ -22,11 +22,152 @@ _GRID_COL_GAP = 0.02          # x-corridor separating one column of cells
 _GRID_ROW_OVERLAP = 0.35      # share of height two fragments must share to be
                               # on the same visual line
 _GRID_ROW_GAP_FACTOR = 1.6    # a gap this many times the median ends a row
+_GRID_CELL_GAP = 0.015        # a word gap this wide inside one doctr line is a
+                              # cell boundary (measured: 0.003-0.008 within a
+                              # cell, 0.022-0.030 between cells)
 
 # How much raw XML is appended after the structured summary so the tool parsers
 # can still recognise a scan by its schema. Large enough for any ordinary Burp,
 # ZAP or Nessus export; past it the summary alone is what the file is for.
 _XML_RAW_APPEND_MAX = 8 * 1024 * 1024
+
+
+_URLISH_TAIL = re.compile(r"(://|\d$|[./:=?&_-]$)")
+
+
+def _join_cell_lines(text):
+    """One table cell's wrapped lines, rejoined the way they were written.
+
+    A PDF wraps a cell wherever the column runs out, including in the middle of
+    a URL: "https://172.21.13" / "1.47:9007" is one address, 172.21.131.47,
+    not two words. Joined with a space it became a host that does not exist.
+    Words wrap between words and are rejoined with a space; a line that ends
+    inside a URL or a number and continues with a lower-case letter, a digit or
+    punctuation is rejoined without one.
+    """
+    lines = [l.strip() for l in str(text or "").splitlines() if l.strip()]
+    if not lines:
+        return ""
+    out = lines[0]
+    for nxt in lines[1:]:
+        last_token = out.split()[-1] if out.split() else ""
+        in_url = ("://" in last_token) or bool(_URLISH_TAIL.search(last_token))
+        if in_url and nxt[:1] and (nxt[0].islower() or nxt[0].isdigit() or nxt[0] in "/._:-"):
+            out += nxt
+        else:
+            out += " " + nxt
+    return out
+
+
+def extract_pdf_table_rows(pdf_bytes):
+    """Every ruled table in a PDF, one logical row per line, cells split by " | ".
+
+    FOR THE VAPT PATH ONLY. extract_text() is what the ISO worker hands to the
+    model and to the retrieval store, so it is left exactly as it was; this is
+    called separately by the technical-findings worker.
+
+    WHY IT EXISTS
+
+    A native-text PDF gives a table back as text in reading order, and a wrapped
+    cell does not survive that. A real report's findings table came out of the
+    two extractors the worker uses as
+
+        pdfplumber:  1. Cleartext Low (CVSS https://172.21.13 CWE-319 Closed
+                     Transmission of Score: 2.0) 1.47:9007 Transmission of
+        pypdf:       S. No Observation / Severity Affected / IP/URL/Applicat /
+                     ion etc. / CVE/CWE Final / Status / (Open / / Close)
+
+    -- a title cut to its first word ("Cleartext"), a CVSS of 17.0 read out of
+    the IP address, and a header split over eight lines that no parser could
+    recognise. pdfplumber's table reader uses the ruling lines instead, and
+    returns "Cleartext Transmission of Phone Numbers" whole.
+
+    Its one quirk is handled here: a cell that wraps inside a coloured or
+    sub-ruled box comes back as extra rows with an empty first column. Those
+    are continuations, and are folded into the row above column by column --
+    including across a page break, where a row's last lines land at the top of
+    the next page.
+    """
+    try:
+        import pdfplumber
+    except Exception:
+        return []
+    logical = []
+    try:
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            for page in pdf.pages:
+                try:
+                    tables = page.extract_tables() or []
+                except Exception:
+                    continue
+                for table in tables:
+                    if not table or len(table) < 2:
+                        continue
+                    for raw in table:
+                        cells = [c if c is not None else "" for c in raw]
+                        if not any(str(c).strip() for c in cells):
+                            continue
+                        first = str(cells[0]).strip()
+                        if not first and logical:
+                            # A continuation: fold into the row above.
+                            prev = logical[-1]
+                            width = max(len(prev), len(cells))
+                            prev.extend([""] * (width - len(prev)))
+                            for i, c in enumerate(cells):
+                                c = str(c).strip()
+                                if c:
+                                    prev[i] = (prev[i] + "\n" + c) if prev[i] else c
+                            continue
+                        logical.append([str(c) for c in cells])
+    except Exception:
+        return []
+
+    rows = []
+    for cells in logical:
+        parts = [_join_cell_lines(c) for c in cells]
+        parts = [p for p in parts if p]
+        if len(parts) >= 2:
+            rows.append(" | ".join(parts))
+    return rows
+
+
+def _split_line_into_cells(line, y0, y1):
+    """One doctr line as the table cells it actually spans.
+
+    doctr groups words into a line by proximity, and in a table the gap between
+    two cells is small enough that it often merges them. On a real report,
+    "CWE-310" and "configure the" came back as one line, so the second half of
+    the recommendation landed in the CWE column and the report's own advice was
+    published as "configure the Properly hash" instead of "Properly configure
+    the hash". Every word carries its own position, and the gap between cells
+    (0.022-0.030 of the width) is several times the gap between words of one
+    cell (0.003-0.008), so the line is cut where the gap is a cell's.
+    """
+    words = [w for w in line.get("words", []) if w.get("value")]
+    if not words:
+        return []
+    # Without per-word positions there is nothing to cut on: keep the line as
+    # one cell, exactly as the unsplit path does. This runs on every OCR line,
+    # so a word missing its geometry must degrade, never raise.
+    if not all(isinstance(w.get("geometry"), (list, tuple)) and len(w["geometry"]) == 2
+               for w in words):
+        (lx0, _ly0), (lx1, _ly1) = line.get("geometry", ((0.0, 0.0), (1.0, 1.0)))
+        return [(lx0, lx1, y0, y1, " ".join(w["value"] for w in words))]
+    out, cur = [], [words[0]]
+    for prev, nxt in zip(words, words[1:]):
+        gap = nxt["geometry"][0][0] - prev["geometry"][1][0]
+        if gap > _GRID_CELL_GAP:
+            out.append(cur)
+            cur = [nxt]
+        else:
+            cur.append(nxt)
+    out.append(cur)
+    cells = []
+    for grp in out:
+        cx0 = grp[0]["geometry"][0][0]
+        cx1 = grp[-1]["geometry"][1][0]
+        cells.append((cx0, cx1, y0, y1, " ".join(w["value"] for w in grp)))
+    return cells
 
 
 def _grid_rows(cells):
@@ -229,6 +370,7 @@ class _DocTRReaderAdapter:
         for page in exported.get("pages", []):
             page_lines = []
             page_cells = []
+            split_cells = []
             for block in page.get("blocks", []):
                 for line in block.get("lines", []):
                     words = [w.get("value", "") for w in line.get("words", []) if w.get("value")]
@@ -237,6 +379,7 @@ class _DocTRReaderAdapter:
                     (x0, y0), (x1, y1) = line.get("geometry", ((0.0, 0.0), (1.0, 1.0)))
                     page_lines.append((x0, x1, y0, " ".join(words)))
                     page_cells.append((x0, x1, y0, y1, " ".join(words)))
+                    split_cells.extend(_split_line_into_cells(line, y0, y1))
             # Columns are emitted one after another; anything else keeps the
             # plain top-to-bottom order this reader has always used.
             columns = _line_columns(page_lines)
@@ -257,6 +400,13 @@ class _DocTRReaderAdapter:
                 # prose still comes out exactly as it always has.
                 grid = _grid_rows(page_cells)
                 if grid:
+                    # Now that the page is known to be a table, re-cut doctr's
+                    # lines into the cells they span. Only here: justified prose
+                    # stretches its word gaps, and splitting it could manufacture
+                    # the columns that make prose look like a grid.
+                    finer = _grid_rows(split_cells)
+                    if finer and len(finer) == len(grid):
+                        grid = finer
                     lines_out.extend(grid)
                 else:
                     lines_out.extend(t for _x0, _x1, _y, t in page_lines)

@@ -12,7 +12,7 @@ from .burp_parser import BurpParser
 from .qualys_parser import QualysParser
 from .trivy_parser import TrivyParser
 from .kali_parser import KaliParser
-from .pentest_report_parser import PentestReportParser
+from .pentest_report_parser import PentestReportParser, PDF_TABLES_MARKER
 from .pqc_parser import PQCParser, pqc_extract_text, _PQC_BINARY_EXTENSIONS
 
 ALL_PARSERS = [
@@ -88,6 +88,15 @@ def parse_tool_file(filename: str, content: str, framework: str = "") -> Tuple[L
     if content and _RAW_XML_MARKER in content:
         content = content.split(_RAW_XML_MARKER, 1)[1]
 
+    # A PDF's ruled tables, rebuilt from the page geometry by the VAPT worker
+    # (doc_parsers.extract_pdf_table_rows) and appended under this marker. Only
+    # the report-table parser reads them. The scanner parsers recognise their
+    # own export by its structure and must never see these rows: appended to
+    # the end of a Burp PDF they would be read as part of its last issue.
+    _pdf_tables = ""
+    if content and PDF_TABLES_MARKER in content:
+        content, _pdf_tables = content.split(PDF_TABLES_MARKER, 1)
+
     # ── Stage 1: Binary document fast-path (PDF / DOCX / images) ─────────────
     # Route to PQCParser FIRST for PQC-relevant binary formats ONLY when the
     # active framework is PQC (or unknown).  When the caller is running a VAPT
@@ -138,8 +147,11 @@ def parse_tool_file(filename: str, content: str, framework: str = "") -> Tuple[L
         if not (_is_vapt_framework and p.__class__.__name__ == "PQCParser")
     ]
     for p in _parsers:
-        if p.can_parse(filename, content):
-            res = p.parse(filename, content)
+        _content = content
+        if _pdf_tables and isinstance(p, PentestReportParser):
+            _content = content + PDF_TABLES_MARKER + _pdf_tables
+        if p.can_parse(filename, _content):
+            res = p.parse(filename, _content)
             findings, extra = res if isinstance(res, tuple) else (res, None)
             # A parser that returned ONLY informational findings has still read
             # the file, and bg_worker uses both lists (`actionable + info`).

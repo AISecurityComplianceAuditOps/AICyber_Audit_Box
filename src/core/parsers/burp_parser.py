@@ -210,6 +210,80 @@ def _clean_poc_title(raw: str) -> str:
     return t.strip()
 
 
+# ── Section anchoring for Burp PDF exports ───────────────────────────────────
+#
+# A Burp PDF opens every issue with its heading followed by the page's
+# navigation links, and every instance of a multi-instance issue the same way:
+#
+#     1. SQL injection                    <- the ISSUE
+#     Next
+#     There are 3 instances of this issue:  ... Issue background ...
+#     Issue remediation ... Vulnerability classifications  CWE-89 ...
+#     1.1. https://.../catalog/filter [category parameter]   <- an INSTANCE
+#     Previous Next
+#     Summary  Severity: High  Confidence: Firm  ... Issue detail ...
+#
+# The table of contents lists the same headings WITHOUT the navigation line,
+# which is what tells the two apart.
+#
+# Findings used to be titled from the nearest URL in the 600 characters BEFORE
+# their severity line. For an issue with no instances of its own, that text
+# belonged to the previous issue, so on a real report XML external entity
+# injection was published as "/catalog/search/2 [term parameter]", client-side
+# template injection as "/catalog [Referer HTTP header]", and the vulnerable
+# JavaScript dependency as "/catalog/product". The wrong title then also missed
+# its own CVSS rule, so the score was wrong too.
+#
+# And because the remediation and the CWE list sit in the ISSUE's section, not
+# in each instance's, 25 of 35 findings on that report had no remediation and
+# 34 had no CWE, though the report states both for every issue.
+_BURP_ISSUE_RE = re.compile(r"(?m)^\s*(\d{1,3})\.\s+(\S[^\n]{1,160}?)\s*\n\s*(?:Previous|Next)\b")
+_BURP_INSTANCE_RE = re.compile(
+    r"(?m)^\s*(\d{1,3})\.(\d{1,3})\.\s+(\S[^\n]{0,300}?)\s*\n\s*(?:Previous|Next)\b")
+_BURP_REMEDIATION_RE = re.compile(
+    r"Issue remediation\s*\n(.*?)(?=\n\s*(?:References|Vulnerability classifications"
+    r"|Request\s+1|Response\s+1)\b|\Z)", re.DOTALL | re.IGNORECASE)
+_BURP_CLASSIFICATIONS_RE = re.compile(
+    r"Vulnerability classifications\s*\n(.*?)(?=\n\s*(?:Request\s+1|Response\s+1|Request\b|"
+    r"\d{1,3}\.\d{1,3}\.\s)|\Z)", re.DOTALL | re.IGNORECASE)
+_CWE_RE = re.compile(r"\bCWE-(\d{1,5})\b", re.IGNORECASE)
+
+# CVSS v3 bands. The report's own severity is authoritative; an estimated score
+# is kept inside the band that severity names so the two never contradict.
+_SEVERITY_BANDS = {
+    "CRITICAL": (9.0, 10.0),
+    "HIGH": (7.0, 8.9),
+    "MEDIUM": (4.0, 6.9),
+    "LOW": (0.1, 3.9),
+    "INFO": (0.0, 0.0),
+}
+
+
+def _burp_sections(content):
+    """(issues, instances) located by their navigation-anchored headings.
+
+    issues:    [(start, num, title)]
+    instances: [(start, issue_num, url_and_param)]
+    Returns ([], []) when the document is not shaped like a Burp PDF, so the
+    caller keeps its previous behaviour for every other export.
+    """
+    issues = [(m.start(), m.group(1), m.group(2).strip())
+              for m in _BURP_ISSUE_RE.finditer(content)
+              if not m.group(2).strip().lower().startswith(("http", "/"))]
+    instances = [(m.start(), m.group(1), m.group(3).strip())
+                 for m in _BURP_INSTANCE_RE.finditer(content)]
+    return issues, instances
+
+
+def _clamp_to_band(score, severity):
+    lo, hi = _SEVERITY_BANDS.get(severity, (0.0, 10.0))
+    try:
+        s = float(score)
+    except (TypeError, ValueError):
+        return score
+    return round(min(max(s, lo), hi), 1)
+
+
 class BurpParser(BaseParser):
     def can_parse(self, filename: str, content: str) -> bool:
         """Content-signature based detection — 0% filename keyword dependency.
@@ -234,11 +308,22 @@ class BurpParser(BaseParser):
         # large embedded <style> block sits before it. The same risk applies to
         # any styled HTML scanner export, so no fixed prefix window is safe here.
         sample = content.lower()
-        if ("burp scanner" in sample or "burp suite" in sample
-                or "owasp zap" in sample or "<issues" in sample
+        # STRUCTURE, not a tool's name. This used to accept any document that
+        # merely said "burp suite" or "owasp zap" -- and every human-written
+        # pentest report names the tools it used. A real report listing
+        #
+        #     6. Auditing Tools:  1. Nmap  2. Kali Linux  3. Burp Suite
+        #
+        # was claimed as a Burp export, and its six real findings were replaced
+        # by one invented "VAPT Finding" rated LOW. Only a Burp or ZAP export
+        # itself carries these section markers; a report ABOUT a test does not.
+        if ("<issues" in sample
                 or "issue background" in sample
-                or "issue detail" in sample or "portswigger.net" in sample
-                or "burp collaborator" in sample):
+                or "issue detail" in sample
+                or "burp collaborator" in sample
+                or "portswigger.net" in sample
+                or "<owaspzapreport" in sample
+                or "<alertitem" in sample):
             return True
         return False
 
@@ -599,6 +684,27 @@ class BurpParser(BaseParser):
 
         CVE_RE = re.compile(r'CVE-\d{4}-\d{4,7}', re.IGNORECASE)
 
+        # Where each issue and instance sits, so a finding is named after the
+        # section it is actually in (see _burp_sections).
+        _issues, _instances = _burp_sections(content)
+        _issue_bounds = []
+        for k, (start, num, ttl) in enumerate(_issues):
+            end = _issues[k + 1][0] if k + 1 < len(_issues) else len(content)
+            first_inst = min((s for s, n, _u in _instances if n == num and start < s < end),
+                             default=end)
+            _issue_bounds.append((start, end, first_inst, num, ttl))
+
+        def _section_of(pos):
+            for start, end, first_inst, num, ttl in _issue_bounds:
+                if start <= pos < end:
+                    return start, end, first_inst, num, ttl
+            return None
+
+        def _instance_of(pos, sec):
+            start, end, _fi, num, _t = sec
+            hits = [(s, u) for s, n, u in _instances if n == num and start <= s <= pos < end]
+            return hits[-1][1] if hits else None
+
         if sev_matches:
             for i, sm in enumerate(sev_matches):
                 next_start = sev_matches[i+1].start() if i+1 < len(sev_matches) else len(content)
@@ -638,6 +744,21 @@ class BurpParser(BaseParser):
                         cat_num = m_cat[-1].group('cat_num')
                         title = cat_map.get(cat_num, m_cat[-1].group('cat').strip())
 
+                # The section this severity line physically sits in overrides
+                # the guesses above, which read the previous issue's text.
+                _sec = _section_of(sm.start())
+                if _sec is not None:
+                    _inst = _instance_of(sm.start(), _sec)
+                    if _inst:
+                        target = _inst
+                        title = f"{_sec[4]} ({_inst})"
+                    else:
+                        title = _sec[4]
+                        # No instance heading: the URL found by the lookback
+                        # belonged to the previous issue. Let this finding's
+                        # own Host and Path lines below supply the target.
+                        target = 'Web Application Endpoint'
+
                 # Severity & Confidence
                 raw_sev = sm.group('sev').upper()
                 conf_m = re.search(r'Confidence\s*[:\-]\s*(Certain|Firm|Tentative)', body_text, re.IGNORECASE)
@@ -659,10 +780,14 @@ class BurpParser(BaseParser):
                 else: severity = "INFO"
 
                 score, cvss_vector = self._calculate_score_and_vector(title, raw_sev, raw_conf)
-                if score >= 9.0: severity = "CRITICAL"
-                elif score >= 7.0: severity = "HIGH"
-                elif score >= 4.0: severity = "MEDIUM"
-                elif score > 0.0: severity = "LOW"
+                # The report's severity stands. This used to be recomputed from
+                # the estimated score, so a finding Burp rated High came out
+                # Critical and one it rated Low came out Medium -- the tool
+                # contradicting the evidence it was reading, on a customer's
+                # report. Burp gives no CVSS; the score is an estimate for the
+                # vulnerability class, kept inside the band the report's own
+                # severity names so the two can never disagree.
+                score = _clamp_to_band(score, severity)
 
                 # Extract Issue detail section.
                 #
@@ -705,6 +830,20 @@ class BurpParser(BaseParser):
                 if m_remed:
                     remed = m_remed.group(1).strip()
 
+                # An instance carries only its own detail; the remediation and
+                # the CWE classifications belong to its issue's section, above
+                # the first instance. Read them from there.
+                _cwes = []
+                if _sec is not None:
+                    _parent = content[_sec[0]:_sec[2]]
+                    if not remed:
+                        _mr = _BURP_REMEDIATION_RE.search(_parent)
+                        if _mr:
+                            remed = _mr.group(1).strip()
+                    _mc = _BURP_CLASSIFICATIONS_RE.search(_parent)
+                    if _mc:
+                        _cwes = ["CWE-" + n for n in _CWE_RE.findall(_mc.group(1))]
+
                 # Evidence: Request / Response snippets
                 evidence = ""
                 m_req = re.search(r'(?:HTTP )?[Rr]equest\s*\n(.*?)(?=\n(?:HTTP )?[Rr]esponse|\nIssue|$)', body_text, re.DOTALL)
@@ -714,7 +853,11 @@ class BurpParser(BaseParser):
                 if m_res:
                     evidence += f"[HTTP Response]\n{m_res.group(1).strip()[:800]}"
 
-                cves = sorted(set(CVE_RE.findall(full_block)))
+                # CVEs from this finding's own section, not the 600-character
+                # lookback, which reaches into the previous issue.
+                _cve_scope = content[_sec[0]:_sec[1]] if _sec is not None else full_block
+                cves = sorted(set(c.upper() for c in CVE_RE.findall(_cve_scope)))
+                cves += [c for c in dict.fromkeys(_cwes) if c not in cves]
 
                 finding = Finding(
                     title=title,

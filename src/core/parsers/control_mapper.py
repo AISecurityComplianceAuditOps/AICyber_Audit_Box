@@ -18,6 +18,14 @@ CWE_TO_OWASP_MAP = {
     "CWE-326": "A02:2021 Cryptographic Failures",
     "CWE-327": "A02:2021 Cryptographic Failures",
     "CWE-331": "A02:2021 Cryptographic Failures",
+    # Present in OWASP's own A02:2021 list, and missing here: a finding the
+    # report classified CWE-310 ("Cryptographic Failure") was filed under
+    # Security Misconfiguration.
+    "CWE-310": "A02:2021 Cryptographic Failures",
+    "CWE-319": "A02:2021 Cryptographic Failures",
+    "CWE-328": "A02:2021 Cryptographic Failures",
+    "CWE-523": "A02:2021 Cryptographic Failures",
+    "CWE-916": "A02:2021 Cryptographic Failures",
 
     # A03:2021 - Injection
     "CWE-79": "A03:2021 Injection", # XSS
@@ -91,10 +99,15 @@ _OWASP_KEYWORD_RULES = (
         "weak cipher", "weak encryption", "ssl", "tls", "hsts", "plaintext",
         "cleartext", "unencrypted", "self-signed", "certificate expired",
         "sweet32", "poodle", "beast", "lucky13", "deprecated algorithm",
+        # "Cryptographic Failure" and "Missing Encryption of Sensitive Data"
+        # named their class plainly and matched none of the words above.
+        "cryptographic", "encryption",
     )),
     ("A06:2021 Vulnerable and Outdated Components", (
         "outdated", "end of life", "end-of-life", "eol", "unpatched", "obsolete",
         "unsupported version", "known vulnerable",
+        "vulnerable javascript", "javascript dependency", "vulnerable dependency",
+        "vulnerable component", "vulnerable library",
     )),
     ("A07:2021 Identification & Auth Failures", (
         "authentication", "password", "session", "credential", "jwt",
@@ -276,8 +289,17 @@ def map_finding_to_risk_category(finding: Finding) -> str:
     if cwe_match:
         cwe_id = cwe_match.group(0).upper()
 
-    if cwe_id:
-        owasp = CWE_TO_OWASP_MAP.get(cwe_id, "")
+    # The CWEs the parser extracted, in the order the report gave them. They
+    # used to be ignored here in favour of a search of the free text, which for
+    # most scanner exports holds no CWE at all -- so classification fell to the
+    # keyword pass below, which reads the DESCRIPTION. On a real Burp report a
+    # "Vulnerable JavaScript dependency" (CWE-1104, OWASP A06) was filed under
+    # Injection because the CVE it quotes describes a cross-site scripting bug.
+    _candidates = [cwe_id] if cwe_id else []
+    _candidates += [str(c).upper() for c in (finding.cve_list or [])
+                    if str(c).upper().startswith("CWE-") and str(c).upper() not in _candidates]
+    for _cwe in _candidates:
+        owasp = CWE_TO_OWASP_MAP.get(_cwe, "")
         if owasp:
             # Extract A0x prefix to map to category
             code = owasp[:3]
@@ -577,6 +599,60 @@ _REMEDIATION_TEMPLATES = {
     "cleartext": "Enforce TLS for this service/protocol; disable the unencrypted listener entirely if a secure alternative exists (e.g. FTPS/SFTP instead of FTP, HTTPS instead of HTTP).",
     "unencrypted": "Enforce TLS for this service/protocol; disable the unencrypted listener entirely if a secure alternative exists.",
     "rate limit": "Implement request throttling per user/IP (e.g. token-bucket or sliding-window) on this endpoint, with a clear `429 Too Many Requests` response and `Retry-After` header.",
+    # Keys below were added after a real Burp report's findings fell through to
+    # a generic "apply the vendor-supplied patch" for flaws in the application's
+    # own code. "open redirection" is here because the "open redirect" key is
+    # matched on word boundaries and never matched Burp's spelling of the title.
+    "open redirection": "Validate redirect targets against an allow-list of permitted destinations and never pass a URL taken from the request, the DOM (location, input values) or storage directly to a redirect or navigation sink.",
+    "template injection": "Do not embed user input into client-side template regions (for AngularJS, anything inside an `ng-app` scope). Render untrusted values with `ng-bind`/text binding, or strip `{{ }}` expression syntax server-side before output. HTML-encoding alone does not prevent it. Upgrade off end-of-life AngularJS.",
+    "prototype pollution": "Reject or strip `__proto__`, `constructor` and `prototype` keys when merging or cloning objects built from query strings, JSON or hash parameters. Create lookup objects with `Object.create(null)` or use `Map`, and freeze `Object.prototype` where the application allows.",
+    "javascript dependency": "Upgrade the affected library to a release that fixes the listed CVEs (or replace an end-of-life library entirely). Add dependency scanning (e.g. `npm audit`, OWASP Dependency-Check) to the build so vulnerable versions are caught before release.",
+    "vulnerable dependency": "Upgrade the affected component to a patched release. Add dependency scanning to the build so vulnerable versions are caught before release.",
+    "httponly": "Set the `HttpOnly` attribute on every cookie that client-side script does not need to read -- always on session cookies -- so an injected script cannot read it.",
+    "secure flag": "Set the `Secure` attribute on every cookie issued over HTTPS so the browser never sends it over plain HTTP.",
+    "autocomplete": "Set `autocomplete=\"off\"` (or `\"new-password\"`) on password fields and on forms that collect credentials or other sensitive values.",
+    "cacheable": "Return `Cache-Control: no-store` (and `Pragma: no-cache` for older clients) on responses containing sensitive or user-specific data.",
+    "url override": "Disable support for `X-Original-URL` / `X-Rewrite-URL` in the framework or reverse proxy, or strip those headers at the edge before they reach the application.",
+    "cryptographic failure": "Use current, vetted algorithms: store passwords with a slow salted KDF (Argon2id, bcrypt or scrypt) rather than a fast hash, use AES-GCM or ChaCha20-Poly1305 for encryption, and keep keys out of source code in a managed key store. Remove MD5, SHA-1, DES and ECB-mode usage.",
+    "broken authentication": "Enforce authentication server-side on every protected endpoint, add multi-factor authentication for privileged accounts, lock or throttle repeated failed logins, and invalidate session tokens on logout and on privilege change.",
+    "privilege escalation": "Enforce authorization server-side on every privileged function using role checks tied to the authenticated session -- never to a role, flag or ID supplied by the client -- and deny by default.",
+    "input returned": "Reflected input is not exploitable on its own, but it is the precondition for XSS and injection: encode every reflected value for the context it is written into (HTML body, attribute, JavaScript, URL) and validate input against the format each parameter expects.",
+}
+
+
+# Developer guidance keyed by CWE, for findings whose title does not name the
+# weakness in words a keyword template recognises -- which is common in reports
+# that state the CWE and a short title. Consulted before the generic fallback,
+# so a weakness class is never answered with "apply the vendor-supplied patch".
+_CWE_REMEDIATION = {
+    "CWE-269": _REMEDIATION_TEMPLATES["privilege escalation"],
+    "CWE-285": _REMEDIATION_TEMPLATES["privilege escalation"],
+    "CWE-639": _REMEDIATION_TEMPLATES["idor"],
+    "CWE-287": _REMEDIATION_TEMPLATES["broken authentication"],
+    "CWE-310": _REMEDIATION_TEMPLATES["cryptographic failure"],
+    "CWE-326": _REMEDIATION_TEMPLATES["cryptographic failure"],
+    "CWE-327": _REMEDIATION_TEMPLATES["cryptographic failure"],
+    "CWE-328": _REMEDIATION_TEMPLATES["cryptographic failure"],
+    "CWE-916": _REMEDIATION_TEMPLATES["cryptographic failure"],
+    "CWE-311": "Encrypt this data in transit (TLS 1.2+) and, where it is stored, at rest with a managed key. Identify every field that carries personal or sensitive data and confirm none leaves the server unencrypted.",
+    "CWE-319": _REMEDIATION_TEMPLATES["cleartext"],
+    "CWE-602": "Re-implement every check that is currently enforced in the browser (validation, limits, business rules) on the server, and treat client-side checks as a usability aid only.",
+    "CWE-770": "Apply server-side limits on how often and how much any client may request (per user and per IP), and cap the size of inputs and generated resources such as OTP or e-mail sends.",
+    "CWE-601": _REMEDIATION_TEMPLATES["open redirection"],
+    "CWE-1321": _REMEDIATION_TEMPLATES["prototype pollution"],
+    "CWE-1104": _REMEDIATION_TEMPLATES["javascript dependency"],
+    "CWE-614": _REMEDIATION_TEMPLATES["secure flag"],
+    "CWE-1004": _REMEDIATION_TEMPLATES["httponly"],
+    "CWE-524": _REMEDIATION_TEMPLATES["cacheable"],
+    "CWE-525": _REMEDIATION_TEMPLATES["cacheable"],
+    "CWE-523": _REMEDIATION_TEMPLATES["hsts"],
+    "CWE-693": _REMEDIATION_TEMPLATES["clickjacking"],
+    "CWE-1021": _REMEDIATION_TEMPLATES["clickjacking"],
+    "CWE-436": _REMEDIATION_TEMPLATES["url override"],
+    "CWE-89": _REMEDIATION_TEMPLATES["sql injection"],
+    "CWE-79": _REMEDIATION_TEMPLATES["xss"],
+    "CWE-611": _REMEDIATION_TEMPLATES["xxe"],
+    "CWE-918": _REMEDIATION_TEMPLATES["ssrf"],
 }
 
 def get_actionable_remediation(finding: Finding) -> str:
@@ -615,13 +691,30 @@ def get_actionable_remediation(finding: Finding) -> str:
     # match inside unrelated words (enfoRCEd, souRCE, resouRCE, divoRCE...), handing out
     # wrong/irrelevant remediation guidance for findings that had nothing to do with
     # remote code execution.
+    # The report's own CWE classification first. It is the tester's statement
+    # of what the weakness IS, where the keyword scan below only spots words: a
+    # finding titled "TLS cookie without secure flag set" matched the "tls"
+    # template and was told to change TLS protocol versions, for a missing
+    # cookie attribute (CWE-614).
+    if not _is_pqc:
+        for cwe in (str(c).upper() for c in (finding.cve_list or [])):
+            if cwe in _CWE_REMEDIATION:
+                return _CWE_REMEDIATION[cwe]
+
     if not _is_pqc:
         for key, guidance in _REMEDIATION_TEMPLATES.items():
             if re.search(rf'\b{re.escape(key)}\b', combined):
                 return guidance
 
     # No keyword template matched.
-    cve_ref = finding.cve_list[0] if finding.cve_list else None
+    #
+    # Only a CVE names a vulnerability a vendor can patch. cve_list also carries
+    # CWE identifiers, and a CWE is a weakness CLASS -- CWE-601 is "open
+    # redirect", not a defect in someone's product. Taking the first entry of
+    # the list as the patch reference told developers to "apply the
+    # vendor-supplied patch addressing CWE-601" for a flaw in their own code.
+    cve_ref = next((c for c in (finding.cve_list or [])
+                    if str(c).upper().startswith("CVE-")), None)
     base_remed = (finding.remediation or "").strip()
 
     # ── PQC findings: return a SHORT, genuinely distinct developer action list ──
