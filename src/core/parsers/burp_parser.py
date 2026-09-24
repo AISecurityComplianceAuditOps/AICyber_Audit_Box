@@ -398,7 +398,19 @@ class BurpParser(BaseParser):
         actionable_findings: List[Finding] = []
         info_findings: List[Finding] = []
 
+        # Every element's position in the document. Ranges were bounded with
+        # Tag.sourceline, which only Python's html.parser fills in; with lxml --
+        # which _HTML_PARSER prefers, and which ships in the customer image --
+        # it is None. The one unguarded comparison raised TypeError, so every
+        # Burp HTML export failed to parse at all; the guarded ones never
+        # stopped, and each issue collected the CWEs of every issue after it.
+        _order = {id(t): i for i, t in enumerate(soup.find_all(True))}
+
+        def _pos(tag):
+            return _order.get(id(tag), -1) if tag is not None else -1
+
         bodh0s = soup.find_all('span', class_='BODH0')
+        all_b1 = soup.find_all('span', class_='BODH1')
 
         for b0 in bodh0s:
             cat_id = b0.get('id', '')
@@ -406,13 +418,20 @@ class BurpParser(BaseParser):
             cat_title = re.sub(r'^\d+\.\s*', '', raw_cat_title)
             next_b0 = b0.find_next('span', class_='BODH0')
 
-            # Extract category-level background, remediation, and CWEs
+            # Find child BODH1s under this BODH0
+            b1_list = [b1 for b1 in all_b1
+                       if _pos(b1) > _pos(b0) and (not next_b0 or _pos(b1) < _pos(next_b0))]
+
+            # Extract category-level background, remediation, and CWEs -- from
+            # the issue's own section, which ends where its first instance
+            # begins. Past that point "Remediation detail" belongs to an
+            # instance, not to the issue.
             cat_bg, cat_remed = "", ""
             cat_cwes = []
+            _cat_end = b1_list[0] if b1_list else next_b0
 
-            # Inspect headings following b0 up to next_b0
             for h2 in b0.find_all_next('h2'):
-                if next_b0 and h2.sourceline and next_b0.sourceline and h2.sourceline > next_b0.sourceline:
+                if _cat_end is not None and _pos(h2) > _pos(_cat_end):
                     break
                 h2_text = h2.get_text().strip().lower()
                 next_span = h2.find_next_sibling('span', class_='TEXT')
@@ -426,12 +445,6 @@ class BurpParser(BaseParser):
                     if next_span:
                         cwe_matches = re.findall(r'CWE-\d+', next_span.get_text())
                         cat_cwes.extend(cwe_matches)
-
-            # Find child BODH1s under this BODH0
-            b1_list = []
-            for b1 in soup.find_all('span', class_='BODH1'):
-                if b1.sourceline > b0.sourceline and (not next_b0 or b1.sourceline < next_b0.sourceline):
-                    b1_list.append(b1)
 
             # Parse instance (helper function)
             def process_element(elem, is_b1=True) -> Finding:
@@ -466,11 +479,10 @@ class BurpParser(BaseParser):
                     severity = "INFO"
 
                 score, cvss_vector = self._calculate_score_and_vector(cat_title, raw_sev, raw_conf)
-                if score >= 9.0: severity = "CRITICAL"
-                elif score >= 7.0: severity = "HIGH"
-                elif score >= 4.0: severity = "MEDIUM"
-                elif score > 0.0: severity = "LOW"
-                else: severity = "INFO"
+                # The report's severity stands; see the plain-text path. This
+                # recomputed it from the estimate, publishing Burp's High SQL
+                # injection as Critical.
+                score = _clamp_to_band(score, severity)
 
                 # Extract issue detail and request/response snippets
                 issue_detail = ""
@@ -479,7 +491,7 @@ class BurpParser(BaseParser):
                 next_elem = elem.find_next('span', class_=['BODH1', 'BODH0'])
 
                 for h2 in elem.find_all_next('h2'):
-                    if next_elem and h2.sourceline and next_elem.sourceline and h2.sourceline > next_elem.sourceline:
+                    if next_elem is not None and _pos(h2) > _pos(next_elem):
                         break
                     h2_text = h2.get_text().strip().lower()
                     if "issue detail" in h2_text and not issue_detail:
@@ -507,7 +519,10 @@ class BurpParser(BaseParser):
                 full_desc = f"{issue_detail}\n\n[Background]\n{cat_bg}".strip()
                 full_remed = f"{remed_detail}\n\n[Remediation]\n{cat_remed}".strip()
 
-                cves = sorted(list(set(re.findall(r'CVE-\d{4}-\d{4,7}', full_desc + evidence, re.IGNORECASE))))
+                cves = sorted(list(set(c.upper() for c in re.findall(r'CVE-\d{4}-\d{4,7}', full_desc + evidence, re.IGNORECASE))))
+                # The issue's CWE classifications were collected above and then
+                # never used, so every finding from an HTML export had none.
+                cves += [c.upper() for c in dict.fromkeys(cat_cwes) if c.upper() not in cves]
 
                 return Finding(
                     title=title,

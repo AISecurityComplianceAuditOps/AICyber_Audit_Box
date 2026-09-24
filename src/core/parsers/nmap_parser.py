@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import re
+from datetime import datetime
 import xml.etree.ElementTree as ET
 from typing import List, Tuple, Dict, Any
 from .base_parser import BaseParser, is_image_file
@@ -29,7 +30,44 @@ _RISK_KEYWORDS = [
     (re.compile(r'\b(?:unencrypted|cleartext|clear-text|plaintext|plain-text)\b', re.IGNORECASE), "MEDIUM", "Unencrypted Service Connection Allowed"),
     (re.compile(r'index of /', re.IGNORECASE), "LOW", "Directory Listing Enabled"),
     (re.compile(r'default (?:credentials|password)', re.IGNORECASE), "HIGH", "Default Credentials in Use"),
+    # Weak ciphers. ssl-enum-ciphers lists them by name ("TLS_RSA_WITH_3DES_EDE_
+    # CBC_SHA - weak") and grades the port ("least strength: weak" / C-F), and
+    # none of that was recognised: a scan of 399 hosts all offering 3DES under
+    # TLS 1.0 raised only the protocol. The token is bounded by non-alphanumerics
+    # rather than \b, because in a cipher name it sits between underscores,
+    # which are word characters. "NULL" is deliberately absent: the same script
+    # prints "compressors: NULL" on every healthy port.
+    # "weak ... cipher(s)" catches SSH too ("OpenSSH 7.2p2 (Weak CBC ciphers)"),
+    # so the label names no protocol.
+    (re.compile(r'(?<![a-z0-9])(?:3des|des-cbc3|rc4)(?![a-z0-9])|least strength:\s*(?:weak|[def])\b'
+                r'|\bweak\s+(?:[\w-]+\s+){0,2}ciphers?\b',
+                re.IGNORECASE), "MEDIUM", "Weak Cipher Suites Supported"),
 ]
+
+# Two rules can name the SAME issue on one line: "ssl-date: TLSv1.0 (WEAK
+# PROTOCOL DETECTED - PCI-DSS NON-COMPLIANT)" matches both the generic
+# weak-protocol rule and the TLS-version rule. When the specific one fires, the
+# generic one is dropped, so one weakness is one finding.
+_SUPERSEDED_BY = {"Weak/Deprecated Protocol Supported": "Weak SSL/TLS Protocol Supported"}
+
+# Services that are a finding merely by being open. Telnet and the BSD
+# r-services carry credentials and sessions in clear text; every scanner in
+# common use reports them, and a 399-host scan with Telnet open on every host
+# produced no finding for it at all, because nothing looked at the service name.
+_RISKY_SERVICES = {
+    "telnet": ("HIGH", "Cleartext Remote Login Service (Telnet)"),
+    "login": ("HIGH", "Cleartext Remote Login Service (rlogin)"),
+    "shell": ("HIGH", "Cleartext Remote Shell Service (rsh)"),
+    "exec": ("HIGH", "Cleartext Remote Execution Service (rexec)"),
+}
+
+# Named vulnerabilities whose severity is not in doubt, for CVE mentions that
+# carry no rating of their own. Words, not CVSS numbers: nmap publishes no
+# score, and this does not invent one.
+_CRITICAL_NAMES = ("backdoor", "bluekeep", "eternalblue", "shellshock", "log4shell",
+                   "remote code execution", "wormable")
+_HIGH_NAMES = ("path traversal", "directory traversal", "heartbleed", "sql injection",
+               "authentication bypass")
 
 def _clean_nmap_title(raw: str) -> str:
     """Tidy a title lifted out of raw nmap output.
@@ -86,6 +124,13 @@ def _severity_for_cve_line(line: str, cves: List[str]) -> str:
     )
     if any(k in low for k in ("critical", "remote code execution")) or re.search(r'(?<![a-z])rce(?![a-z])', low) or _unauth_bad:
         return "CRITICAL"
+    # A confirmed backdoor (vsftpd 2.3.4, CVE-2011-2523) and BlueKeep came out
+    # MEDIUM: their lines named the vulnerability but used none of the words
+    # above.
+    if any(k in low for k in _CRITICAL_NAMES):
+        return "CRITICAL"
+    if any(k in low for k in _HIGH_NAMES):
+        return "HIGH"
     # Known weak-crypto / padding-oracle classes are consistently rated low-to-
     # medium by scanners; naming them HIGH is what caused the clash above.
     # Word-anchored: "cbc" as a bare substring matches inside hex certificate
@@ -95,6 +140,49 @@ def _severity_for_cve_line(line: str, cves: List[str]) -> str:
            for k in ("lucky13", "sweet32", "beast", "poodle", "cbc", "cipher")):
         return "MEDIUM"
     return "MEDIUM" if cves else "LOW"
+
+
+
+# One line per port: "443/tcp open ssl/http Apache httpd 2.4.6". The state must
+# be one nmap actually prints, so a "Port: 80/tcp" mention in prose is not read
+# as a port line.
+_PORT_LINE_RE = re.compile(
+    r'(?mi)^[ \t|_]*(\d+/(?:tcp|udp|sctp))[ \t]+'
+    r'(open\|filtered|closed\|filtered|open|closed|filtered|unfiltered)[ \t]+'
+    r'(\S+)[ \t]*([^\n]*)$')
+
+# "Nmap scan report for HOST" -- also "# Nmap 7.92 scan report for HOST", the
+# form in several evidence files, which the old header pattern did not accept,
+# so every finding in them was attributed to "Target Host".
+_HOST_HEADER_RE = re.compile(r'(?mi)^[ \t#]*Nmap(?:[ \t]+[\d.]+)?[ \t]+scan report for[ \t]+([^\n]+?)[ \t]*$')
+
+
+def _split_hosts(content):
+    """[(target_label, that host's section)] in document order."""
+    heads = list(_HOST_HEADER_RE.finditer(content))
+    out = []
+    for i, m in enumerate(heads):
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(content)
+        out.append((m.group(1).strip(), content[m.end():end]))
+    return out
+
+
+def _scan_date(content):
+    """When the scan ran, if the output says; None otherwise.
+
+    Certificate expiry is judged against this, not against today: a report is
+    evidence of the state at scan time, and a certificate that expired after the
+    scan was valid when the auditor looked.
+    """
+    m = re.search(r'scan initiated\s+\w{3}\s+(\w{3})\s+(\d{1,2})\s+[\d:]+\s+(\d{4})', content)
+    if not m:
+        m = re.search(r'Nmap done at\s+\w{3}\s+(\w{3})\s+(\d{1,2})\s+[\d:]+\s+(\d{4})', content)
+    if not m:
+        return None
+    try:
+        return datetime.strptime(f"{m.group(1)} {m.group(2)} {m.group(3)}", "%b %d %Y").date()
+    except ValueError:
+        return None
 
 
 class NmapParser(BaseParser):
@@ -147,9 +235,12 @@ class NmapParser(BaseParser):
 
         def _add_finding(title: str, severity: str, cves: List[str], evidence: str, port_label: str = ""):
             ev_key = evidence.strip()
-            if ev_key in seen_evidence:
+            # Keyed by host too: keyed on evidence alone, identical script output
+            # on a second host was dropped as a duplicate of the first.
+            key = (target_label, port_label, title, tuple(sorted(cves or [])), ev_key)
+            if key in seen_evidence:
                 return
-            seen_evidence.add(ev_key)
+            seen_evidence.add(key)
             findings.append(Finding(
                 title=f"Nmap: {title}" + (f" ({port_label})" if port_label else ""),
                 severity=severity,
@@ -209,6 +300,10 @@ class NmapParser(BaseParser):
 
                 if state.lower() == 'open':
                     open_ports.append({"port": port_label, "state": state, "service": svc_str})
+                    _svc_name = (service_el.get('name', '') if service_el is not None else '').lower()
+                    if _svc_name in _RISKY_SERVICES:
+                        _sev, _label = _RISKY_SERVICES[_svc_name]
+                        _add_finding(_label, _sev, [], f"{port_label} open {svc_str}".strip(), port_label)
 
                 for script_el in port_el.findall('script'):
                     _check_script(script_el, port_label)
@@ -241,9 +336,11 @@ class NmapParser(BaseParser):
 
         def _add_finding(title: str, severity: str, evidence: str, port_label: str = ""):
             ev_key = evidence.strip()
-            if ev_key in seen_evidence:
+            # Keyed by host too -- see the XML path.
+            key = (target_label, port_label, title, ev_key)
+            if key in seen_evidence:
                 return
-            seen_evidence.add(ev_key)
+            seen_evidence.add(key)
             findings.append(Finding(
                 title=f"Nmap: {title}" + (f" ({port_label})" if port_label else ""),
                 severity=severity,
@@ -282,6 +379,9 @@ class NmapParser(BaseParser):
 
                 if state.lower() == 'open':
                     open_ports.append({"port": port_label, "state": state, "service": svc_str})
+                    if service.lower() in _RISKY_SERVICES:
+                        _sev, _label = _RISKY_SERVICES[service.lower()]
+                        _add_finding(_label, _sev, f"{port_label} open {svc_str}".strip(), port_label)
 
                 for pattern, severity, label in _RISK_KEYWORDS:
                     if pattern.search(svc_str):
@@ -314,105 +414,132 @@ class NmapParser(BaseParser):
 
         findings: List[Finding] = []
         open_ports: List[Dict[str, str]] = []
-        target_ip = "Target Host"
-        seen_evidence = set()
+        # One finding per host, port and issue. The key used to be the evidence
+        # text alone, so the same weakness on a second host -- identical script
+        # output, different machine -- was discarded as a duplicate of the first.
+        # A 399-host scan with the same five weaknesses on every host produced
+        # ONE finding, attributed to the first host.
+        by_key = {}
+        scan_date = _scan_date(content)
 
-        m_ip = re.search(r'Nmap scan report for\s+([^\n]+)', content, re.IGNORECASE)
-        if m_ip:
-            target_ip = m_ip.group(1).strip()
+        hosts = _split_hosts(content)
+        target_ip = hosts[0][0] if hosts else "Target Host"
+        if not hosts:
+            hosts = [("Target Host", content)]
 
-        # Per-port blocks: each port header line through to the next port header (or EOF)
-        # so NSE script hits below a port can be attributed to that port/service.
-        port_header_re = re.compile(r'\b(\d+/(?:tcp|udp))\s+(\w+)\s+([^\n\r]{0,60})', re.IGNORECASE)
-        port_matches = list(port_header_re.finditer(content))
-
-        for pm in port_matches:
-            port, state, svc = pm.group(1), pm.group(2), pm.group(3)
-            if state.lower() == "open":
-                open_ports.append({"port": port, "state": state, "service": svc.strip()})
-
-        def _add_finding(title: str, severity: str, cves: List[str], evidence: str, port_label: str = ""):
-            ev_key = evidence.strip()
-            if ev_key in seen_evidence:
-                return
-            seen_evidence.add(ev_key)
-            findings.append(Finding(
+        def _add_finding(target, title, severity, cves, evidence, port_label=""):
+            ev = evidence.strip()
+            key = (target, port_label, _clean_nmap_title(title).lower(), tuple(sorted(c.upper() for c in cves)))
+            if key in by_key:
+                # The same issue seen again on the same port -- e.g. one
+                # LUCKY13 line per CBC cipher. One finding, every line kept.
+                f = by_key[key]
+                if ev and ev not in f.evidence.split("\n"):
+                    f.evidence = (f.evidence + "\n" + ev).strip()
+                return f
+            f = Finding(
                 title=f"Nmap: {_clean_nmap_title(title)}" + (f" ({port_label})" if port_label else ""),
                 severity=severity,
-                cve_list=cves,
-                target=target_ip,
-                # The matched line goes INTO the description, not just the evidence
-                # field. map_finding_to_owasp() classifies on title + description, and
-                # the old boilerplate ("Nmap NSE script detection on target ...")
-                # contained no vulnerability signal at all -- so every nmap finding
-                # fell through to the A05 default. Confirmed on a real scan: nmap's
-                # CVE-2013-0169 (Lucky13, a TLS CBC weakness) was categorised
-                # A05 Security Misconfiguration, while the SAME CVE parsed from the
-                # Nessus report in the same pack came out A02 Cryptographic Failures.
-                # One CVE, two categories, one report -- straight into an auditor's
-                # first question. The source line carries the "TLS"/"cipher" words
-                # that classify it correctly.
-                description=f"Nmap NSE script detection on target {target_ip}"
-                            f"{(' port ' + port_label) if port_label else ''}: {ev_key}",
+                cve_list=list(cves),
+                target=target,
+                # The matched line goes INTO the description, not just the
+                # evidence field: map_finding_to_owasp() classifies on title +
+                # description, and boilerplate alone sent every nmap finding to
+                # the A05 default -- CVE-2013-0169 (Lucky13) was A05 here and A02
+                # from the Nessus report in the same pack.
+                description=f"Nmap detection on target {target}"
+                            f"{(' port ' + port_label) if port_label else ''}: {ev}",
                 remediation="Investigate service misconfiguration and apply vendor patches/hardening.",
-                evidence=ev_key,
-                source_tool="Nmap"
-            ))
+                evidence=ev,
+                source_tool="Nmap",
+            )
+            by_key[key] = f
+            findings.append(f)
+            return f
 
-        for idx, pm in enumerate(port_matches):
-            port_label = pm.group(1)
-            block_start = pm.end()
-            block_end = port_matches[idx + 1].start() if idx + 1 < len(port_matches) else len(content)
-            block = content[block_start:block_end]
+        # What each merged vulnerability finding affects on its port, so the
+        # title can name them. One LUCKY13 finding per port replaced one per
+        # cipher, and must not lose which ciphers they were: a title reduced to
+        # the bare CVE is the defect test_kali_parser pins.
+        affected = {}
 
-            # 1. Explicit NSE "-vuln" scripts / CVE mentions
-            # Iterate LINES, not regex captures.
-            #
-            # The old pattern captured from the CVE token to end-of-line, so the
-            # cipher name preceding it was discarded:
-            #
-            #   TLS_RSA_WITH_AES_128_CBC_SHA (dh 2048) - Vulnerable to LUCKY13 (CVE-2013-0169)
-            #                                                                    ^ capture began here
-            #
-            # That cost the finding its identity (a title reading "CVE-2013-0169)")
-            # and every word a classifier could use -- no "TLS", no "CBC", no
-            # "cipher" -- so it fell to the A05 default while the same CVE from the
-            # Nessus report in the same engagement was correctly A02 Cryptographic
-            # Failures. Keeping the whole line repairs the title, the severity
-            # heuristic and the OWASP category in one move.
-            nse_hits = [
-                ln.strip() for ln in block.splitlines()
-                if re.search(r'\bCVE-\d{4}-\d{4,7}\b', ln, re.IGNORECASE)
-                or re.search(r'[a-zA-Z0-9_-]+-vuln', ln, re.IGNORECASE)
-            ]
-            for hit in nse_hits:
-                if hit and len(hit.strip()) > 3:
-                    cves = re.findall(r'CVE-\d{4}-\d{4,7}', hit, re.IGNORECASE)
-                    if cves:
-                        # Title from the WHOLE source line, not from the CVE token
-                        # onward -- the capture starts mid-bracket and produced
-                        # "Vuln Finding: CVE-2013-0169)".
-                        _line = hit.strip().lstrip('|_ ').strip()
-                        _add_finding(
-                            f"Vuln Finding: {_line[:90]}",
-                            _severity_for_cve_line(_line, cves),
-                            cves, hit, port_label,
-                        )
+        for target, section in hosts:
+            ports = list(_PORT_LINE_RE.finditer(section))
+            for idx, pm in enumerate(ports):
+                port_label, state, service, version = pm.group(1), pm.group(2), pm.group(3), pm.group(4).strip()
+                is_open = state.lower().startswith("open")
+                if is_open:
+                    open_ports.append({"port": port_label, "state": state,
+                                       "service": f"{service} {version}".strip(), "host": target})
+                block_end = ports[idx + 1].start() if idx + 1 < len(ports) else len(section)
+                block = section[pm.end():block_end]
+                # The port's own line is scanned too. Its version column is
+                # where a CVE or weakness is written when the scan annotates the
+                # service ("vsftpd 2.3.4 (Backdoor CVE-2011-2523)", "Redis
+                # (unauthenticated access)"), and the scan window used to start
+                # AFTER it -- so a file whose findings were all stated there
+                # produced none.
+                lines = [f"{service} {version}".strip()] + [
+                    ln for ln in block.splitlines() if ln.strip()]
 
-            # 2. Keyword-based misconfiguration detection across NSE script lines in the block
-            for line in block.splitlines():
-                stripped = line.strip()
-                for pattern, severity, label in _RISK_KEYWORDS:
-                    if pattern.search(stripped):
-                        _add_finding(label, severity, [], stripped.lstrip('|_ '), port_label)
+                # 1. CVE mentions -- the whole source line, so the title keeps
+                #    the name that precedes the CVE token.
+                for ln in lines:
+                    cves = re.findall(r'CVE-\d{4}-\d{4,7}', ln, re.IGNORECASE)
+                    if not cves:
+                        continue
+                    clean = ln.strip().lstrip('|_ ').strip()
+                    named = re.search(r'vulnerable to\s+([A-Za-z0-9_-]+)', clean, re.IGNORECASE)
+                    cves_u = sorted({c.upper() for c in cves})
+                    title = (f"Vuln Finding: {named.group(1)} ({', '.join(cves_u)})" if named
+                             else f"Vuln Finding: {clean[:90]}")
+                    f = _add_finding(target, title, _severity_for_cve_line(clean, cves), cves_u,
+                                     clean, port_label)
+                    if named and f is not None:
+                        ident = clean.split()[0]
+                        ids = affected.setdefault(id(f), [])
+                        if ident not in ids:
+                            ids.append(ident)
+                        shown = ", ".join(ids[:3]) + (f" +{len(ids) - 3} more" if len(ids) > 3 else "")
+                        f.title = (f"Nmap: {_clean_nmap_title(title)} - {shown}"
+                                   + (f" ({port_label})" if port_label else ""))
+
+                # 2. Misconfiguration keywords in script output and the version column.
+                for ln in lines:
+                    stripped = ln.strip()
+                    hits = [(sev, lab) for pat, sev, lab in _RISK_KEYWORDS if pat.search(stripped)]
+                    labels = {lab for _s, lab in hits}
+                    for severity, label in hits:
+                        if _SUPERSEDED_BY.get(label) in labels:
+                            continue
+                        _add_finding(target, label, severity, [], stripped.lstrip('|_ '), port_label)
+
+                # 3. Services that are a finding by being open at all.
+                if is_open and service.lower() in _RISKY_SERVICES:
+                    sev, label = _RISKY_SERVICES[service.lower()]
+                    _add_finding(target, label, sev, [], f"{port_label} open {service} {version}".strip(),
+                                 port_label)
+
+                # 4. A certificate past its expiry at the time of the scan.
+                m_exp = re.search(r'Not valid after:\s*(\d{4}-\d{2}-\d{2})', block)
+                if m_exp and scan_date is not None:
+                    try:
+                        expired_on = datetime.strptime(m_exp.group(1), "%Y-%m-%d").date()
+                    except ValueError:
+                        expired_on = None
+                    if expired_on is not None and expired_on < scan_date:
+                        _add_finding(target, "SSL/TLS Certificate Expired", "MEDIUM", [],
+                                     f"Not valid after: {expired_on.isoformat()} "
+                                     f"(scan date {scan_date.isoformat()})", port_label)
 
         # Fallback general CVE scanner for OCR text / non-standard terminal blocks
         if not findings:
-            cve_matches = list(re.finditer(r'\b(CVE-\d{4}-\d{4,7})\b\s*([^\n\r]{0,60})', content, re.IGNORECASE))
-            for cm in cve_matches:
+            for cm in re.finditer(r'\b(CVE-\d{4}-\d{4,7})\b\s*([^\n\r]{0,60})', content, re.IGNORECASE):
                 cve_code = cm.group(1).upper()
                 snippet = cm.group(0).strip()
-                _add_finding(f"Vulnerability {cve_code}", "HIGH", [cve_code], snippet, "Scanner Output")
+                _add_finding(target_ip, f"Vulnerability {cve_code}",
+                             _severity_for_cve_line(snippet, [cve_code]), [cve_code], snippet,
+                             "Scanner Output")
 
         map_findings_list(findings)
         asset_inv = AssetInventory(target_ip=target_ip, open_ports=open_ports)

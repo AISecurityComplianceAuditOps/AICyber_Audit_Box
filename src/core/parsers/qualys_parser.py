@@ -42,8 +42,16 @@ COLUMN_ALIASES = {
     "dns": ["dns", "fqdn", "netbios"],
     "port": ["port"],
     "protocol": ["protocol"],
-    "cvss": ["cvss3.1", "cvss3", "cvss", "cvss base", "cvss3.1 base"],
+    # CVSS 3.x before v2. The v2 column matched first when both were present --
+    # a real scan report carries "CVSS Base" (v2) and "CVSS3.1 Base" side by
+    # side -- so SWEET32 was published as 5.0 instead of its 7.5.
+    "cvss": ["cvss3.1 base", "cvss3.1", "cvss3 base", "cvss3", "cvss base", "cvss"],
+    "type": ["type"],
 }
+
+# Qualys "Information Gathered" rows record facts about a host (open services,
+# OS detected), not weaknesses. They carry a 1-3 severity for ordering only.
+_QUALYS_INFO_TYPES = {"ig", "information gathered", "info"}
 
 
 def _find_col(headers_norm: dict, key: str) -> Optional[str]:
@@ -117,7 +125,19 @@ class QualysParser(BaseParser):
     def _parse_csv(self, content: str) -> List[Finding]:
         findings: List[Finding] = []
         try:
-            reader = csv.DictReader(io.StringIO(content))
+            # A Qualys scan report opens with a metadata block ("Scan Results",
+            # "Launch Date", "Active Hosts", ...) and the column header comes
+            # several lines later. DictReader took the FIRST line as the header,
+            # found no Title or QID column, and returned nothing for the export
+            # format Qualys produces by default. Start at the real header row.
+            lines = content.splitlines(True)
+            start = 0
+            for i, ln in enumerate(lines):
+                low = ln.lower()
+                if re.search(r'(^|[",])\s*"?qid"?\s*([",]|$)', low) and "title" in low:
+                    start = i
+                    break
+            reader = csv.DictReader(io.StringIO("".join(lines[start:])))
             if not reader.fieldnames:
                 return []
             headers_norm = {h.strip().lower(): h for h in reader.fieldnames if h}
@@ -132,6 +152,7 @@ class QualysParser(BaseParser):
             col_port = _find_col(headers_norm, "port")
             col_qid = _find_col(headers_norm, "qid")
             col_cvss = _find_col(headers_norm, "cvss")
+            col_type = _find_col(headers_norm, "type")
 
             if not col_title and not col_qid:
                 # Doesn't look like a Qualys CSV export at all
@@ -148,6 +169,9 @@ class QualysParser(BaseParser):
                 raw_sev = (row.get(col_sev) or "").strip() if col_sev else ""
                 sev_digits = re.sub(r"[^0-9]", "", raw_sev)
                 severity = QUALYS_SEVERITY_MAP.get(sev_digits, raw_sev or "INFO")
+                row_type = (row.get(col_type) or "").strip().lower() if col_type else ""
+                if row_type in _QUALYS_INFO_TYPES:
+                    severity = "INFO"
 
                 cve_raw = (row.get(col_cve) or "").strip() if col_cve else ""
                 cve_list = [c.strip() for c in re.split(r"[,;\s]+", cve_raw) if c.strip().upper().startswith("CVE-")]
