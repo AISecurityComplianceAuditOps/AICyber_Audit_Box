@@ -12,6 +12,7 @@ from .burp_parser import BurpParser
 from .qualys_parser import QualysParser
 from .trivy_parser import TrivyParser
 from .kali_parser import KaliParser
+from .pentest_report_parser import PentestReportParser
 from .pqc_parser import PQCParser, pqc_extract_text, _PQC_BINARY_EXTENSIONS
 
 ALL_PARSERS = [
@@ -25,6 +26,17 @@ ALL_PARSERS = [
     # tool banners, so it will not steal a Nessus/Burp/Trivy export, but it must
     # get its chance before PQC's weak 2-keyword check claims the file.
     KaliParser(),
+    # A pentest report written by a human, not a scanner export. It goes after
+    # every structured-export parser -- a real Nessus or Burp file must be read
+    # by its own parser, not scraped as a table -- and before PQCParser, whose
+    # two-keyword check would otherwise claim any report mentioning TLS or RSA.
+    #
+    # Added because the tool returned nothing for the artifact auditors most
+    # often hold: the PDF the testing firm delivered. One such report produced
+    # zero findings; another produced exactly one, titled "Executive", scraped
+    # out of the heading "Executive Summary" by the Burp fallback while its six
+    # real vulnerabilities went unreported.
+    PentestReportParser(),
     # PQCParser goes LAST -- its can_parse() is a weak-signal (2+ keyword) check
     # like Nessus's own fallback path, so it must never steal a file that a more
     # specific structural-signature parser above would have claimed.
@@ -119,14 +131,22 @@ def parse_tool_file(filename: str, content: str, framework: str = "") -> Tuple[L
         if p.can_parse(filename, content):
             res = p.parse(filename, content)
             findings, extra = res if isinstance(res, tuple) else (res, None)
-            if not findings:
+            # A parser that returned ONLY informational findings has still read
+            # the file, and bg_worker uses both lists (`actionable + info`).
+            # Judging the claim on `findings` alone discarded that work and fell
+            # through to the fallback below: a compliance re-test report, whose
+            # findings are all recorded as remediated, had its six real rows
+            # thrown away and replaced by one finding titled "Executive" that
+            # the Burp fallback scraped out of a heading.
+            _informational = extra if isinstance(extra, list) else []
+            if not findings and not _informational:
                 print(
                     f"[VAPT PARSER WARNING] '{p.__class__.__name__}' recognized '{filename}' "
                     f"but extracted 0 findings. If this file genuinely contains vulnerabilities, "
                     f"the parser may not support this export's exact format/columns and needs review.",
                     flush=True
                 )
-            if findings:
+            if findings or _informational:
                 # PQCParser findings use the PQC-specific mapper (CIA, risk score,
                 # per-algorithm remediation, OEM readiness, business priority).
                 # All other parsers (Nessus, Burp, Nmap, Qualys, Trivy) use the
@@ -135,6 +155,8 @@ def parse_tool_file(filename: str, content: str, framework: str = "") -> Tuple[L
                     map_pqc_findings_list(findings)
                 else:
                     map_findings_list(findings)
+                    if _informational:
+                        map_findings_list(_informational)
                 return findings, extra
 
     # ── Stage 3: Fallback (general HTML/XML/PDF via NessusParser & BurpParser) ──
@@ -148,6 +170,7 @@ def parse_tool_file(filename: str, content: str, framework: str = "") -> Tuple[L
 
 __all__ = [
     "Finding", "BaseParser", "is_image_file", "map_finding_to_control", "map_findings_list",
-    "NessusParser", "NmapParser", "BurpParser", "QualysParser", "TrivyParser", "KaliParser", "PQCParser",
+    "NessusParser", "NmapParser", "BurpParser", "QualysParser", "TrivyParser", "KaliParser",
+    "PentestReportParser", "PQCParser",
     "parse_tool_file", "pqc_extract_text",
 ]
