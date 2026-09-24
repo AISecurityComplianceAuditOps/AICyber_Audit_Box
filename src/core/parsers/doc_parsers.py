@@ -15,6 +15,135 @@ _COL_MIN_LINES = 3            # each column must hold at least this many lines
 _COL_ROW_PAIR_TOL = 0.02      # two lines this close in y are on the same row
 _COL_MAX_ROW_PAIRING = 0.9    # above this the columns are a table's cells
 
+# Relative-coordinate thresholds for rebuilding a TABLE out of OCR fragments.
+_GRID_MIN_COLS = 3            # fewer than this is not a table worth rebuilding
+_GRID_MIN_ROWS = 2
+_GRID_COL_GAP = 0.02          # x-corridor separating one column of cells
+_GRID_ROW_OVERLAP = 0.35      # share of height two fragments must share to be
+                              # on the same visual line
+_GRID_ROW_GAP_FACTOR = 1.6    # a gap this many times the median ends a row
+
+
+def _grid_rows(cells):
+    """Rebuild a table from OCR fragments, or None if the page holds no grid.
+
+    `cells` is a list of (x0, x1, y0, y1, text) in doctr's relative coordinates.
+
+    WHY THIS EXISTS
+
+    A findings table inside a scanned or image-based report comes out of OCR as
+    loose cell fragments, and the reader emitted them in the detector's own
+    order. A real customer report -- a table rendered as one image inside a PDF
+    -- extracted as a single line reading:
+
+        Sr. Vulnerabilities Severity CVE/CWE Recommendation Reference
+        New/Repeat No. Enforce strict Vertical Privilege 1. High CWE-269
+        role-based access Link New Escalation control Properly Cryptographic
+        2. High CWE-310 ...
+
+    Every row and column destroyed, four real HIGH findings unreadable by
+    anything. The information needed to put it back was there the whole time:
+    doctr reports where each fragment sits, and the reader was discarding it.
+
+    A cell's text may wrap onto several lines, so a table ROW is a band of
+    visual lines rather than one: "Vertical Privilege" and "Escalation" are one
+    cell. Rows are therefore cut at the widest vertical gaps between lines, and
+    each row's fragments are then grouped by column and concatenated -- which
+    reassembles the wrapped cell.
+
+    Returns None unless the fragments really do form a grid. Ordinary prose,
+    where every line is its own band and there is only one column, is left
+    exactly as it was.
+    """
+    if len(cells) < _GRID_MIN_COLS * _GRID_MIN_ROWS:
+        return None
+
+    # ── columns: x-corridors that no fragment starts inside ─────────────────
+    starts = sorted(c[0] for c in cells)
+    bounds = []
+    for a, b in zip(starts, starts[1:]):
+        if b - a > _GRID_COL_GAP:
+            bounds.append((a + b) / 2.0)
+    if len(bounds) + 1 < _GRID_MIN_COLS:
+        return None
+
+    def col_of(x0):
+        i = 0
+        for b in bounds:
+            if x0 >= b:
+                i += 1
+        return i
+
+    # ── visual lines: fragments sharing most of their height ────────────────
+    ordered = sorted(cells, key=lambda c: (c[2], c[0]))
+    lines = []
+    for c in ordered:
+        placed = False
+        for ln in lines:
+            top = max(ln["y0"], c[2])
+            bottom = min(ln["y1"], c[3])
+            height = min(ln["y1"] - ln["y0"], c[3] - c[2]) or 1e-6
+            if (bottom - top) / height >= _GRID_ROW_OVERLAP:
+                ln["cells"].append(c)
+                ln["y0"] = min(ln["y0"], c[2])
+                ln["y1"] = max(ln["y1"], c[3])
+                placed = True
+                break
+        if not placed:
+            lines.append({"y0": c[2], "y1": c[3], "cells": [c]})
+
+    if len(lines) < _GRID_MIN_ROWS:
+        return None
+    # A single fragment per line everywhere is prose, not a table.
+    if not any(len(ln["cells"]) > 1 for ln in lines):
+        return None
+
+    # ── rows: bands of lines, cut at the wider vertical gaps ────────────────
+    #
+    # A cell whose text wraps puts several lines inside one row, so the row
+    # boundary cannot be "the next line". It is the gap: the space a table
+    # leaves between rows is visibly wider than the leading between two lines
+    # of the same cell. Measured on the report this was written for, the gaps
+    # within a cell ran 0.025-0.042 and the four row separators 0.074-0.088 --
+    # a clean separation with nothing in between.
+    #
+    # The median is the reference rather than the mean, so one unusually tall
+    # row cannot drag the threshold past every real boundary.
+    gaps = sorted(lines[i + 1]["y0"] - lines[i]["y1"] for i in range(len(lines) - 1))
+    if not gaps:
+        return None
+    median_gap = gaps[len(gaps) // 2]
+    cut_at = max(median_gap * _GRID_ROW_GAP_FACTOR, 0.0)
+
+    bands, current = [], [lines[0]]
+    for i in range(1, len(lines)):
+        if (lines[i]["y0"] - lines[i - 1]["y1"]) > cut_at:
+            bands.append(current)
+            current = []
+        current.append(lines[i])
+    if current:
+        bands.append(current)
+
+    if len(bands) < _GRID_MIN_ROWS:
+        return None
+
+    out = []
+    for band in bands:
+        by_col = {}
+        for ln in band:
+            for c in ln["cells"]:
+                by_col.setdefault(col_of(c[0]), []).append((c[2], c[0], c[4]))
+        if not by_col:
+            continue
+        parts = []
+        for ci in sorted(by_col):
+            frags = [t for _y, _x, t in sorted(by_col[ci])]
+            parts.append(" ".join(frags).strip())
+        row = "  ".join(p for p in parts if p)
+        if row:
+            out.append(row)
+    return out or None
+
 
 def _line_columns(lines):
     """Group OCR lines into columns, or return None if the page has none.
@@ -94,13 +223,15 @@ class _DocTRReaderAdapter:
         lines_out = []
         for page in exported.get("pages", []):
             page_lines = []
+            page_cells = []
             for block in page.get("blocks", []):
                 for line in block.get("lines", []):
                     words = [w.get("value", "") for w in line.get("words", []) if w.get("value")]
                     if not words:
                         continue
-                    (x0, y0), (x1, _y1) = line.get("geometry", ((0.0, 0.0), (1.0, 1.0)))
+                    (x0, y0), (x1, y1) = line.get("geometry", ((0.0, 0.0), (1.0, 1.0)))
                     page_lines.append((x0, x1, y0, " ".join(words)))
+                    page_cells.append((x0, x1, y0, y1, " ".join(words)))
             # Columns are emitted one after another; anything else keeps the
             # plain top-to-bottom order this reader has always used.
             columns = _line_columns(page_lines)
@@ -115,7 +246,15 @@ class _DocTRReaderAdapter:
                         lines_out.append("")
                     lines_out.extend(col)
             else:
-                lines_out.extend(t for _x0, _x1, _y, t in page_lines)
+                # A table, rebuilt from where its cells sit. Tried only after
+                # the two-pane check above has declined, and it declines in
+                # turn unless the fragments really form a grid -- so ordinary
+                # prose still comes out exactly as it always has.
+                grid = _grid_rows(page_cells)
+                if grid:
+                    lines_out.extend(grid)
+                else:
+                    lines_out.extend(t for _x0, _x1, _y, t in page_lines)
         return lines_out
 
 def get_ocr_reader():
@@ -585,7 +724,14 @@ def extract_text(f):
                                     if res:
                                         ocr_results.extend(res)
                             if ocr_results:
-                                text += "\n[Embedded Image OCR]: " + " ".join(ocr_results)
+                                # One line per OCR line. Joined with spaces,
+                                # a findings table rendered as an image inside
+                                # a PDF -- which is how a scanned report
+                                # arrives -- collapsed into a single line, and
+                                # every row boundary the reader had just
+                                # reconstructed from the page geometry was
+                                # thrown away again on the way out.
+                                text += "\n[Embedded Image OCR]:\n" + "\n".join(ocr_results)
                         except Exception as ocr_err:
                             print(f"[HYBRID OCR WARNING] Failed embedded image OCR: {ocr_err}", flush=True)
 
