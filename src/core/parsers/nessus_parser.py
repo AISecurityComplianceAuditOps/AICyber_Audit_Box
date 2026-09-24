@@ -18,6 +18,12 @@ from .control_mapper import map_findings_list
 _NESSUS_NUMERIC_SEVERITY = {"0": "INFO", "1": "LOW", "2": "MEDIUM", "3": "HIGH", "4": "CRITICAL"}
 
 
+def _is_nessus_csv(content: str) -> bool:
+    """The CSV export's header row: "Plugin ID","CVE",...,"Risk","Host",...,"Name"."""
+    first = (content or "").lstrip("\ufeff \r\n").split("\n", 1)[0].lower()
+    return "plugin id" in first and "risk" in first and "host" in first and "name" in first
+
+
 class NessusParser(BaseParser):
     def _parse_native_xml(self, content: str) -> Tuple[List[Finding], List[Finding]]:
         """Parses native Nessus .nessus scan XML (<NessusClientData_v2><Report>
@@ -125,6 +131,8 @@ class NessusParser(BaseParser):
         if ("nessusclientdata_v2" in sample or "<reporthost" in sample
                 or "<reportitem" in sample):
             return True
+        if _is_nessus_csv(content):
+            return True
         # Product banners, equally exclusive and equally sufficient. A plain-text
         # export opening with "Tenable Nessus Scan Report" was rejected here and
         # claimed by PQCParser instead (on its crypto keywords); under the VAPT
@@ -163,6 +171,9 @@ class NessusParser(BaseParser):
         # previously the ONLY format this parser actually understood despite can_parse()
         # claiming to support any ".nessus" file -- a real scan silently produced 0
         # findings with no error shown anywhere.
+        if _is_nessus_csv(content):
+            return self._parse_csv(content)
+
         if "NessusClientData_v2" in content[:5000] or "<ReportItem" in content[:20000]:
             actionable, info = self._parse_native_xml(content)
             if actionable or info:
@@ -407,6 +418,78 @@ class NessusParser(BaseParser):
         # with no HTML structure at all -- the two paths above both require actual
         # <div> elements, which text extraction from a PDF/DOCX export doesn't produce).
         return self._parse_plaintext(content)
+
+    def _parse_csv(self, content: str) -> Tuple[List[Finding], List[Finding]]:
+        """Nessus "CSV" export. It was recognised by nothing -- a scan exported as
+        CSV, the format most often handed over for spreadsheets, gave 0 findings.
+
+        Nessus writes one row per CVE, so a plugin citing twelve CVEs on one host
+        is twelve rows; they are one finding, with every CVE on it. "Risk" is
+        Nessus's own rating ("None" is its informational level); the CVSS v3 base
+        score is preferred to v2 when the export has both.
+        """
+        import csv as _csv
+        import io as _io
+        rows = list(_csv.DictReader(_io.StringIO(content.lstrip("\ufeff"))))
+        if not rows:
+            return [], []
+        norm = {k.strip().lower(): k for k in rows[0].keys() if k}
+
+        def col(row, *names):
+            for n in names:
+                k = norm.get(n)
+                if k is not None and row.get(k) not in (None, ""):
+                    return str(row.get(k)).strip()
+            return ""
+
+        grouped = {}
+        for row in rows:
+            plugin_id = col(row, "plugin id")
+            host = col(row, "host", "ip address")
+            port = col(row, "port")
+            key = (plugin_id, host, port, col(row, "protocol"))
+            if key not in grouped:
+                grouped[key] = {"row": row, "cves": []}
+            cve = col(row, "cve")
+            for c in re.findall(r'CVE-\d{4}-\d{4,7}', cve, re.IGNORECASE):
+                if c.upper() not in grouped[key]["cves"]:
+                    grouped[key]["cves"].append(c.upper())
+
+        actionable, info = [], []
+        for (plugin_id, host, port, protocol), g in grouped.items():
+            row = g["row"]
+            risk = col(row, "risk", "risk factor", "severity")
+            severity = "INFO" if risk.lower() in ("none", "info", "informational", "") else risk.upper()
+            score = None
+            for name in ("cvss v3.0 base score", "cvss v3 base score", "cvss v2.0 base score", "cvss"):
+                v = col(row, name)
+                if v:
+                    try:
+                        score = float(v)
+                        break
+                    except ValueError:
+                        pass
+            target = f"{host}:{port}/{protocol or 'tcp'}" if port and port != "0" else host
+            desc = col(row, "description") or col(row, "synopsis")
+            f = Finding(
+                plugin_id=plugin_id,
+                title=col(row, "name") or f"Nessus Plugin {plugin_id}",
+                severity=severity,
+                severity_score=score,
+                cve_list=g["cves"],
+                description=desc,
+                remediation=col(row, "solution"),
+                target=target or "Unknown Host",
+                evidence=col(row, "plugin output") or desc[:500],
+                source_tool="Nessus",
+            )
+            if f.severity not in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
+                # Nessus writes "n/a" as the solution of its informational plugins.
+                if f.remediation.strip().lower() in ("", "n/a", "none"):
+                    f.remediation = "No action required; informational result recorded by the scanner."
+                f.remediation_actionable = f.remediation
+            (actionable if f.severity in ("CRITICAL", "HIGH", "MEDIUM", "LOW") else info).append(f)
+        return map_findings_list(actionable), info
 
     def _parse_plaintext_table(self, content: str) -> Tuple[List[Finding], List[Finding]]:
         """Parses a vulnerability table that text extraction has flattened to one

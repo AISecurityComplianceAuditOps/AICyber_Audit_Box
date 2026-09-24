@@ -287,27 +287,59 @@ class QualysParser(BaseParser):
         """Simpler/legacy Qualys XML variant: <VULN><QID>/<TITLE>/<SEVERITY>... with a
         preceding sibling <IP> giving the host, no separate glossary needed."""
         findings: List[Finding] = []
-        vuln_nodes = soup.find_all(re.compile(r"^vuln$", re.IGNORECASE))
+        # VULN: confirmed vulnerability. PRACTICE: potential vulnerability.
+        # INFO: information gathered -- a fact about the host, not a weakness.
+        vuln_nodes = soup.find_all(re.compile(r"^(vuln|practice|info)$", re.IGNORECASE))
 
         for node in vuln_nodes:
             def _text(tag_name):
                 t = node.find(re.compile(f"^{tag_name}$", re.IGNORECASE))
                 return t.get_text(strip=True) if t else ""
 
+            # The scan report (scan-1.dtd) carries QID and severity as ATTRIBUTES:
+            # <VULN number="38657" severity="3">. Read as child tags they were
+            # empty, so every row was rated INFO.
             title = _text("title") or "Qualys Finding"
-            qid = _text("qid")
-            raw_sev = _text("severity")
+            qid = _text("qid") or (node.get("number") or "").strip()
+            raw_sev = _text("severity") or (node.get("severity") or "").strip()
             sev_digits = re.sub(r"[^0-9]", "", raw_sev)
             severity = QUALYS_SEVERITY_MAP.get(sev_digits, raw_sev or "INFO")
+            if node.name.lower() == "info":
+                severity = "INFO"
 
-            cve_text = _text("cve") or _text("cve_id")
-            cve_list = [c.strip() for c in re.split(r"[,;\s]+", cve_text) if c.strip().upper().startswith("CVE-")]
+            cve_text = " ".join(t.get_text(" ", strip=True) for t in node.find_all(
+                re.compile(r"^(cve|cve_id|id)$", re.IGNORECASE))) or (node.get("cveid") or "")
+            cve_list = sorted({c.upper() for c in re.findall(r"CVE-\d{4}-\d{4,7}", cve_text, re.IGNORECASE)})
 
-            threat = _text("threat") or _text("description") or _text("diagnosis")
+            threat = (_text("threat") or _text("description") or _text("diagnosis"))
+            consequence = _text("consequence") or _text("impact")
             solution = _text("solution") or _text("recommendation") or "Apply vendor patch per scanner solution guidance."
+            result = _text("result")
 
-            ip_node = node.find_previous(re.compile(r"^ip$", re.IGNORECASE))
-            target = ip_node.get_text(strip=True) if ip_node else "Unknown Host"
+            # CVSS 3 before 2, as in the CSV export.
+            score = None
+            for tag in ("cvss3_base", "cvss3_final", "cvss_base", "cvss_final"):
+                try:
+                    score = float(_text(tag))
+                    break
+                except ValueError:
+                    continue
+
+            # Host: the enclosing <IP value=".." name=".."> in the scan report.
+            # find_previous() and get_text() took the IP element's entire text --
+            # the host's OS, every title and every solution -- as the target.
+            ip_node = node.find_parent(re.compile(r"^ip$", re.IGNORECASE))
+            if ip_node is not None and ip_node.get("value"):
+                host = ip_node.get("value").strip()
+                name = (ip_node.get("name") or "").strip()
+                target = f"{host} / {name}" if name and name != host else host
+            else:
+                prev = node.find_previous(re.compile(r"^ip$", re.IGNORECASE))
+                target = (prev.get("value") or prev.get_text(" ", strip=True)[:60]) if prev else "Unknown Host"
+            cat = node.find_parent(re.compile(r"^cat$", re.IGNORECASE))
+            port = (cat.get("port") or "").strip() if cat is not None else ""
+            if port:
+                target = f"{target}:{port}"
 
             if not title and not qid and not cve_list:
                 continue
@@ -315,11 +347,12 @@ class QualysParser(BaseParser):
             findings.append(Finding(
                 title=title,
                 severity=severity,
+                severity_score=score,
                 cve_list=cve_list,
                 target=target,
-                description=threat or title,
+                description="\n\n".join(p for p in (threat, consequence) if p) or title,
                 remediation=solution,
-                evidence=f"QID {qid}" if qid else "",
+                evidence=(result[:500] if result else "") or (f"QID {qid}" if qid else ""),
                 plugin_id=qid,
                 source_tool="Qualys",
             ))

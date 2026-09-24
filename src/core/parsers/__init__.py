@@ -12,15 +12,27 @@ from .burp_parser import BurpParser
 from .qualys_parser import QualysParser
 from .trivy_parser import TrivyParser
 from .kali_parser import KaliParser
+from .zap_parser import ZapParser
+from .openvas_parser import OpenVasParser
+from .nuclei_parser import NucleiParser
+from .tls_scan_parser import TlsScanParser
 from .pentest_report_parser import PentestReportParser, PDF_TABLES_MARKER
 from .pqc_parser import PQCParser, pqc_extract_text, _PQC_BINARY_EXTENSIONS
 
 ALL_PARSERS = [
     NessusParser(),
     NmapParser(),
+    # Before BurpParser, whose detection also accepts "<OWASPZAPReport" -- it
+    # claimed ZAP XML reports and read nothing from them.
+    ZapParser(),
     BurpParser(),
+    # Before QualysParser, whose detection also accepts OpenVAS markers and
+    # labelled OpenVAS results "Qualys".
+    OpenVasParser(),
     QualysParser(),
     TrivyParser(),
+    NucleiParser(),
+    TlsScanParser(),
     # Kali console tools (nikto, sqlmap, gobuster, hydra, wpscan). Sits after the
     # structured-export parsers and before PQCParser: its signatures are specific
     # tool banners, so it will not steal a Nessus/Burp/Trivy export, but it must
@@ -193,6 +205,7 @@ def parse_tool_file(filename: str, content: str, framework: str = "") -> Tuple[L
 __all__ = [
     "Finding", "BaseParser", "is_image_file", "map_finding_to_control", "map_findings_list",
     "NessusParser", "NmapParser", "BurpParser", "QualysParser", "TrivyParser", "KaliParser",
+    "ZapParser", "OpenVasParser", "NucleiParser", "TlsScanParser",
     "PentestReportParser", "PQCParser",
     "parse_tool_file", "pqc_extract_text",
 ]

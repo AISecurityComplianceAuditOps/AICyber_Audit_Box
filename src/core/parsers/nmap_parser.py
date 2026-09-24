@@ -69,6 +69,17 @@ _CRITICAL_NAMES = ("backdoor", "bluekeep", "eternalblue", "shellshock", "log4she
 _HIGH_NAMES = ("path traversal", "directory traversal", "heartbleed", "sql injection",
                "authentication bypass")
 
+def _cleartext_service_steps(findings) -> None:
+    """Developer steps for an open Telnet / r-service, set before the shared
+    mapper runs: its "cleartext" template answers with FTPS/SFTP/HTTPS, none of
+    which replaces a remote shell."""
+    from .kali_parser import _cleartext_login_steps
+    for f in findings:
+        if "Cleartext Remote" in f.title and not f.remediation_actionable:
+            m = re.search(r'\((\d+)/tcp\)', f.title)
+            f.remediation_actionable = _cleartext_login_steps(m.group(1) if m else "the port", f.target)
+
+
 def _clean_nmap_title(raw: str) -> str:
     """Tidy a title lifted out of raw nmap output.
 
@@ -312,6 +323,7 @@ class NmapParser(BaseParser):
             for script_el in host.findall('hostscript/script'):
                 _check_script(script_el)
 
+        _cleartext_service_steps(findings)
         map_findings_list(findings)
         return findings, AssetInventory(target_ip=target_label, open_ports=open_ports)
 
@@ -387,6 +399,7 @@ class NmapParser(BaseParser):
                     if pattern.search(svc_str):
                         _add_finding(label, severity, svc_str, port_label)
 
+        _cleartext_service_steps(findings)
         map_findings_list(findings)
         return findings, AssetInventory(target_ip=target_label, open_ports=open_ports)
 
@@ -541,6 +554,7 @@ class NmapParser(BaseParser):
                              _severity_for_cve_line(snippet, [cve_code]), [cve_code], snippet,
                              "Scanner Output")
 
+        _cleartext_service_steps(findings)
         map_findings_list(findings)
         asset_inv = AssetInventory(target_ip=target_ip, open_ports=open_ports)
         return findings, asset_inv

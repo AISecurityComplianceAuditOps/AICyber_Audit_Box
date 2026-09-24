@@ -1,9 +1,143 @@
 # -*- coding: utf-8 -*-
 import json
+import re
 from typing import List, Tuple
 from .base_parser import BaseParser, is_image_file
 from .finding_schema import Finding
 from .control_mapper import map_findings_list
+
+
+# ── Trivy's text output (its default: `trivy image shop:1.0`) ─────────────────
+# Vulnerabilities come as a box-drawn table (ASCII "|" and "+" in older
+# versions); misconfigurations as "HIGH: <message>" or "AVD-DS-0002 (HIGH):
+# <message>" blocks under a "Tests: N (SUCCESSES: .., FAILURES: ..)" line.
+_TABLE_HEADER_RE = re.compile(r'[│|]\s*Library\s*[│|]\s*Vulnerability(?: ID)?\s*[│|]\s*Severity\s*[│|]')
+_MISCONF_TESTS_RE = re.compile(r'^Tests: \d+ \(SUCCESSES: \d+, FAILURES: \d+', re.MULTILINE)
+_MISCONF_RE = re.compile(r'^(?:(?P<id>[A-Z]+-[A-Z]+-\d+|[A-Z]{2,}\d+) \()?(?P<sev>CRITICAL|HIGH|MEDIUM|LOW|UNKNOWN)\)?: (?P<msg>.+)$',
+                         re.MULTILINE)
+
+
+# A known CVE in an installed package is OWASP A06 whatever the bug inside it
+# is. Left to the shared keyword pass, one image's openssl CVE was filed under
+# Cryptographic Failures and its zlib CVE under Security Misconfiguration.
+_PACKAGE_CVE_CATEGORY = "Vulnerable Components"
+
+
+def _package_steps(pkg: str, installed: str, fixed: str, vid: str) -> str:
+    if fixed:
+        return (f"1. Update {pkg} from {installed} to {fixed} or later (rebuild the image on an updated base, "
+                f"or bump the dependency and regenerate the lock file). 2. Redeploy. "
+                f"3. Re-run Trivy and confirm {vid} is no longer reported.")
+    return (f"1. No fixed release of {pkg} exists yet for {vid}; track the vendor advisory. "
+            f"2. Until then, remove the package if unused or mitigate as the advisory describes. "
+            f"3. Re-run Trivy after the fix is published.")
+
+
+def _is_trivy_text(content: str) -> bool:
+    return bool(_TABLE_HEADER_RE.search(content) or _MISCONF_TESTS_RE.search(content))
+
+
+def _cells(line: str) -> List[str]:
+    return [c.strip() for c in re.split(r'[│|]', line.strip())[1:-1]]
+
+
+def _parse_trivy_text(content: str) -> List[Finding]:
+    findings: List[Finding] = []
+    lines = content.splitlines()
+    target, header, rec, library = "", None, None, ""
+
+    def _flush():
+        if rec is None:
+            return
+        vid = rec.get("vulnerability", "")
+        pkg = rec.get("library", "")
+        inst = rec.get("installed version", "")
+        fixed = rec.get("fixed version", "")
+        title = re.sub(r'\s+', ' ', " ".join(rec["title_parts"])).strip() or vid
+        findings.append(Finding(
+            title=title,
+            severity=rec.get("severity", "UNKNOWN") or "UNKNOWN",
+            cve_list=[vid.upper()] if vid.upper().startswith("CVE-") else [],
+            target=target or "Trivy scan target",
+            description=title,
+            remediation=(f"Update {pkg} from {inst} to fixed version {fixed}." if fixed else
+                         f"No fixed version available yet for {pkg} {inst}; monitor vendor advisory for {vid}."),
+            evidence=f"Package: {pkg} | Installed: {inst} | Fixed: {fixed or 'N/A'}"
+                     + (f" | {rec['url']}" if rec.get("url") else ""),
+            plugin_id=vid,
+            category=_PACKAGE_CVE_CATEGORY,
+            remediation_actionable=_package_steps(pkg, inst, fixed, vid),
+            source_tool="Trivy",
+        ))
+
+    for i, raw in enumerate(lines):
+        line = raw.rstrip()
+        nxt = lines[i + 1].strip() if i + 1 < len(lines) else ""
+        # "shop:1.0 (debian 11.6)" underlined with "=====" names the target.
+        if line.strip() and nxt and set(nxt) == {"="} and not line.strip().startswith(("│", "|")):
+            _flush()
+            rec, header, library, target = None, None, "", line.strip()
+            continue
+        if _TABLE_HEADER_RE.search(line):
+            header = [c.lower() for c in _cells(line)]
+            continue
+        if header is None or not line.strip().startswith(("│", "|")):
+            continue
+        cells = _cells(line)
+        if len(cells) != len(header):
+            continue
+        row = dict(zip(header, cells))
+        vid = row.get("vulnerability") or row.get("vulnerability id") or ""
+        if vid:
+            _flush()
+            # Trivy merges the Library cell over consecutive rows of one package.
+            library = row.get("library") or library
+            rec = {"vulnerability": vid, "library": library, "severity": row.get("severity", ""),
+                   "installed version": row.get("installed version", ""),
+                   "fixed version": row.get("fixed version", ""), "title_parts": [], "url": ""}
+        if rec is None:
+            continue
+        t = row.get("title", "")
+        if t.startswith("https://"):
+            rec["url"] = t
+        elif t:
+            rec["title_parts"].append(t)
+        for col in ("installed version", "fixed version"):
+            if not vid and row.get(col):
+                rec[col] = (rec[col] + row[col]).strip()
+    _flush()
+
+    # Misconfiguration blocks (trivy config / the misconfig scanner).
+    if _MISCONF_TESTS_RE.search(content):
+        section = ""
+        for i, raw in enumerate(lines):
+            nxt = lines[i + 1].strip() if i + 1 < len(lines) else ""
+            if raw.strip() and nxt and set(nxt) == {"="}:
+                section = raw.strip()
+                continue
+            m = _MISCONF_RE.match(raw.strip())
+            if not m:
+                continue
+            body, url = [], ""
+            for follow in lines[i + 1:i + 15]:
+                s = follow.strip()
+                if _MISCONF_RE.match(s) or s.startswith("Tests:"):
+                    break
+                if s.startswith("See http"):
+                    url = s[4:].strip()
+                elif s and set(s) - set("═─-="):
+                    body.append(s)
+            findings.append(Finding(
+                title=m.group("msg").strip(),
+                severity=m.group("sev"),
+                target=section or "Trivy scan target",
+                description=" ".join(body) or m.group("msg").strip(),
+                remediation=m.group("msg").strip(),
+                evidence=raw.strip() + (f" | {url}" if url else ""),
+                plugin_id=m.group("id") or "",
+                source_tool="Trivy",
+            ))
+    return findings
 
 
 class TrivyParser(BaseParser):
@@ -30,9 +164,13 @@ class TrivyParser(BaseParser):
         # Guard: reject image files regardless of their filename.
         if is_image_file(filename):
             return False
-        # Only check .json files to avoid false-positives from CSV/XML formats
-        # that might contain the word 'vulnerabilities' as plain prose.
-        if not filename.lower().endswith(".json"):
+        # Trivy's default output is a table, not JSON, and was read by nothing.
+        if _is_trivy_text(content):
+            return True
+        # JSON by content, not by extension: a Trivy JSON report saved as .txt
+        # (or with no extension) was rejected here. Requiring the document to BE
+        # JSON still keeps prose that mentions "vulnerabilities" out.
+        if content.lstrip()[:1] not in "[{":
             return False
         # Scans the FULL content, not a fixed-size prefix -- "schemaversion" sits at
         # the JSON root and appears early, but "vulnerabilities"/"misconfigurations"
@@ -54,6 +192,10 @@ class TrivyParser(BaseParser):
         return False
 
     def parse(self, filename: str, content: str) -> Tuple[List[Finding], List[Finding]]:
+        if content.lstrip()[:1] not in "[{" and _is_trivy_text(content):
+            findings = _parse_trivy_text(content)
+            map_findings_list(findings)
+            return self._split_by_severity(findings)
         try:
             data = json.loads(content)
         except Exception as e:
@@ -135,6 +277,8 @@ class TrivyParser(BaseParser):
                     remediation=remediation,
                     evidence=f"Package: {pkg_name} | Installed: {installed_ver} | Fixed: {fixed_ver or 'N/A'}",
                     plugin_id=vuln_id,
+                    category=_PACKAGE_CVE_CATEGORY,
+                    remediation_actionable=_package_steps(pkg_name, installed_ver, fixed_ver, vuln_id),
                     source_tool="Trivy",
                 ))
 
