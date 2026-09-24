@@ -283,11 +283,17 @@ def test_the_extracted_cwe_decides_when_the_title_says_nothing():
 
 @pytest.mark.parametrize("title,cwes", [
     ("Cryptographic Failure", ["CWE-310"]),
-    ("Missing Encryption of Sensitive Data", ["CWE-311"]),
     ("Cleartext Transmission of Phone Numbers", ["CWE-319"]),
 ])
 def test_cryptographic_failures_are_filed_as_such(title, cwes):
     assert _category(title, cwes) == "Cryptographic Failures", title
+
+
+def test_missing_encryption_follows_owasps_own_list():
+    # CWE-311 is in OWASP's A04:2021 Insecure Design list, not A02. This test
+    # expected Cryptographic Failures while the CWE table lacked CWE-311 and
+    # the word "encryption" decided it.
+    assert _category("Missing Encryption of Sensitive Data", ["CWE-311"]) == "Insecure Design"
 
 
 # ── report tables: cells whole, numbers real ─────────────────────────────────

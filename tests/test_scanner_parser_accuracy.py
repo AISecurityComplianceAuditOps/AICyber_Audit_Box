@@ -457,3 +457,38 @@ def test_burp_html_dispatch_reaches_the_html_path():
     act, info = parse_tool_file("burp_report.html", BURP_HTML, framework="vapt")
     titles = [f.title for f in list(act) + list(info or [])]
     assert any("SQL injection" in t for t in titles), titles
+
+
+# ── OWASP category from the report's own CWE ─────────────────────────────────
+
+from src.core.parsers.control_mapper import CWE_TO_OWASP_MAP, map_finding_to_risk_category
+from src.core.parsers.finding_schema import Finding
+
+
+@pytest.mark.parametrize("title, cwes, category", [
+    # Classified by keywords while the table lacked the CWE.
+    ("XML external entity injection", ["CWE-611"], "Security Misconfiguration"),
+    ("Open redirection (DOM-based)", ["CWE-601"], "Access Control"),
+    ("TLS cookie without secure flag set", ["CWE-614"], "Security Misconfiguration"),
+    ("Password field with autocomplete enabled", ["CWE-200"], "Access Control"),
+    ("Input returned in response (reflected)", ["CWE-20", "CWE-116"], "Injection"),
+    ("Cacheable HTTPS response", ["CWE-524", "CWE-525"], "Insecure Design"),
+    # Unchanged: already right.
+    ("SQL injection", ["CWE-89", "CWE-94", "CWE-116"], "Injection"),
+    ("Vulnerable JavaScript dependency", ["CVE-2020-7676", "CWE-1104"], "Vulnerable Components"),
+    ("External service interaction (HTTP)", ["CWE-918", "CWE-406"], "SSRF"),
+    ("Strict transport security not enforced", ["CWE-523"], "Cryptographic Failures"),
+])
+def test_category_follows_owasp_2021_list_for_the_reports_cwe(title, cwes, category):
+    f = Finding(title=title, severity="LOW", description="", cve_list=cwes)
+    assert map_finding_to_risk_category(f) == category
+
+
+def test_owasp_table_holds_each_category_in_full():
+    counts = {}
+    for label in CWE_TO_OWASP_MAP.values():
+        counts[label[:3]] = counts.get(label[:3], 0) + 1
+    # OWASP's published list sizes, plus CWE-259 kept under A02 and CWE-693
+    # under A05.
+    assert counts == {"A01": 34, "A02": 30, "A03": 33, "A04": 40, "A05": 21,
+                      "A06": 3, "A07": 21, "A08": 10, "A09": 4, "A10": 1}

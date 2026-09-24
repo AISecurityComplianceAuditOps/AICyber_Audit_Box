@@ -3,64 +3,165 @@ import re
 from typing import List, Optional
 from .finding_schema import Finding
 
-# Official Published MITRE CWE to OWASP Top 10 (2021) Deterministic Lookup Table
+# CWE to OWASP Top 10 (2021): the "List of Mapped CWEs" OWASP publishes for
+# each category, in full. The table used to hold 30 of them, so a finding
+# whose report named the CWE was classified by keywords instead: Burp's XXE
+# (CWE-611, A05) filed as Injection, open redirection (CWE-601, A01) and
+# "TLS cookie without secure flag" (CWE-614, A05) as Security Misconfiguration
+# and Cryptographic Failures, and CWE-200 was held under A05 though OWASP
+# lists it first under A01.
+#
+# Two entries are not in OWASP's lists and are kept as they were: CWE-693
+# (protection mechanism failure) under A05, and CWE-259 under A02 -- OWASP
+# names CWE-259 as a notable A02 weakness while listing it under A07.
 CWE_TO_OWASP_MAP = {
-    # A01:2021 - Broken Access Control
-    "CWE-22": "A01:2021 Broken Access Control",
-    "CWE-284": "A01:2021 Broken Access Control",
-    "CWE-285": "A01:2021 Broken Access Control",
-    "CWE-639": "A01:2021 Broken Access Control",
-    "CWE-862": "A01:2021 Broken Access Control",
-    "CWE-863": "A01:2021 Broken Access Control",
-    
-    # A02:2021 - Cryptographic Failures
-    "CWE-259": "A02:2021 Cryptographic Failures",
-    "CWE-326": "A02:2021 Cryptographic Failures",
-    "CWE-327": "A02:2021 Cryptographic Failures",
-    "CWE-331": "A02:2021 Cryptographic Failures",
-    # Present in OWASP's own A02:2021 list, and missing here: a finding the
-    # report classified CWE-310 ("Cryptographic Failure") was filed under
-    # Security Misconfiguration.
-    "CWE-310": "A02:2021 Cryptographic Failures",
-    "CWE-319": "A02:2021 Cryptographic Failures",
-    "CWE-328": "A02:2021 Cryptographic Failures",
-    "CWE-523": "A02:2021 Cryptographic Failures",
-    "CWE-916": "A02:2021 Cryptographic Failures",
+    # A01:2021 Broken Access Control
+    "CWE-22": "A01:2021 Broken Access Control", "CWE-23": "A01:2021 Broken Access Control",
+    "CWE-35": "A01:2021 Broken Access Control", "CWE-59": "A01:2021 Broken Access Control",
+    "CWE-200": "A01:2021 Broken Access Control", "CWE-201": "A01:2021 Broken Access Control",
+    "CWE-219": "A01:2021 Broken Access Control", "CWE-264": "A01:2021 Broken Access Control",
+    "CWE-275": "A01:2021 Broken Access Control", "CWE-276": "A01:2021 Broken Access Control",
+    "CWE-284": "A01:2021 Broken Access Control", "CWE-285": "A01:2021 Broken Access Control",
+    "CWE-352": "A01:2021 Broken Access Control", "CWE-359": "A01:2021 Broken Access Control",
+    "CWE-377": "A01:2021 Broken Access Control", "CWE-402": "A01:2021 Broken Access Control",
+    "CWE-425": "A01:2021 Broken Access Control", "CWE-441": "A01:2021 Broken Access Control",
+    "CWE-497": "A01:2021 Broken Access Control", "CWE-538": "A01:2021 Broken Access Control",
+    "CWE-540": "A01:2021 Broken Access Control", "CWE-548": "A01:2021 Broken Access Control",
+    "CWE-552": "A01:2021 Broken Access Control", "CWE-566": "A01:2021 Broken Access Control",
+    "CWE-601": "A01:2021 Broken Access Control", "CWE-639": "A01:2021 Broken Access Control",
+    "CWE-651": "A01:2021 Broken Access Control", "CWE-668": "A01:2021 Broken Access Control",
+    "CWE-706": "A01:2021 Broken Access Control", "CWE-862": "A01:2021 Broken Access Control",
+    "CWE-863": "A01:2021 Broken Access Control", "CWE-913": "A01:2021 Broken Access Control",
+    "CWE-922": "A01:2021 Broken Access Control", "CWE-1275": "A01:2021 Broken Access Control",
 
-    # A03:2021 - Injection
-    "CWE-79": "A03:2021 Injection", # XSS
-    "CWE-89": "A03:2021 Injection", # SQLi
-    "CWE-77": "A03:2021 Injection", # Command Injection
-    "CWE-78": "A03:2021 Injection",
-    "CWE-94": "A03:2021 Injection",
+    # A02:2021 Cryptographic Failures
+    "CWE-259": "A02:2021 Cryptographic Failures", "CWE-261": "A02:2021 Cryptographic Failures",
+    "CWE-296": "A02:2021 Cryptographic Failures", "CWE-310": "A02:2021 Cryptographic Failures",
+    "CWE-319": "A02:2021 Cryptographic Failures", "CWE-321": "A02:2021 Cryptographic Failures",
+    "CWE-322": "A02:2021 Cryptographic Failures", "CWE-323": "A02:2021 Cryptographic Failures",
+    "CWE-324": "A02:2021 Cryptographic Failures", "CWE-325": "A02:2021 Cryptographic Failures",
+    "CWE-326": "A02:2021 Cryptographic Failures", "CWE-327": "A02:2021 Cryptographic Failures",
+    "CWE-328": "A02:2021 Cryptographic Failures", "CWE-329": "A02:2021 Cryptographic Failures",
+    "CWE-330": "A02:2021 Cryptographic Failures", "CWE-331": "A02:2021 Cryptographic Failures",
+    "CWE-335": "A02:2021 Cryptographic Failures", "CWE-336": "A02:2021 Cryptographic Failures",
+    "CWE-337": "A02:2021 Cryptographic Failures", "CWE-338": "A02:2021 Cryptographic Failures",
+    "CWE-340": "A02:2021 Cryptographic Failures", "CWE-347": "A02:2021 Cryptographic Failures",
+    "CWE-523": "A02:2021 Cryptographic Failures", "CWE-720": "A02:2021 Cryptographic Failures",
+    "CWE-757": "A02:2021 Cryptographic Failures", "CWE-759": "A02:2021 Cryptographic Failures",
+    "CWE-760": "A02:2021 Cryptographic Failures", "CWE-780": "A02:2021 Cryptographic Failures",
+    "CWE-818": "A02:2021 Cryptographic Failures", "CWE-916": "A02:2021 Cryptographic Failures",
 
-    # A04:2021 - Insecure Design
-    "CWE-209": "A04:2021 Insecure Design",
-    "CWE-522": "A04:2021 Insecure Design",
+    # A03:2021 Injection
+    "CWE-20": "A03:2021 Injection", "CWE-74": "A03:2021 Injection",
+    "CWE-75": "A03:2021 Injection", "CWE-77": "A03:2021 Injection",
+    "CWE-78": "A03:2021 Injection", "CWE-79": "A03:2021 Injection",
+    "CWE-80": "A03:2021 Injection", "CWE-83": "A03:2021 Injection",
+    "CWE-87": "A03:2021 Injection", "CWE-88": "A03:2021 Injection",
+    "CWE-89": "A03:2021 Injection", "CWE-90": "A03:2021 Injection",
+    "CWE-91": "A03:2021 Injection", "CWE-93": "A03:2021 Injection",
+    "CWE-94": "A03:2021 Injection", "CWE-95": "A03:2021 Injection",
+    "CWE-96": "A03:2021 Injection", "CWE-97": "A03:2021 Injection",
+    "CWE-98": "A03:2021 Injection", "CWE-99": "A03:2021 Injection",
+    "CWE-100": "A03:2021 Injection", "CWE-113": "A03:2021 Injection",
+    "CWE-116": "A03:2021 Injection", "CWE-138": "A03:2021 Injection",
+    "CWE-184": "A03:2021 Injection", "CWE-470": "A03:2021 Injection",
+    "CWE-471": "A03:2021 Injection", "CWE-564": "A03:2021 Injection",
+    "CWE-610": "A03:2021 Injection", "CWE-643": "A03:2021 Injection",
+    "CWE-644": "A03:2021 Injection", "CWE-652": "A03:2021 Injection",
+    "CWE-917": "A03:2021 Injection",
 
-    # A05:2021 - Security Misconfiguration
+    # A04:2021 Insecure Design
+    "CWE-73": "A04:2021 Insecure Design", "CWE-183": "A04:2021 Insecure Design",
+    "CWE-209": "A04:2021 Insecure Design", "CWE-213": "A04:2021 Insecure Design",
+    "CWE-235": "A04:2021 Insecure Design", "CWE-256": "A04:2021 Insecure Design",
+    "CWE-257": "A04:2021 Insecure Design", "CWE-266": "A04:2021 Insecure Design",
+    "CWE-269": "A04:2021 Insecure Design", "CWE-280": "A04:2021 Insecure Design",
+    "CWE-311": "A04:2021 Insecure Design", "CWE-312": "A04:2021 Insecure Design",
+    "CWE-313": "A04:2021 Insecure Design", "CWE-316": "A04:2021 Insecure Design",
+    "CWE-419": "A04:2021 Insecure Design", "CWE-430": "A04:2021 Insecure Design",
+    "CWE-434": "A04:2021 Insecure Design", "CWE-444": "A04:2021 Insecure Design",
+    "CWE-451": "A04:2021 Insecure Design", "CWE-472": "A04:2021 Insecure Design",
+    "CWE-501": "A04:2021 Insecure Design", "CWE-522": "A04:2021 Insecure Design",
+    "CWE-525": "A04:2021 Insecure Design", "CWE-539": "A04:2021 Insecure Design",
+    "CWE-579": "A04:2021 Insecure Design", "CWE-598": "A04:2021 Insecure Design",
+    "CWE-602": "A04:2021 Insecure Design", "CWE-642": "A04:2021 Insecure Design",
+    "CWE-646": "A04:2021 Insecure Design", "CWE-650": "A04:2021 Insecure Design",
+    "CWE-653": "A04:2021 Insecure Design", "CWE-656": "A04:2021 Insecure Design",
+    "CWE-657": "A04:2021 Insecure Design", "CWE-799": "A04:2021 Insecure Design",
+    "CWE-807": "A04:2021 Insecure Design", "CWE-840": "A04:2021 Insecure Design",
+    "CWE-841": "A04:2021 Insecure Design", "CWE-927": "A04:2021 Insecure Design",
+    "CWE-1021": "A04:2021 Insecure Design", "CWE-1173": "A04:2021 Insecure Design",
+
+    # A05:2021 Security Misconfiguration
+    "CWE-2": "A05:2021 Security Misconfiguration",
+    "CWE-11": "A05:2021 Security Misconfiguration",
+    "CWE-13": "A05:2021 Security Misconfiguration",
+    "CWE-15": "A05:2021 Security Misconfiguration",
     "CWE-16": "A05:2021 Security Misconfiguration",
-    "CWE-200": "A05:2021 Security Misconfiguration",
+    "CWE-260": "A05:2021 Security Misconfiguration",
+    "CWE-315": "A05:2021 Security Misconfiguration",
+    "CWE-520": "A05:2021 Security Misconfiguration",
+    "CWE-526": "A05:2021 Security Misconfiguration",
+    "CWE-537": "A05:2021 Security Misconfiguration",
+    "CWE-541": "A05:2021 Security Misconfiguration",
+    "CWE-547": "A05:2021 Security Misconfiguration",
+    "CWE-611": "A05:2021 Security Misconfiguration",
+    "CWE-614": "A05:2021 Security Misconfiguration",
     "CWE-693": "A05:2021 Security Misconfiguration",
+    "CWE-756": "A05:2021 Security Misconfiguration",
+    "CWE-776": "A05:2021 Security Misconfiguration",
+    "CWE-942": "A05:2021 Security Misconfiguration",
+    "CWE-1004": "A05:2021 Security Misconfiguration",
+    "CWE-1032": "A05:2021 Security Misconfiguration",
+    "CWE-1174": "A05:2021 Security Misconfiguration",
 
-    # A06:2021 - Vulnerable and Outdated Components
+    # A06:2021 Vulnerable and Outdated Components
     "CWE-937": "A06:2021 Vulnerable and Outdated Components",
+    "CWE-1035": "A06:2021 Vulnerable and Outdated Components",
     "CWE-1104": "A06:2021 Vulnerable and Outdated Components",
 
-    # A07:2021 - Identification and Authentication Failures
+    # A07:2021 Identification & Auth Failures
+    "CWE-255": "A07:2021 Identification & Auth Failures",
     "CWE-287": "A07:2021 Identification & Auth Failures",
+    "CWE-288": "A07:2021 Identification & Auth Failures",
+    "CWE-290": "A07:2021 Identification & Auth Failures",
+    "CWE-294": "A07:2021 Identification & Auth Failures",
+    "CWE-295": "A07:2021 Identification & Auth Failures",
+    "CWE-297": "A07:2021 Identification & Auth Failures",
+    "CWE-300": "A07:2021 Identification & Auth Failures",
+    "CWE-302": "A07:2021 Identification & Auth Failures",
+    "CWE-304": "A07:2021 Identification & Auth Failures",
+    "CWE-306": "A07:2021 Identification & Auth Failures",
+    "CWE-307": "A07:2021 Identification & Auth Failures",
+    "CWE-346": "A07:2021 Identification & Auth Failures",
     "CWE-384": "A07:2021 Identification & Auth Failures",
+    "CWE-521": "A07:2021 Identification & Auth Failures",
+    "CWE-613": "A07:2021 Identification & Auth Failures",
+    "CWE-620": "A07:2021 Identification & Auth Failures",
+    "CWE-640": "A07:2021 Identification & Auth Failures",
     "CWE-798": "A07:2021 Identification & Auth Failures",
+    "CWE-940": "A07:2021 Identification & Auth Failures",
+    "CWE-1216": "A07:2021 Identification & Auth Failures",
 
-    # A08:2021 - Software and Data Integrity Failures
+    # A08:2021 Software and Data Integrity Failures
+    "CWE-345": "A08:2021 Software and Data Integrity Failures",
+    "CWE-353": "A08:2021 Software and Data Integrity Failures",
+    "CWE-426": "A08:2021 Software and Data Integrity Failures",
+    "CWE-494": "A08:2021 Software and Data Integrity Failures",
     "CWE-502": "A08:2021 Software and Data Integrity Failures",
+    "CWE-565": "A08:2021 Software and Data Integrity Failures",
+    "CWE-784": "A08:2021 Software and Data Integrity Failures",
     "CWE-829": "A08:2021 Software and Data Integrity Failures",
+    "CWE-830": "A08:2021 Software and Data Integrity Failures",
+    "CWE-915": "A08:2021 Software and Data Integrity Failures",
 
-    # A09:2021 - Security Logging and Monitoring Failures
-    "CWE-778": "A09:2021 Security Logging & Monitoring Failures",
+    # A09:2021 Security Logging & Monitoring Failures
     "CWE-117": "A09:2021 Security Logging & Monitoring Failures",
+    "CWE-223": "A09:2021 Security Logging & Monitoring Failures",
+    "CWE-532": "A09:2021 Security Logging & Monitoring Failures",
+    "CWE-778": "A09:2021 Security Logging & Monitoring Failures",
 
-    # A10:2021 - Server-Side Request Forgery (SSRF)
+    # A10:2021 Server-Side Request Forgery (SSRF)
     "CWE-918": "A10:2021 Server-Side Request Forgery (SSRF)",
 }
 
