@@ -22,6 +22,9 @@ _LITERAL_PW_URL = re.compile(r"postgresql://postgres:(?!%s@)[^@\s\"'{}]+@")
 
 
 def _tracked(*suffixes):
+    import shutil
+    if not shutil.which("git"):
+        pytest.skip("git is not installed here (the app image has none)")
     out = subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True,
                          text=True, check=True).stdout.split()
     return [p for p in out if p.endswith(suffixes)]

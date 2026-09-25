@@ -342,7 +342,16 @@ def _pdf_text(final_result):
             pass
         for t in _re.finditer(br"\((.*?)\)\s*Tj", chunk, _re.S):
             words.append(t.group(1).decode("latin-1", "ignore"))
-    return " ".join(words)
+    # A PDF rendered by LibreOffice (the customer image has it; the Windows
+    # workstation does not) embeds its fonts, and the raw streams above read
+    # nothing from it. The same text, read properly, whichever way it was made.
+    try:
+        from pypdf import PdfReader
+        read = " ".join(" ".join((p.extract_text() or "")
+                                 for p in PdfReader(io.BytesIO(data)).pages).split())
+    except Exception:
+        read = ""
+    return " ".join(words) + " " + read
 
 
 def test_accepted_finding_is_published_as_acceptable_not_as_a_risk():
@@ -664,6 +673,8 @@ def test_the_pdf_survives_a_finding_taller_than_a_page_and_prints_no_invented_sc
                                metadata={"framework": "ISO 27001"})
     data = out.getvalue() if hasattr(out, "getvalue") else out
     from pypdf import PdfReader
-    text = " ".join((p.extract_text() or "") for p in PdfReader(io.BytesIO(data)).pages)
+    # Whitespace folded: LibreOffice (the customer image's renderer) wraps a line
+    # of the narrow Observations column and justifies it ("line  26  of  the").
+    text = " ".join(" ".join((p.extract_text() or "") for p in PdfReader(io.BytesIO(data)).pages).split())
     assert "line 0 of the observation" in text
     assert "(0.0)" not in text, "a score the finding does not have was printed"

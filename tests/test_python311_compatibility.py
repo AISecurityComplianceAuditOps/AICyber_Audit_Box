@@ -59,8 +59,13 @@ def _fstring_expression_backslashes(path):
     src = io.open(path, encoding="utf-8").read()
     try:
         tree = ast.parse(src)
-    except SyntaxError:
-        return []                      # a different test's problem
+    except SyntaxError as e:
+        # On 3.11 itself (what CI runs) the offending line does not parse at
+        # all, and that parse error IS the finding. Any other syntax error is
+        # a different test's problem.
+        if "backslash" in str(e.msg).lower():
+            return [(e.lineno, (e.text or "").strip())]
+        return []
     found = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.JoinedStr):
