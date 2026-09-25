@@ -2555,7 +2555,7 @@ async function pollAuditResults() {
             return;
         }
         try {
-            const res = await authFetch(`${API_BASE}/audit/findings?session_id=${targetSessionId}`);
+            const res = await authFetch(`${API_BASE}/audit/findings?session_id=${targetSessionId}&include_info=true`);
             if (!res.ok) return;
             const data = await res.json();
 
@@ -2564,10 +2564,14 @@ async function pollAuditResults() {
                 return;
             }
 
-            if (data.success && data.findings && data.findings.length > 0) {
+            // What this session shows -- decided before the "anything yet?" test,
+            // so a non-VAPT session keeps polling exactly as it did when the
+            // server left informational rows out.
+            const _shown = (data.success && data.findings) ? findingsForSession(data) : [];
+            if (_shown.length > 0) {
                 if (window._resultsInterval) { clearInterval(window._resultsInterval); window._resultsInterval = null; }
                 _noteRunScopingMode(data);
-                findingsList = data.findings;
+                findingsList = _shown;
                 renderFindingsList();
                 updateKPICounters();
 
@@ -3931,7 +3935,9 @@ async function loadFindings() {
     container.innerHTML = `<div class="empty-state">Loading findings from Shakthi DB...</div>`;
 
     try {
-        const response = await authFetch(`${API_BASE}/audit/findings?session_id=${requestSessionId}`);
+        // include_info: a VAPT session lists its informational findings (below);
+        // every other session drops them here, as the server used to.
+        const response = await authFetch(`${API_BASE}/audit/findings?session_id=${requestSessionId}&include_info=true`);
         const data = await response.json();
 
         // Session guard: if active session changed while request was in-flight, ignore response
@@ -3944,7 +3950,7 @@ async function loadFindings() {
         if (banner) {
             banner.style.display = "flex";
             if (data.success && data.findings) {
-                findingsList = data.findings.filter(f => !isFindingInformational(f));
+                findingsList = findingsForSession(data);
                 const statusFilterEl = document.getElementById("status-filter");
                 if (statusFilterEl && statusFilterEl.value === "Compliant") {
                     const hasCompliant = findingsList.some(f => isFindingCompliant(f));
@@ -4984,6 +4990,60 @@ function isFindingInformational(f) {
     return sev.includes("INFO") || st.includes("INFO");
 }
 
+// The framework of the session on the Audit Records page, as /audit/findings
+// reports it. (activeSessionFramework, which several checks read, is never
+// assigned; a separate name keeps those checks exactly as they are.)
+let findingsSessionFramework = "";
+
+// A VAPT session keeps its scanner's informational findings on screen, as the
+// VAPT report does. Nothing in a VAPT scan is "Compliant", so that filter and
+// counter can never match; Informational takes their place. ISO and PQC
+// sessions are unchanged.
+function isVaptOnlySession() {
+    const fw = String(findingsSessionFramework || "").toUpperCase();
+    return fw.includes("VAPT") && !fw.includes("PQC");
+}
+
+// The findings a /audit/findings?include_info=true payload puts on screen:
+// all of them for a VAPT session, all but informational for any other.
+function findingsForSession(data) {
+    findingsSessionFramework = (data && data.framework) || "";
+    syncStatusFilterForSession();
+    const all = (data && data.findings) || [];
+    return isVaptOnlySession() ? all : all.filter(f => !isFindingInformational(f));
+}
+
+function syncStatusFilterForSession() {
+    const vapt = isVaptOnlySession();
+    const sel = document.getElementById("status-filter");
+    if (sel) {
+        const relabel = (value, vaptText) => {
+            const opt = sel.querySelector(`option[value="${value}"]`);
+            if (!opt) return;
+            if (!opt.dataset.defaultText) opt.dataset.defaultText = opt.textContent;
+            opt.textContent = vapt ? vaptText : opt.dataset.defaultText;
+        };
+        relabel("All", "All Findings (Vulnerabilities & Informational)");
+        relabel("Non-Compliant", "Vulnerabilities Only (P1-P4)");
+        relabel("Open", "Unreviewed / Open Vulnerabilities");
+        const comp = sel.querySelector('option[value="Compliant"]');
+        let info = sel.querySelector('option[value="Informational"]');
+        if (!info) {
+            info = new Option("Informational Only", "Informational");
+            sel.insertBefore(info, comp ? comp.nextSibling : null);
+        }
+        if (comp) comp.hidden = vapt;
+        info.hidden = !vapt;
+        if (vapt && sel.value === "Compliant") sel.value = "All";
+        if (!vapt && sel.value === "Informational") sel.value = "All";
+    }
+    const label = document.querySelector(".kpi-box.compliant-box .kpi-label");
+    if (label) {
+        if (!label.dataset.defaultText) label.dataset.defaultText = label.textContent;
+        label.textContent = vapt ? "Informational" : label.dataset.defaultText;
+    }
+}
+
 function matchesSeverityFilter(fSeverity, activeFilter) {
     if (!activeFilter) return true;
     const sev = (fSeverity || "").toLowerCase();
@@ -5022,7 +5082,9 @@ function toggleComplianceFilter(mode) {
         activeComplianceFilter = mode;
         currentFilter = mode;
         if (statusSelect) {
-            statusSelect.value = (mode.toLowerCase().includes("non")) ? "Non-Compliant" : "Compliant";
+            // The first KPI box counts informational findings on a VAPT session.
+            statusSelect.value = (mode.toLowerCase().includes("non")) ? "Non-Compliant"
+                : (isVaptOnlySession() ? "Informational" : "Compliant");
         }
         const selector = mode.toLowerCase().includes("non") ? ".noncompliant-box" : ".compliant-box";
         const box = document.querySelector(selector);
@@ -5088,8 +5150,16 @@ function severityBand(severity) {
     return "";
 }
 
+// Called after renderFindingsList() by the scan-complete poller and the
+// "Recent" session loader, and never defined: each call threw a ReferenceError,
+// so the poller never re-enabled the Run button and "Recent" reported
+// "Failed to load recent session" after loading it. renderFindingsList() has
+// already refreshed the counters by this point.
+function updateKPICounters() {}
+
 function calculateSeverityStats(currentExpandedCards) {
     let compCount = 0;
+    let infoCount = 0;
     let nonCompCount = 0;
     let p1Count = 0;
     let p2Count = 0;
@@ -5102,6 +5172,8 @@ function calculateSeverityStats(currentExpandedCards) {
         cardsToCount.forEach(item => {
             const f = item.originalFinding;
             const singleSnip = item.singleSnippet;
+            // A VAPT informational result is not a gap (only VAPT sessions list them).
+            if (isFindingInformational(f)) { infoCount++; return; }
             const isComp = isFindingCompliant(f, singleSnip);
 
             if (isComp) {
@@ -5119,6 +5191,7 @@ function calculateSeverityStats(currentExpandedCards) {
         (findingsList || []).forEach(f => {
             const statusLower = (f.status || "").toLowerCase();
             if (statusLower === "rejected" || statusLower === "excluded") return;
+            if (isFindingInformational(f)) { infoCount++; return; }
 
             const isComp = isFindingCompliant(f);
             if (isComp) {
@@ -5134,8 +5207,10 @@ function calculateSeverityStats(currentExpandedCards) {
         });
     }
 
+    // A VAPT session has no compliant controls; its first counter is the
+    // informational findings (labelled so by syncStatusFilterForSession).
     const elComp = document.getElementById("count-compliant");
-    if (elComp) elComp.innerText = compCount;
+    if (elComp) elComp.innerText = isVaptOnlySession() ? infoCount : compCount;
 
     const elNonComp = document.getElementById("count-noncompliant");
     if (elNonComp) elNonComp.innerText = nonCompCount;
@@ -6173,10 +6248,14 @@ function renderFindingsList() {
     const valLower = (selectedVal || "all").toLowerCase();
 
     if (valLower !== "all") {
-        if (valLower.includes("compliant") && !valLower.includes("non")) {
+        // Informational rows are only ever in the list for a VAPT session, so
+        // excluding them from the gap filters changes nothing anywhere else.
+        if (valLower === "informational") {
+            list = list.filter(f => isFindingInformational(f));
+        } else if (valLower.includes("compliant") && !valLower.includes("non")) {
             list = list.filter(f => isFindingCompliant(f));
         } else if (valLower.includes("non") || valLower.includes("gap")) {
-            list = list.filter(f => !isFindingCompliant(f));
+            list = list.filter(f => !isFindingCompliant(f) && !isFindingInformational(f));
         } else if (valLower.includes("accepted")) {
             list = list.filter(f => (f.status || "").toLowerCase() === "accepted");
         } else if (valLower.includes("rejected")) {
@@ -6190,7 +6269,7 @@ function renderFindingsList() {
             // "Informational", and "Open" lives in display_status. Confirmed
             // against the database: of 1,922 findings, not one has that status,
             // so the option returned an empty list every time it was chosen.
-            list = list.filter(f => !isFindingCompliant(f) && !f.human_verified);
+            list = list.filter(f => !isFindingCompliant(f) && !isFindingInformational(f) && !f.human_verified);
         } else {
             list = list.filter(f => (f.status || "").toLowerCase().includes(valLower));
         }
@@ -6420,8 +6499,12 @@ function renderFindingsList() {
                     : `<span class="badge badge-info" style="background:rgba(59,130,246,0.15); color:#3b82f6; border:1px solid rgba(59,130,246,0.3); font-weight:700; padding:3px 8px; border-radius:4px; font-size:0.75rem;">✓ Evidence: Present</span>`)
                 : `<span class="badge badge-warning" style="background:rgba(245,158,11,0.15); color:#f59e0b; border:1px solid rgba(245,158,11,0.3); font-weight:700; padding:3px 8px; border-radius:4px; font-size:0.75rem;">⚠ Evidence: Missing</span>`);
 
+        // A VAPT scanner's informational result is neither a pass nor a gap; it
+        // was badged NON_COMPLIANT in red.
         const mainBadgeHtml = isFp
             ? `<span class="badge" style="background:#8b5cf6; color:#ffffff; font-weight:800; padding:4px 10px; border-radius:4px; font-size:0.78rem;">OUT_OF_SCOPE</span>`
+            : (isVaptFinding(f) && isFindingInformational(f))
+            ? `<span class="badge" style="background:#64748b; color:#ffffff; font-weight:800; padding:4px 10px; border-radius:4px; font-size:0.78rem;">INFORMATIONAL</span>`
             : (isComp
                 ? `<span class="badge badge-success" style="background:#10b981; color:#ffffff; font-weight:800; padding:4px 10px; border-radius:4px; font-size:0.78rem;">COMPLIANT</span>`
                 : `<span class="badge badge-danger" style="background:#ef4444; color:#ffffff; font-weight:800; padding:4px 10px; border-radius:4px; font-size:0.78rem;">NON_COMPLIANT</span>`);
@@ -6547,19 +6630,22 @@ function renderFindingsList() {
                 // score. An SSRF assessed at 8.6 was published to the customer as 7.5,
                 // and CVSS figures get quoted in remediation SLAs. Fall back to the band
                 // midpoint only when no score was stored (legacy rows).
+                //
+                // No stored score now means the scanner assigned none (Burp, ZAP,
+                // Nikto...), so none is shown: the band midpoint put "CVSS 7.5" on
+                // every Burp High, the number a client objected to in the report.
                 const _score = Number(f.severity_score);
-                const _band = sUpper.includes("CRITICAL") || sUpper.includes("P1") ? 9.8
-                            : sUpper.includes("HIGH") || sUpper.includes("P2") ? 7.5
-                            : sUpper.includes("MEDIUM") || sUpper.includes("P3") ? 5.3 : 2.5;
-                const _cvss = (Number.isFinite(_score) && _score > 0) ? _score.toFixed(1) : _band.toFixed(1);
-                if (sUpper.includes("CRITICAL") || sUpper.includes("P1")) {
-                    sevBadgeHtml = `<span class="badge" style="background:rgba(239,68,68,0.2); color:#ef4444; border:1px solid rgba(239,68,68,0.4); font-weight:800; padding:3px 8px; border-radius:4px; font-size:0.75rem;">Critical (CVSS ${_cvss})</span>`;
+                const _cvss = (Number.isFinite(_score) && _score > 0) ? `CVSS ${_score.toFixed(1)}` : "no CVSS";
+                if (isFindingInformational(f)) {
+                    sevBadgeHtml = `<span class="badge" style="background:rgba(100,116,139,0.18); color:#64748b; border:1px solid rgba(100,116,139,0.4); font-weight:800; padding:3px 8px; border-radius:4px; font-size:0.75rem;">Info</span>`;
+                } else if (sUpper.includes("CRITICAL") || sUpper.includes("P1")) {
+                    sevBadgeHtml = `<span class="badge" style="background:rgba(239,68,68,0.2); color:#ef4444; border:1px solid rgba(239,68,68,0.4); font-weight:800; padding:3px 8px; border-radius:4px; font-size:0.75rem;">Critical (${_cvss})</span>`;
                 } else if (sUpper.includes("HIGH") || sUpper.includes("P2")) {
-                    sevBadgeHtml = `<span class="badge" style="background:rgba(249,115,22,0.2); color:#f97316; border:1px solid rgba(249,115,22,0.4); font-weight:800; padding:3px 8px; border-radius:4px; font-size:0.75rem;">High (CVSS ${_cvss})</span>`;
+                    sevBadgeHtml = `<span class="badge" style="background:rgba(249,115,22,0.2); color:#f97316; border:1px solid rgba(249,115,22,0.4); font-weight:800; padding:3px 8px; border-radius:4px; font-size:0.75rem;">High (${_cvss})</span>`;
                 } else if (sUpper.includes("MEDIUM") || sUpper.includes("P3")) {
-                    sevBadgeHtml = `<span class="badge" style="background:rgba(245,158,11,0.2); color:#f59e0b; border:1px solid rgba(245,158,11,0.4); font-weight:800; padding:3px 8px; border-radius:4px; font-size:0.75rem;">Medium (CVSS ${_cvss})</span>`;
+                    sevBadgeHtml = `<span class="badge" style="background:rgba(245,158,11,0.2); color:#f59e0b; border:1px solid rgba(245,158,11,0.4); font-weight:800; padding:3px 8px; border-radius:4px; font-size:0.75rem;">Medium (${_cvss})</span>`;
                 } else {
-                    sevBadgeHtml = `<span class="badge" style="background:rgba(59,130,246,0.2); color:#3b82f6; border:1px solid rgba(59,130,246,0.4); font-weight:800; padding:3px 8px; border-radius:4px; font-size:0.75rem;">Low (CVSS ${_cvss})</span>`;
+                    sevBadgeHtml = `<span class="badge" style="background:rgba(59,130,246,0.2); color:#3b82f6; border:1px solid rgba(59,130,246,0.4); font-weight:800; padding:3px 8px; border-radius:4px; font-size:0.75rem;">Low (${_cvss})</span>`;
                 }
             }
 
@@ -8507,11 +8593,17 @@ function csvSafeCell(val) {
 
 async function exportReportCSV(sessId) {
     try {
-        const response = await authFetch(`${API_BASE}/audit/findings?session_id=${sessId}`);
+        const response = await authFetch(`${API_BASE}/audit/findings?session_id=${sessId}&include_info=true`);
         const data = await response.json();
-        if (data.success && data.findings.length > 0) {
+        // Same rows as the PDF/DOCX: a VAPT session's informational findings
+        // included, every other session's left out as before. Decided from this
+        // payload, not the page's state -- sessId need not be the open session.
+        const _fw = String((data && data.framework) || "").toUpperCase();
+        const _rows = (data && data.findings) ? ((_fw.includes("VAPT") && !_fw.includes("PQC"))
+            ? data.findings : data.findings.filter(f => !isFindingInformational(f))) : [];
+        if (data.success && _rows.length > 0) {
             let csv = "Control ID,Name,Severity,Status,Description,Recommendation,Reasoning,Files\n";
-            data.findings.forEach(f => {
+            _rows.forEach(f => {
                 const desc = `"${csvSafeCell(f.description)}"`;
                 const rec = `"${csvSafeCell(f.recommendation)}"`;
                 const reason = `"${csvSafeCell(f.reasoning)}"`;
@@ -9386,11 +9478,11 @@ async function selectRecentSessionScope(ev) { // BUG-13 FIX: use explicit ev par
             }
 
             // Load recent audit findings
-            const fRes = await authFetch(`${API_BASE}/audit/findings?session_id=${activeSessionId}`);
+            const fRes = await authFetch(`${API_BASE}/audit/findings?session_id=${activeSessionId}&include_info=true`);
             const fData = await fRes.json();
             let findingsCount = 0;
             if (fData.success && fData.findings) {
-                findingsList = fData.findings;
+                findingsList = findingsForSession(fData);
                 findingsCount = findingsList.length;
                 renderFindingsList();
                 updateKPICounters();

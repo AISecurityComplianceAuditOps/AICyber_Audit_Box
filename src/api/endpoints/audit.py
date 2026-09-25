@@ -2199,6 +2199,8 @@ def api_get_findings(request: Request, session_id: str, saved_only: bool = False
                 fallback_source = None
         
         result = []
+        _fw_api = (report.framework or "").upper()
+        _vapt_only_api = "VAPT" in _fw_api and "PQC" not in _fw_api
         for f in findings:
             cid_clean = (f.control_id or "").strip().upper()
             uc_info = control_catalog.get(cid_clean) or control_catalog.get(cid_clean.split()[0]) or {}
@@ -2359,11 +2361,28 @@ def api_get_findings(request: Request, session_id: str, saved_only: bool = False
                 "dependency_chain": f.dependency_chain or "",
                 "migration_dependency_flag": bool(f.migration_dependency_flag or False),
             })
+            if _vapt_only_api:
+                # The card's OWASP chip was guessed from keywords in the browser
+                # (a DNS interaction came out A01 on screen, A10 in the report);
+                # this is the report's own answer, from the finding's CWE.
+                try:
+                    from src.core.report_exporter import _vapt_owasp
+                    _sf = _vapt_scanner_fields(f)
+                    result[-1]["owasp_category"] = _vapt_owasp(
+                        {"cve_list": _sf["cve_list"], "category": f.category or ""},
+                        f.control_name or "", f.description or "")
+                    result[-1]["confidence"] = _sf["confidence"]
+                except Exception as _ow_err:
+                    print(f"[FINDINGS API] OWASP category not derived: {_ow_err}", flush=True)
         return {
-            "success": True, 
-            "findings": result, 
+            "success": True,
+            "findings": result,
             "session_title": report.session_title,
             "session_status": report.status,
+            # Lets the Audit Records page treat a VAPT session's informational
+            # findings as the report does (listed, filterable) without guessing
+            # the session type from control ids.
+            "framework": report.framework or "",
             # The scope mode the run was started in. The UI renders a Customize run
             # as questions and answers -- no control id, no policy badges -- and
             # every other mode exactly as before.
