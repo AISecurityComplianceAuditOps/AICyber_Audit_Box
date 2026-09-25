@@ -2,7 +2,7 @@
 """
 Multi-Tool Vulnerability Ingestion Engine (Nessus, Nmap, BurpSuite, Qualys, Trivy, CSV, HTML)
 """
-from typing import List, Tuple, Any
+from typing import Any, Callable, List, Optional, Tuple
 from .finding_schema import Finding
 from .base_parser import BaseParser, is_image_file
 from .control_mapper import map_finding_to_control, map_findings_list, map_pqc_findings_list
@@ -129,12 +129,26 @@ def _split_tool_segments(content: str) -> List[str]:
     return [content[a:b] for a, b in zip(cuts, cuts[1:] + [len(content)]) if content[a:b].strip()]
 
 
-def parse_tool_file(filename: str, content: str, framework: str = "") -> Tuple[List[Finding], Any]:
+def parse_tool_file(filename: str, content: str, framework: str = "",
+                    table_rows: Optional[Callable[[], List[str]]] = None) -> Tuple[List[Finding], Any]:
+    """`table_rows`: a PDF's or Word document's table rows, given as a function
+    and read only when they are needed. Only PentestReportParser reads them, and it comes after
+    every scanner parser, so for a Burp, Nessus or other scanner PDF they were
+    never used -- yet reading them parsed the PDF a second time and searched it
+    for ruling lines: 30 s of a 50 s scan on PortSwigger's one-page Burp PDF.
+    The result is the same as appending the rows under PDF_TABLES_MARKER."""
     # A byte-order mark in front of the JSON "{", the XML "<" or the CSV header
     # hid the format from every parser.
     if isinstance(content, str):
         content = content.lstrip("﻿")
     segments = _split_tool_segments(content)
+    if len(segments) > 1 and table_rows is not None:
+        # A PDF with tables is never split by tool; whether it has any decides.
+        rows = table_rows() or []
+        table_rows = None
+        if rows:
+            content = content + PDF_TABLES_MARKER + "\n".join(rows)
+            segments = [content]
     if len(segments) > 1:
         findings, extra = [], []
         for seg in segments:
@@ -145,13 +159,14 @@ def parse_tool_file(filename: str, content: str, framework: str = "") -> Tuple[L
         _scrub(findings)
         _scrub(extra)
         return findings, extra
-    findings, extra = _parse_tool_file(filename, content, framework)
+    findings, extra = _parse_tool_file(filename, content, framework, table_rows)
     _scrub(findings)
     _scrub(extra)
     return findings, extra
 
 
-def _parse_tool_file(filename: str, content: str, framework: str = "") -> Tuple[List[Finding], Any]:
+def _parse_tool_file(filename: str, content: str, framework: str = "",
+                     table_rows: Optional[Callable[[], List[str]]] = None) -> Tuple[List[Finding], Any]:
     """
     Auto-detects file type and dispatches to the appropriate security tool parser.
 
@@ -256,6 +271,11 @@ def _parse_tool_file(filename: str, content: str, framework: str = "") -> Tuple[
     ]
     for p in _parsers:
         _content = content
+        if table_rows is not None and isinstance(p, PentestReportParser):
+            _rows = table_rows() or []
+            table_rows = None
+            if _rows:
+                _pdf_tables = "\n".join(_rows)
         if _pdf_tables and isinstance(p, PentestReportParser):
             _content = content + PDF_TABLES_MARKER + _pdf_tables
         if p.can_parse(filename, _content):

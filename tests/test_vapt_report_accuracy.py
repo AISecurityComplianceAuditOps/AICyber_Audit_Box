@@ -385,6 +385,114 @@ def test_scanner_parsers_never_see_the_appended_table_rows():
     assert "Injected Row" not in seen.get("content", ""), "table rows leaked to Burp"
 
 
+# ── a combined report: summary table, detail tables, additional-findings table ─
+# The shape of a real 131-finding report. Read before as 237 findings: the CVSS
+# cell glued to each title ("ASP.NET Core SEoL | 10.0"), no score, no host, no
+# remediation, every finding twice, and six findings named "CVSSv3.0 Base
+# Metrics | 10.0" made out of the detail tables.
+
+_COMBINED_ROWS = [
+    "Sr. No. | Vulnerabilities | CVSS Score | Severity",
+    "1. | ASP.NET Core SEoL | 10.0 | CRITICAL",
+    "2. | Notepad++ < 8.9.6.1 Multiple Vulnerabilities | 7.8 | HIGH",
+    "3. | Security Updates for Microsoft Office Viewers And Compatibility Products (February 2019) | 6.5 | MEDIUM",
+    "4. | Windows Speculative Execution Configuration Check - Intel BHI (CVE-2022-0001) | 6.5 | MEDIUM",
+    "5. | Windows Speculative Execution Configuration Check | 6.5 | MEDIUM",
+    "6. | Strict transport security not enforced | 3.5 | LOW",
+    "OVERALL SCORE | 10.0 | CRITICAL",
+    "Vulnerability Description | ASP.NET Core SEoL",
+    "Target(s) | 13.126.199.93",
+    "Status | Detected",
+    "CVSSv3.0 Base Metrics | 10.0 CRITICAL Exploitability Metrics: AV: Network, AC: Low",
+    "Proof of Concept | Synopsis An unsupported version of ASP.NET Core is installed. "
+    "Description Lack of support implies that no new security patches will be released.",
+    "Vulnerability Description | ASP.NET Core SEoL",           # repeated after a page break
+    "Remediation | Upgrade to a version of ASP.NET Core that is currently supported.",
+    "References | OWASP / OSSTMM / NIST Security Recommendations",
+    # numbered independently of the summary: #31 here is not summary #31
+    "# | Vulnerability | CVSS | Severity | Target",
+    "31. | Notepad++ < 8.9.6.1 Multiple Vulnerabilities | 7.8 | HIGH | 13.126.199.93, 3.108.211.52",
+    "32. | Security Updates for Microsoft Office Viewers And Compatibility Products (Februa | 6.5 | MEDIUM | 3.108.211.52",
+    "33. | Windows Speculative Execution Configuration Check - Intel BHI (CVE-2022-0001) | 6.5 | MEDIUM "
+    "| 13.126.199.93, 3.108.211.52",
+    "34. | Windows Speculative Execution Configuration Check | 6.5 | MEDIUM | 13.126.199.93",
+    "35. | Strict transport security not enforced | 3.5 | LOW | https://ginandjuice.shop/",
+]
+
+
+def _combined():
+    text = ("Combined Internal Network & Web Application VAPT Validation Report\n(flowing text)"
+            + PDF_TABLES_MARKER + "\n".join(_COMBINED_ROWS))
+    return {f.title: f for f in _all("combined.pdf", text)}
+
+
+def test_each_finding_of_a_combined_report_is_listed_once_under_its_full_name():
+    found = _combined()
+    assert sorted(found) == sorted([
+        "ASP.NET Core SEoL",
+        "Notepad++ < 8.9.6.1 Multiple Vulnerabilities",
+        "Security Updates for Microsoft Office Viewers And Compatibility Products (February 2019)",
+        "Windows Speculative Execution Configuration Check - Intel BHI (CVE-2022-0001)",
+        "Windows Speculative Execution Configuration Check",
+        "Strict transport security not enforced",
+    ]), list(found)
+
+
+def test_the_cvss_column_is_the_score_not_part_of_the_title():
+    found = _combined()
+    assert found["ASP.NET Core SEoL"].severity_score == 10.0
+    assert found["Strict transport security not enforced"].severity_score == 3.5
+    assert (found["Strict transport security not enforced"].severity,
+            found["ASP.NET Core SEoL"].severity) == ("LOW", "CRITICAL")
+
+
+def test_the_additional_table_gives_each_finding_its_hosts():
+    found = _combined()
+    assert found["Notepad++ < 8.9.6.1 Multiple Vulnerabilities"].target == "13.126.199.93, 3.108.211.52"
+    assert found["Security Updates for Microsoft Office Viewers And Compatibility Products "
+                 "(February 2019)"].target == "3.108.211.52"
+    assert found["Windows Speculative Execution Configuration Check"].target == "13.126.199.93"
+    assert (found["Windows Speculative Execution Configuration Check - Intel BHI (CVE-2022-0001)"].target
+            == "13.126.199.93, 3.108.211.52")
+    assert found["Strict transport security not enforced"].target == "https://ginandjuice.shop/"
+
+
+def test_a_findings_detail_table_gives_its_host_description_and_remediation():
+    f = _combined()["ASP.NET Core SEoL"]
+    assert f.target == "13.126.199.93"
+    assert f.remediation == "Upgrade to a version of ASP.NET Core that is currently supported."
+    assert f.description == ("An unsupported version of ASP.NET Core is installed.\n\n"
+                             "Lack of support implies that no new security patches will be released.")
+
+
+def test_a_version_number_is_not_a_host():
+    text = ("VAPT Report\nSr. No. Vulnerabilities CVSS Score Severity\n"
+            "1. Notepad++ < 8.9.6.1 Multiple Vulnerabilities 7.8 HIGH\n")
+    f, = _all("r.pdf", text)
+    assert (f.title, f.target, f.severity_score) == ("Notepad++ < 8.9.6.1 Multiple Vulnerabilities", "", 7.8)
+
+
+def test_a_number_ending_a_title_stays_in_it_without_a_cvss_column():
+    text = "VAPT Report\nS. No Observation Severity Status\n1. Deprecated TLS 1.0 MEDIUM Open\n"
+    f, = _all("r.pdf", text)
+    assert (f.title, f.severity_score) == ("Deprecated TLS 1.0", None)
+
+
+def test_a_totals_row_is_not_folded_into_the_last_finding():
+    reportlab = pytest.importorskip("reportlab")
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
+    t = Table([["Sr. No.", "Vulnerabilities", "CVSS Score", "Severity"],
+               ["1.", "Strict transport security not enforced", "3.5", "LOW"],
+               ["", "OVERALL SCORE", "10.0", "CRITICAL"]])
+    t.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.5, colors.black)]))
+    buf = io.BytesIO()
+    SimpleDocTemplate(buf, pagesize=A4).build([t])
+    rows = extract_pdf_table_rows(buf.getvalue())
+    assert "1. | Strict transport security not enforced | 3.5 | LOW" in rows, rows
+
+
 # ── OCR: a merged line is cut back into its cells ────────────────────────────
 
 def _word(value, x0, x1):
@@ -404,3 +512,156 @@ def test_a_line_whose_words_have_no_position_is_left_whole():
     line = {"words": [{"value": "a"}, {"value": "b"}],
             "geometry": ((0.1, 0.1), (0.3, 0.2))}
     assert [c[4] for c in _split_line_into_cells(line, 0.1, 0.2)] == ["a b"]
+
+
+# ── a Word report's tables, read row by row ──────────────────────────────────
+# A real report's .docx came out 52 rows right out of 138 with 16 invented
+# findings: Red Hat rows rated "Important" dropped, rows sharing a name
+# dropped, a risk register cut off at a blank status cell, false positives
+# reported as open, and legend rows ("Below 3.9", "Major") published.
+
+def _word_report():
+    docx = pytest.importorskip("docx")
+    d = docx.Document()
+    d.add_paragraph("Vulnerability Assessment and Penetration Test Report")
+
+    def table(rows):
+        t = d.add_table(rows=0, cols=len(rows[0]))
+        for r in rows:
+            cells = t.add_row().cells
+            for i, v in enumerate(r):
+                cells[i].text = v
+
+    table([["S.No", "CVSS score", "Severity of vulnerability"],     # a legend
+           ["1", "9.0 - 10.0", "Critical"], ["4", "Below 3.9", "Low"]])
+    table([["CVE Number", "Vulnerability Desc", "RHEL severity", "Fix Release"],
+           ["CVE-2021-22543", "RHEL 7 : kernel (RHSA-2021:3801)", "Important", "Quarterly patch fix\n(April)"],
+           ["CVE-2021-37576", "RHEL 7 : kernel (RHSA-2021:3801)", "Important", "Quarterly patch fix"],
+           ["CVE-2021-3653", "RHEL 7 : kernel (RHSA-2021:3801)", "Moderate", "Quarterly patch fix"]])
+    table([["Reference", "CVE", "Vuln Description", "F5 Severity", "Fix Release and Impact"],
+           ["INT-86224", "CVE-2016-2183", "SSL Medium Strength Cipher Suites Supported (SWEET32)", "Medium",
+            "False Positive. Already strong ciphers are used"],
+           ["K54892865", "CVE-2022-23024", "BIG-IP AFM vulnerability", "Medium", "Fixed in 16.1"],
+           ["K16101409", "CVE-2022-23028", "BIG-IP AFM vulnerability", "Medium", "Future release"]])
+    table([["PR ref", "Subsystem", "Vulnerability Name", "Severity", "Release To FIX"],
+           ["INT-84586", "IDAP", "Clear Text Data Transmission", "Medium", "11.4"],
+           ["", "Backend F5", "Clear text data transmission", "Medium", "12.1"],
+           ["S.No.", "Sub System", "CRITICAL", "HIGH", "Low"]])           # another table's header row
+    table([["Risk ID", "Risk", "Severity", "Risk status"],
+           ["Product Risk-385", "Mitigation of Pen Test findings of WOC in AWS", "High", ""],
+           ["Product Risk-312", "No Reauthentication before changing password", "High", "Done"],
+           ["Product Risk-370", "User session tokens not expired after logout", "Medium", "Open"]])
+    buf = io.BytesIO()
+    d.save(buf)
+    return buf.getvalue()
+
+
+def _word_findings():
+    from src.core.parsers.doc_parsers import extract_docx_table_rows, extract_text
+    data = _word_report()
+    f = io.BytesIO(data)
+    f.name = "report.docx"
+    a, i = parse_tool_file("report.docx", extract_text(f), framework="vapt",
+                           table_rows=lambda: extract_docx_table_rows(data))
+    return a, (i if isinstance(i, list) else [])
+
+
+def test_word_tables_are_read_row_by_row_with_every_row_kept():
+    a, i = _word_findings()
+    got = sorted((f.title, f.severity) for f in a + i)
+    assert got == sorted([
+        ("RHEL 7 : kernel (RHSA-2021:3801)", "HIGH"), ("RHEL 7 : kernel (RHSA-2021:3801)", "HIGH"),
+        ("RHEL 7 : kernel (RHSA-2021:3801)", "MEDIUM"),
+        ("SSL Medium Strength Cipher Suites Supported (SWEET32)", "INFO"),
+        ("BIG-IP AFM vulnerability", "INFO"), ("BIG-IP AFM vulnerability", "MEDIUM"),
+        ("Clear Text Data Transmission", "MEDIUM"), ("Clear text data transmission", "MEDIUM"),
+        ("Mitigation of Pen Test findings of WOC in AWS", "HIGH"),
+        ("No Reauthentication before changing password", "INFO"),
+        ("User session tokens not expired after logout", "MEDIUM"),
+    ]), got
+
+
+def test_rows_sharing_a_name_keep_their_own_cves():
+    a, i = _word_findings()
+    kernel = sorted(c for f in a + i if f.title.startswith("RHEL 7 : kernel") for c in f.cve_list)
+    assert kernel == ["CVE-2021-22543", "CVE-2021-3653", "CVE-2021-37576"]
+
+
+def test_a_false_positive_is_informational_and_says_so():
+    a, i = _word_findings()
+    fp = next(f for f in i if "SWEET32" in f.title)
+    assert fp.description.startswith("Recorded as a FALSE POSITIVE")
+    assert "SWEET32" not in {f.title for f in a}
+
+
+def test_a_release_column_is_not_remediation():
+    a, _i = _word_findings()
+    assert all(f.remediation not in ("11.4", "12.1") for f in a), [f.remediation for f in a]
+
+
+def test_nessus_table_with_no_score_gets_none_and_the_stated_target():
+    text = ("WAVE POC - VULNERABILITY & INFRASTRUCTURE REPORT\n"
+            "Target Infrastructure: 10.240.0.0/24 | Tools: Nessus, Nmap\n"
+            "Plugin ID\nVulnerability Name\nSeverity\nISO Control\n"
+            "189421\nOpenSSH 7.2p1 Remote Code Execution (CVE-2024-6387)\nCRITICAL\n8.8 Tech Vuln Mgmt\n"
+            "104820\nDeprecated TLS 1.0 Protocol Detection\nMEDIUM\n8.20 Network Security\n")
+    got = {f.title: f for f in _all("wave.pdf", text)}
+    ssh = got["OpenSSH 7.2p1 Remote Code Execution (CVE-2024-6387)"]
+    assert (ssh.severity, ssh.severity_score, ssh.target) == ("CRITICAL", None, "10.240.0.0/24")
+    tls = got["Deprecated TLS 1.0 Protocol Detection"]
+    assert (tls.severity, tls.severity_score) == ("MEDIUM", None)
+
+
+def test_a_totals_row_with_every_cell_filled_is_not_a_finding():
+    """A Word table writes the totals row with all four cells: "OVERALL |
+    OVERALL SCORE | 10.0 | CRITICAL" was published as a CRITICAL finding."""
+    text = ("VAPT Report\n(flowing text)" + PDF_TABLES_MARKER +
+            "Sr. No. | Vulnerabilities | CVSS Score | Severity\n"
+            "1. | Insecure Windows Service Permissions | 8.4 | HIGH\n"
+            "OVERALL | OVERALL SCORE | 10.0 | CRITICAL\n")
+    assert [f.title for f in _all("r.docx", text)] == ["Insecure Windows Service Permissions"]
+
+
+# ── a Nessus HTML export organised by host ───────────────────────────────────
+# Each host is named once in a "Host Information" table; its plugins follow,
+# headed "46313 - Title" (no "(count)"), and their output names only the port.
+# All 347 findings of a real export came out with no host, the plugin id glued
+# to the title, and an empty plugin id.
+
+def _by_host_section(ip, block_id):
+    return f"""
+<div class="details-header">Host Information<div class="clear"></div></div>
+<div class="table-wrapper details"><table><tbody>
+<tr><td>Netbios Name:</td><td>HOST-{block_id}</td></tr>
+<tr><td>IP:</td><td>{ip}</td></tr>
+</tbody></table></div>
+<div class="details-header">Vulnerabilities<div class="clear"></div></div>
+<div id="{block_id}" class="" onclick="toggleSection('{block_id}-container');">46313 - MS10-031: Vulnerability in Microsoft Visual Basic for Applications<div id="{block_id}-toggletext"> - </div></div>
+<div id="{block_id}-container" class="section-wrapper">
+<div class="details-header">Synopsis<div class="clear"></div></div>
+<div>Arbitrary code can be executed on the remote host.<div class="clear"></div></div>
+<div class="details-header">Description<div class="clear"></div></div>
+<div>A stack memory corruption vulnerability exists.<div class="clear"></div></div>
+<div class="details-header">Solution<div class="clear"></div></div>
+<div>Microsoft has released a set of patches.<div class="clear"></div></div>
+<div class="details-header">Risk Factor<div class="clear"></div></div>
+<div>High<div class="clear"></div></div>
+<div class="details-header">CVSS v3.0 Base Score<div class="clear"></div></div>
+<div>9.8 (CVSS:3.0/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H)<div class="clear"></div></div>
+<div class="details-header">Plugin Output<div class="clear"></div></div>
+<h2>tcp/445/cifs</h2>
+<div>Vbe6.dll has not been patched.<div class="clear"></div></div>
+</div>
+"""
+
+
+def test_a_nessus_by_host_export_gives_each_finding_its_host():
+    from src.core.parsers.nessus_parser import NessusParser
+    html = ("<html><body><h1>Report generated by Tenable Nessus</h1>"
+            + _by_host_section("10.0.0.5", "id7") + _by_host_section("10.0.0.6", "id9")
+            + "</body></html>")
+    a, i = NessusParser().parse("scan_by_host.html", html)
+    got = sorted((f.plugin_id, f.title, f.target, f.severity, f.severity_score) for f in a + i)
+    title = "MS10-031: Vulnerability in Microsoft Visual Basic for Applications"
+    assert got == [("46313", title, "10.0.0.5", "CRITICAL", 9.8),
+                   ("46313", title, "10.0.0.6", "CRITICAL", 9.8)], got

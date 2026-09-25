@@ -56,10 +56,9 @@ def run(tmp_path, monkeypatch):
     Base.metadata.create_all(eng)
     S = sessionmaker(bind=eng)
     monkeypatch.setattr(worker, "SessionLocal", S)
-    monkeypatch.setattr(worker, "_llm_answering", lambda *a, **k: False)
     counter = {"n": 0}
 
-    def _run(files):
+    def _run(files, **kw):
         counter["n"] += 1
         sid = f"s{counter['n']}"
         s = S()
@@ -67,7 +66,7 @@ def run(tmp_path, monkeypatch):
         s.commit()
         s.close()
         worker._run_fast_technical_vapt_bg(sid, [{"name": n, "bytes": b, "text": None} for n, b in files],
-                                           selected_sls=[], framework="VAPT")
+                                           selected_sls=[], framework="VAPT", **kw)
         s = S()
         try:
             rep = s.query(AuditReport).filter(AuditReport.session_id == sid).first()
@@ -254,6 +253,118 @@ def test_a_findings_csv_is_read_column_by_column():
     assert (sqli.title, sqli.severity, sqli.target, sqli.remediation) == (
         "SQL Injection in login form", "CRITICAL", "https://portal.test/login", "Use parameterised queries.")
     assert [f.title for f in i] == ["Missing HSTS header"]                  # closed: informational
+
+
+# ── the model runs only when the auditor ticks AI recommendations ───────────
+
+@pytest.fixture
+def model_calls(monkeypatch):
+    from src.core import llm_client
+    from src.core.parsers import remediation_llm, report_narrative_llm
+    calls = []
+    monkeypatch.setattr(llm_client, "query_llm", lambda *a, **k: calls.append("query_llm") or "")
+    monkeypatch.setattr(report_narrative_llm, "generate_report_narrative",
+                        lambda *a, **k: calls.append("summary") or None)
+    monkeypatch.setattr(remediation_llm, "enrich_remediations",
+                        lambda *a, **k: calls.append("remediation"))
+    # Even with a model up and answering, which is what the parser-only path
+    # briefly checked for before asking it for the summary.
+    monkeypatch.setattr(worker, "_llm_answering", lambda *a, **k: True, raising=False)
+    return calls
+
+
+def test_a_parser_only_scan_never_calls_the_model(run, model_calls):
+    assert run([("scan.nessus", _nessus())])
+    assert model_calls == []
+
+
+def test_ticking_ai_recommendations_brings_the_model_in(run, model_calls):
+    assert run([("scan.nessus", _nessus())], ai_recommendations=True)
+    assert "remediation" in model_calls and "summary" in model_calls, model_calls
+
+
+# ── a PDF's tables are read only when the report-table parser needs them ─────
+# Reading them parses the whole PDF a second time: on PortSwigger's one-page
+# Burp PDF that was 30 s of a 50 s scan, for rows only PentestReportParser uses.
+
+_METHOD = ("The assessment followed the OWASP Testing Guide. Each finding below was "
+           "confirmed manually and rated with CVSS 3.1. The scope covered the customer "
+           "portal and its API. Testing was carried out from the internet without "
+           "credentials, then with a standard user account supplied by the customer. ")
+
+_NMAP = """Starting Nmap 7.94 ( https://nmap.org ) at 2025-06-24 10:00 IST
+Nmap scan report for 10.0.0.5
+Host is up (0.0010s latency).
+Not shown: 995 closed tcp ports (reset)
+PORT     STATE SERVICE VERSION
+21/tcp   open  ftp     vsftpd 2.3.4
+22/tcp   open  ssh     OpenSSH 7.2p2 Ubuntu 4ubuntu2.10 (Ubuntu Linux; protocol 2.0)
+23/tcp   open  telnet  Linux telnetd
+80/tcp   open  http    Apache httpd 2.4.49 ((Unix))
+3306/tcp open  mysql   MySQL 5.5.62
+Service Info: OSs: Unix, Linux; CPE: cpe:/o:linux:linux_kernel
+
+Nmap done: 1 IP address (1 host up) scanned in 12.34 seconds
+"""
+
+
+def _pdf(text, with_table=False):
+    pytest.importorskip("reportlab")
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import Preformatted, SimpleDocTemplate, Table, TableStyle
+    story = [Preformatted(text, getSampleStyleSheet()["Code"])]
+    if with_table:
+        t = Table([["S. No", "Observation", "Severity", "Affected\nIP/URL", "CVE/CWE", "Final\nStatus"],
+                   ["1.", "Cleartext\nTransmission of\nPhone Numbers", "Low (CVSS\nScore: 2.0)",
+                    "https://172.21.13\n1.47:9007", "CWE-319", "Open"]])
+        t.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.5, colors.black)]))
+        story.append(t)
+    buf = io.BytesIO()
+    SimpleDocTemplate(buf, pagesize=A4).build(story)
+    return buf.getvalue()
+
+
+@pytest.fixture
+def table_reads(monkeypatch):
+    from src.core.parsers import doc_parsers
+    real, calls = doc_parsers.extract_pdf_table_rows, []
+    monkeypatch.setattr(doc_parsers, "extract_pdf_table_rows",
+                        lambda b: calls.append(1) or real(b))
+    return calls
+
+
+def test_a_scanner_pdf_is_not_parsed_again_for_tables(run, table_reads):
+    found = run([("nmap_scan.pdf", _pdf(_NMAP))])
+    assert any(t == "10.0.0.5:23/tcp" or "telnet" in n.lower() for n, _s, t in found), found
+    assert table_reads == []
+
+
+def test_a_report_pdf_still_has_its_findings_table_read(run, table_reads):
+    found = run([("report.pdf", _pdf("Penetration Testing Report\n\n" + _METHOD, with_table=True))])
+    assert ("Cleartext Transmission of Phone Numbers", "LOW", "https://172.21.131.47:9007") in found, found
+    assert table_reads == [1]
+
+
+def _everything(res):
+    a, i = res
+    return [sorted(vars(f).items()) for f in list(a) + list(i if isinstance(i, list) else [])]
+
+
+@pytest.mark.parametrize("body", [
+    "Penetration Testing Report\n\n" + _METHOD,
+    _NMAP,
+    PASTED["dirb"] + "\n\n" + PASTED["sslscan"],      # split by tool only when there are no tables
+], ids=["report", "nmap", "two-tools"])
+@pytest.mark.parametrize("rows", [["1. | Cleartext Transmission of Phone Numbers | Low (CVSS Score: 2.0) | "
+                                   "https://172.21.131.47:9007 | CWE-319 | Open"], []],
+                         ids=["with-tables", "no-tables"])
+def test_tables_read_on_demand_give_what_appended_tables_gave(body, rows):
+    from src.core.parsers.pentest_report_parser import PDF_TABLES_MARKER
+    appended = body + (PDF_TABLES_MARKER + "\n".join(rows) if rows else "")
+    assert (_everything(parse_tool_file("x.pdf", body, framework="vapt", table_rows=lambda: list(rows)))
+            == _everything(parse_tool_file("x.pdf", appended, framework="vapt")))
 
 
 def test_a_compliance_export_is_not_read_as_vulnerabilities():

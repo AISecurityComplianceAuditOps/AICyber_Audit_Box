@@ -126,20 +126,6 @@ def _expand_scan_containers(files_data, _depth=0):
     return out
 
 
-def _llm_answering(timeout=1.5) -> bool:
-    """True when the configured LLM server accepts a connection right now.
-    Never starts one."""
-    import socket
-    from urllib.parse import urlsplit
-    try:
-        from src.core.llm_client import _get_next_llm_host
-        parts = urlsplit(_get_next_llm_host())
-        with socket.create_connection((parts.hostname or "127.0.0.1", parts.port or 11434), timeout=timeout):
-            return True
-    except Exception:
-        return False
-
-
 def _cut_words(text, limit):
     """Shorten proof text at a word boundary with a visible marker. A hard
     slice cut words in half in a delivered report ("You shoul")."""
@@ -2716,19 +2702,27 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
             # A findings table does not survive either text extractor this
             # worker uses: a real report's rows came out with titles cut to one
             # word and a CVSS of 17.0 read from an IP address beside it.
+            #
+            # Handed over as a function: parse_tool_file reads the tables only
+            # if the report-table parser is reached. For a scanner's own PDF it
+            # never is, and reading them re-parsed the whole PDF -- 30 s more
+            # on a one-page Burp report.
+            # A Word document's tables are handed over the same way.
             _parse_text = ftext or ""
-            if fname_lower.endswith(".pdf") and fd.get("bytes"):
-                try:
-                    from src.core.parsers.doc_parsers import extract_pdf_table_rows
-                    from src.core.parsers.pentest_report_parser import PDF_TABLES_MARKER
-                    _rows = extract_pdf_table_rows(fd["bytes"])
-                    if _rows:
-                        _parse_text = _parse_text + PDF_TABLES_MARKER + "\n".join(_rows)
-                except Exception as _tbl_err:
-                    print(f"[VAPT] PDF table extraction skipped for '{fname}': "
-                          f"{type(_tbl_err).__name__}", flush=True)
+            _table_rows = None
+            if fname_lower.endswith((".pdf", ".docx")) and fd.get("bytes"):
+                def _table_rows(_bytes=fd["bytes"], _fname=fname, _docx=fname_lower.endswith(".docx")):
+                    try:
+                        from src.core.parsers.doc_parsers import (extract_docx_table_rows,
+                                                                  extract_pdf_table_rows)
+                        return (extract_docx_table_rows if _docx else extract_pdf_table_rows)(_bytes)
+                    except Exception as _tbl_err:
+                        print(f"[VAPT] Table extraction skipped for '{_fname}': "
+                              f"{type(_tbl_err).__name__}", flush=True)
+                        return []
 
-            actionable, info = parse_tool_file(fname, _parse_text, framework=_dispatch_framework)
+            actionable, info = parse_tool_file(fname, _parse_text, framework=_dispatch_framework,
+                                               table_rows=_table_rows)
 
 
             # parse_tool_file's second return value differs by parser: a list of
@@ -2919,18 +2913,13 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
                 print(f"[VAPT/PQC] Recommendation enrichment failed, findings "
                       f"keep their parser-generated text: {_enrich_err}", flush=True)
 
-        # The executive summary and tactical recommendations run for EVERY
-        # technical scan, not only when per-finding AI recommendations were
-        # ticked. It is one call, fed the deterministic counts, and the model
-        # writes no severity, score or CVE. A client comparing the two report
-        # styles asked for exactly this: parser facts and remediation per
-        # finding, the model only for the summary, which in parser mode was
-        # fixed boilerplate.
-        # Without per-finding AI the auditor asked for no model at all, so the
-        # summary is only requested from one that is already answering: on a
-        # workstation the LLM client otherwise auto-launches llama-server with a
-        # 12 GB model for a parser-only scan.
-        if all_findings and (ai_recommendations or _llm_answering()):
+        # The model is used only when the auditor ticks "AI recommendations".
+        # A parser-only scan reads the scanner's own facts and must finish in
+        # seconds; it briefly also asked a running model for this summary, and
+        # waited on it for minutes -- up to 15 when an ISO audit held the model
+        # (5 queued for a slot, 10 writing). Without the tick the report keeps
+        # its standard summary text.
+        if all_findings and ai_recommendations:
             _model = _resolve_llm_model(ai_model) if ai_model else "gemma4:e4b"
             _vapt_progress(90, "Writing executive summary and tactical recommendations...")
 

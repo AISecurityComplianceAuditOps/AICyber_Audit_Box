@@ -34,6 +34,10 @@ _XML_RAW_APPEND_MAX = 8 * 1024 * 1024
 
 _URLISH_TAIL = re.compile(r"(://|\d$|[./:=?&_-]$)")
 
+# A totals row's label, as the whole cell ("OVERALL SCORE", "Total") -- not a
+# name that merely starts with the word, like "Total Commander ...".
+_TOTAL_ROW_RE = re.compile(r"(?i)^(?:overall(?:\s+(?:score|risk|rating|severity))?|total|grand\s+total|sub-?total)\s*[:.]?$")
+
 
 def _join_cell_lines(text):
     """One table cell's wrapped lines, rejoined the way they were written.
@@ -108,7 +112,13 @@ def extract_pdf_table_rows(pdf_bytes):
                         if not any(str(c).strip() for c in cells):
                             continue
                         first = str(cells[0]).strip()
-                        if not first and logical:
+                        # A totals row ("OVERALL SCORE | 10.0 | CRITICAL") also
+                        # leaves the serial-number cell empty, but it is not a
+                        # continuation. Folded in, it renamed a report's last
+                        # finding "Strict transport security not enforced
+                        # OVERALL SCORE" with a CVSS of "3.510.0".
+                        is_total = any(_TOTAL_ROW_RE.match(str(c).strip()) for c in cells if c)
+                        if not first and logical and not is_total:
                             # A continuation: fold into the row above.
                             prev = logical[-1]
                             width = max(len(prev), len(cells))
@@ -128,6 +138,40 @@ def extract_pdf_table_rows(pdf_bytes):
         parts = [p for p in parts if p]
         if len(parts) >= 2:
             rows.append(" | ".join(parts))
+    return rows
+
+
+def extract_docx_table_rows(docx_bytes):
+    """Every table in a Word document, one row per line, cells split by " | ".
+
+    FOR THE VAPT PATH ONLY, like extract_pdf_table_rows: extract_text() is what
+    the ISO worker and retrieval use, and is left as it was.
+
+    extract_text() writes a table row with its empty cells dropped and each
+    cell's line breaks kept, so one row of a findings table arrives as several
+    lines with its columns shifted -- and a report's rows are keyed by an ID
+    ("CVE-2021-22543", "INT-84137"), not by a serial number the row reader can
+    anchor on. Fifteen Red Hat CVE rows of a real report were read as nothing.
+    Here every row keeps all of its cells, in place, each on one line; a cell
+    merged across columns is written once.
+    """
+    import io as _io
+    try:
+        from docx import Document
+        doc = Document(_io.BytesIO(docx_bytes))
+    except Exception:
+        return []
+    rows = []
+    for table in doc.tables:
+        for row in table.rows:
+            cells, seen = [], set()
+            for cell in row.cells:
+                if id(cell._tc) in seen:
+                    continue                 # a merged cell repeats per column
+                seen.add(id(cell._tc))
+                cells.append(" ".join(cell.text.split()))
+            if any(cells) and len(cells) >= 2:
+                rows.append(" | ".join(cells))
     return rows
 
 

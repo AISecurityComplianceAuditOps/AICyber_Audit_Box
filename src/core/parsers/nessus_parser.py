@@ -17,6 +17,53 @@ from .control_mapper import map_findings_list
 
 _NESSUS_NUMERIC_SEVERITY = {"0": "INFO", "1": "LOW", "2": "MEDIUM", "3": "HIGH", "4": "CRITICAL"}
 
+_SEVERITY_WORDS = {"CRITICAL": "CRITICAL", "P1": "CRITICAL", "HIGH": "HIGH", "P2": "HIGH",
+                   "MEDIUM": "MEDIUM", "P3": "MEDIUM", "LOW": "LOW", "P4": "LOW"}
+
+# Where a text export does not say which host a finding is on.
+_NO_HOST = "Not recorded"
+
+
+def _stated_severity(raw_sev, score):
+    """(severity, score) from what the export itself states.
+
+    A text export that printed no CVSS used to be given one by band -- 9.8 for
+    Critical, 8.0 High, 5.5 Medium, 2.5 Low -- and the report published it as
+    the scanner's score. A client's report listed "OpenSSH 7.2p1 Remote Code
+    Execution (CVE-2024-6387)" at CVSS 9.8; the source states no score at all.
+    With no stated score, the severity is the export's own word and the score
+    stays empty.
+    """
+    if score is not None and score > 0.0:
+        return ("CRITICAL" if score >= 9.0 else "HIGH" if score >= 7.0
+                else "MEDIUM" if score >= 4.0 else "LOW"), score
+    return _SEVERITY_WORDS.get(str(raw_sev or "").upper(), "INFO"), score
+
+
+def _section_host_ip(block) -> str:
+    """The host a block of a "vulnerabilities by host" HTML export belongs to.
+
+    That export lists each host once, in a "Host Information" table ("IP: |
+    3.108.211.52"), and under it the host's plugins, whose own output names
+    only the port ("tcp/445/cifs"). Read block by block, 347 findings of a real
+    export had no host at all.
+    """
+    td = block.find_previous(lambda t: t.name == "td"
+                             and t.get_text(strip=True).lower() in ("ip:", "ip address:"))
+    if td is None:
+        return ""
+    value = td.find_next_sibling("td")
+    m = re.search(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", value.get_text() if value else "")
+    return m.group(0) if m else ""
+
+
+def _stated_target(content: str) -> str:
+    """The scan's target as the document states it ("Target Infrastructure:
+    10.240.0.0/24"), for a findings table that names no host per row."""
+    m = re.search(r'(?im)^\s*target(?:s|\s+infrastructure|\s+hosts?|\s+scope|\s+range)?\s*:\s*([^|\n]+)',
+                  content or "")
+    return " ".join(m.group(1).split()).strip(" .,;") if m else _NO_HOST
+
 
 def _is_nessus_csv(content: str) -> bool:
     """The CSV export's header row: "Plugin ID","CVE",...,"Risk","Host",...,"Name"."""
@@ -193,7 +240,7 @@ class NessusParser(BaseParser):
                 header = w.find_previous_sibling('div')
                 h_text = header.get_text().strip() if header else ''
                 
-                m_header = re.search(r'(\d+)\s*\(\d+\)\s*-\s*(.+)', h_text)
+                m_header = re.search(r'(\d+)\s*(?:\(\d+\))?\s*-\s*(.+)', h_text)
                 plugin_id = m_header.group(1).strip() if m_header else ''
                 title = m_header.group(2).strip() if m_header else (h_text or "Nessus Vulnerability Finding")
                 # h_text is the raw div text, whitespace/newlines from the source
@@ -227,23 +274,7 @@ class NessusParser(BaseParser):
                     except Exception:
                         score = None
 
-                if score is None or score <= 0.0:
-                    if raw_sev.upper() in ("CRITICAL", "P1"): score = 9.8
-                    elif raw_sev.upper() in ("HIGH", "P2"): score = 8.0
-                    elif raw_sev.upper() in ("MEDIUM", "P3"): score = 5.5
-                    elif raw_sev.upper() in ("LOW", "P4"): score = 2.5
-                    else: score = 0.0
-
-                if score >= 9.0:
-                    severity = "CRITICAL"
-                elif score >= 7.0:
-                    severity = "HIGH"
-                elif score >= 4.0:
-                    severity = "MEDIUM"
-                elif score > 0.0:
-                    severity = "LOW"
-                else:
-                    severity = "INFO"
+                severity, score = _stated_severity(raw_sev, score)
 
                 m_vec = re.search(r'\(CVSS:3\.0/([^\)]+)\)', txt)
                 cvss_vector = f"CVSS:3.0/{m_vec.group(1)}" if m_vec else None
@@ -276,7 +307,13 @@ class NessusParser(BaseParser):
                         if m_ip:
                             targets.append(m_ip.group(1))
 
-                t_host = ", ".join(sorted(list(set(targets)))) if targets else "Scoped Host Targets"
+                # A "vulnerabilities by host" export names the host once, above
+                # its plugins; the plugin's own output gives only the port.
+                if not targets:
+                    _host = _section_host_ip(w)
+                    if _host:
+                        targets.append(_host)
+                t_host = ", ".join(sorted(list(set(targets)))) if targets else _NO_HOST
 
                 # Extract Plugin Output for evidence
                 evidence = ""
@@ -321,7 +358,7 @@ class NessusParser(BaseParser):
                 h_text = header.get_text().strip() if header else ''
                 
                 # Extract plugin_id and title
-                m_header = re.search(r'(\d+)\s*\(\d+\)\s*-\s*(.+)', h_text)
+                m_header = re.search(r'(\d+)\s*(?:\(\d+\))?\s*-\s*(.+)', h_text)
                 plugin_id = m_header.group(1).strip() if m_header else ''
                 title = m_header.group(2).strip() if m_header else (h_text or "Nessus Vulnerability Finding")
                 # Same fallback-format issue as the section-wrapper branch above (see
@@ -530,12 +567,8 @@ class NessusParser(BaseParser):
             if re.fullmatch(r'(?i)(critical|high|medium|low|info\w*|none|[\d.\s]+)', name):
                 continue
             raw_sev = m.group("sev").upper()
-            score = {"CRITICAL": 9.8, "HIGH": 8.0, "MEDIUM": 5.5,
-                     "LOW": 2.5}.get(raw_sev, 0.0)
-            severity = ("INFO" if raw_sev.startswith("INFO") or raw_sev == "NONE"
-                        else "CRITICAL" if score >= 9.0
-                        else "HIGH" if score >= 7.0
-                        else "MEDIUM" if score >= 4.0 else "LOW")
+            # The table states a severity and no score.
+            severity, score = _stated_severity(raw_sev, None)
             cves = sorted(set(re.findall(r'CVE-\d{4}-\d{4,7}', name, re.IGNORECASE)))
             ctrl = (m.group("ctrl") or "").strip()
 
@@ -545,7 +578,7 @@ class NessusParser(BaseParser):
                 severity_score=score,
                 confidence="Firm",
                 cve_list=cves,
-                target="Scoped Host Targets",
+                target=_stated_target(content),
                 description=name,
                 remediation="",
                 evidence=(f"Plugin ID:   {m.group('pid')}\n"
@@ -592,14 +625,10 @@ class NessusParser(BaseParser):
                     score = float(m_score.group(1))
                 except ValueError:
                     score = None
-            if score is None:
-                score = {"CRITICAL": 9.8, "HIGH": 8.0, "MEDIUM": 5.5, "LOW": 2.5}.get(raw_sev, 0.0)
-
-            severity = ("INFO" if raw_sev.startswith("INFO") or raw_sev == "NONE"
-                        else "CRITICAL" if score >= 9.0
-                        else "HIGH" if score >= 7.0
-                        else "MEDIUM" if score >= 4.0
-                        else "LOW" if score > 0 else "INFO")
+            if raw_sev.startswith("INFO") or raw_sev == "NONE":
+                severity = "INFO"
+            else:
+                severity, score = _stated_severity(raw_sev, score)
 
             def _field(label):
                 m = re.search(rf'{label}\s*:\s*(.+?)(?=\n\s*(?:Severity|Description|Port|Recommendation|Solution|Plugin|CVE|References)\s*:|\n\s*\d{{1,3}}\.\s+\S|\Z)',
@@ -617,7 +646,7 @@ class NessusParser(BaseParser):
                 severity_score=score,
                 confidence="Firm",
                 cve_list=cves,
-                target=port or "Scoped Host Targets",
+                target=port or _NO_HOST,
                 description=desc or title,
                 remediation=remed,
                 evidence=(body.strip()[:800]) or title,
@@ -687,18 +716,7 @@ class NessusParser(BaseParser):
                     score = float(m_cvss.group(1))
                 except Exception:
                     score = None
-            if score is None or score <= 0.0:
-                if raw_sev.upper() in ("CRITICAL", "P1"): score = 9.8
-                elif raw_sev.upper() in ("HIGH", "P2"): score = 8.0
-                elif raw_sev.upper() in ("MEDIUM", "P3"): score = 5.5
-                elif raw_sev.upper() in ("LOW", "P4"): score = 2.5
-                else: score = 0.0
-
-            if score >= 9.0: severity = "CRITICAL"
-            elif score >= 7.0: severity = "HIGH"
-            elif score >= 4.0: severity = "MEDIUM"
-            elif score > 0.0: severity = "LOW"
-            else: severity = "INFO"
+            severity, score = _stated_severity(raw_sev, score)
 
             m_vec = re.search(r'\(CVSS:3\.0/([^\)]+)\)', txt)
             cvss_vector = f"CVSS:3.0/{m_vec.group(1)}" if m_vec else None
@@ -726,7 +744,7 @@ class NessusParser(BaseParser):
             else:
                 ip_hits = re.findall(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', txt)
                 targets = sorted(set(ip_hits))
-            t_host = ", ".join(sorted(set(targets))) if targets else "Scoped Host Targets"
+            t_host = ", ".join(sorted(set(targets))) if targets else _NO_HOST
 
             evidence = ""
             m_out = re.search(r'Plugin Output\s*\n\s*(.*?)(?=\n\s*(?:Algorithm|Risk Factor|Plugin Information|CVSS|\Z))', txt, re.DOTALL)
