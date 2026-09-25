@@ -93,6 +93,19 @@ echo ---^> Building the application image
 docker build -f Dockerfile.app --build-arg COMPILE_SOURCE=0 -t aicyberauditbox-app:!VERSION! .
 if errorlevel 1 goto :buildfail
 echo.
+REM  The build proves the listed libraries install, not that the application
+REM  works: a library the code imports but requirements.txt does not name
+REM  builds cleanly and fails at the customer. So check the image itself --
+REM  imports, libraries, knowledge files, a sample scan, the reports -- with no
+REM  network, as an air-gapped site runs it, before anything is packaged.
+echo ---^> Checking the new image works (no network, as at the customer)
+docker run --rm --network none --entrypoint python -e POSTGRES_PASSWORD= -v "%~dp0scripts\image_smoke_test.py:/tmp/image_smoke_test.py:ro" -w /app aicyberauditbox-app:!VERSION! /tmp/image_smoke_test.py
+if errorlevel 1 (
+    echo.
+    echo   [X] The new image failed its check. Nothing has been packaged.
+    goto :fail
+)
+echo.
 echo ---^> Packaging
 python build_customer_bundle.py --version !VERSION! --skip-build
 if errorlevel 1 goto :buildfail
