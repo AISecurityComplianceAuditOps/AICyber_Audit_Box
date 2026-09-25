@@ -16,6 +16,7 @@ from .zap_parser import ZapParser
 from .openvas_parser import OpenVasParser
 from .nuclei_parser import NucleiParser
 from .tls_scan_parser import TlsScanParser
+from .code_scan_parser import CodeScanParser
 from .pentest_report_parser import PentestReportParser, PDF_TABLES_MARKER
 from .pqc_parser import PQCParser, pqc_extract_text, _PQC_BINARY_EXTENSIONS
 
@@ -38,6 +39,9 @@ ALL_PARSERS = [
     # tool banners, so it will not steal a Nessus/Burp/Trivy export, but it must
     # get its chance before PQC's weak 2-keyword check claims the file.
     KaliParser(),
+    # Code / dependency scanner exports (SARIF, Grype, npm audit, gitleaks,
+    # Bandit) and generic JSON findings lists; after every tool-specific parser.
+    CodeScanParser(),
     # A pentest report written by a human, not a scanner export. It goes after
     # every structured-export parser -- a real Nessus or Burp file must be read
     # by its own parser, not scraped as a table -- and before PQCParser, whose
@@ -67,9 +71,80 @@ def _scrub(findings) -> None:
             v = getattr(f, name, None)
             if isinstance(v, str) and "�" in v:
                 setattr(f, name, v.replace("[�]", "").replace("�", "").replace("  ", " "))
+        # A title is one line. A wrapped cell brought its line break with it
+        # ("...64bit block size vulnerability\n(Sweet32)").
+        t = getattr(f, "title", None)
+        if isinstance(t, str) and ("\n" in t or "\r" in t or "\t" in t):
+            f.title = " ".join(t.split())
+
+
+# Where one tool's console output begins. An auditor's evidence file often holds
+# several tools' output pasted one after another; the first parser to claim the
+# file read all of it and every other tool's findings were lost (Nmap + Nikto in
+# one .txt: 5 of 11 findings, all of them Nmap's).
+_TOOL_BANNERS = (
+    ("nmap", r"^(?:Starting Nmap \d|# Nmap [\d.]+ scan initiated)"),
+    ("nikto", r"^- Nikto v\d"),
+    ("sqlmap", r"\{[\d.]+#(?:stable|dev)\}|^sqlmap identified the following injection point"),
+    ("gobuster", r"^Gobuster v\d"),
+    ("dirb", r"^DIRB v\d"),
+    ("ffuf", r"/'___\\"),
+    ("feroxbuster", r"by Ben \"epi\" Risher"),
+    ("hydra", r"^Hydra v\d.*\(c\)"),
+    ("medusa", r"^Medusa v\d"),
+    ("wpscan", r"WordPress Security Scanner by the WPScan Team"),
+    # sslscan opens with its version and OpenSSL lines; "Connected to <ip>"
+    # comes before "Testing SSL server" and holds the target's address.
+    ("sslscan", r"^Version:\s+\S+\s*\n(?:OpenSSL|LibreSSL)"),
+    ("sslscan", r"^Testing SSL server \S+ on port \d+"),
+    ("testssl", r"^\s*testssl\.sh\s+(?:version\s+)?\d"),
+    ("enum4linux", r"^Starting enum4linux"),
+    ("masscan", r"^Starting masscan \d"),
+    ("nuclei", r"projectdiscovery\.io"),
+)
+
+
+def _split_tool_segments(content: str) -> List[str]:
+    """[content] unless it holds the output of two or more different tools; then
+    one piece per tool run, each starting at the paragraph that holds its banner."""
+    import re as _re
+    if not isinstance(content, str) or PDF_TABLES_MARKER in content or content.lstrip()[:1] in "<{[":
+        return [content]
+    starts = []
+    for tool, pat in _TOOL_BANNERS:
+        for m in _re.finditer(pat, content, _re.MULTILINE):
+            # Back to the start of the paragraph: sqlmap's, ffuf's and wpscan's
+            # banners are ASCII art above the line that names them.
+            para = content.rfind("\n\n", 0, m.start())
+            starts.append((para + 2 if para >= 0 else 0, tool))
+    starts = sorted(set(starts))
+    runs = []
+    for pos, tool in starts:
+        if not runs or runs[-1][1] != tool:
+            runs.append((pos, tool))
+    if len({t for _p, t in runs}) < 2:
+        return [content]
+    cuts = [p for p, _t in runs]
+    cuts[0] = 0                     # anything before the first banner stays with it
+    return [content[a:b] for a, b in zip(cuts, cuts[1:] + [len(content)]) if content[a:b].strip()]
 
 
 def parse_tool_file(filename: str, content: str, framework: str = "") -> Tuple[List[Finding], Any]:
+    # A byte-order mark in front of the JSON "{", the XML "<" or the CSV header
+    # hid the format from every parser.
+    if isinstance(content, str):
+        content = content.lstrip("﻿")
+    segments = _split_tool_segments(content)
+    if len(segments) > 1:
+        findings, extra = [], []
+        for seg in segments:
+            f_seg, e_seg = _parse_tool_file(filename, seg, framework)
+            findings.extend(f_seg or [])
+            if isinstance(e_seg, list):
+                extra.extend(e_seg)
+        _scrub(findings)
+        _scrub(extra)
+        return findings, extra
     findings, extra = _parse_tool_file(filename, content, framework)
     _scrub(findings)
     _scrub(extra)
@@ -226,7 +301,7 @@ def _parse_tool_file(filename: str, content: str, framework: str = "") -> Tuple[
 __all__ = [
     "Finding", "BaseParser", "is_image_file", "map_finding_to_control", "map_findings_list",
     "NessusParser", "NmapParser", "BurpParser", "QualysParser", "TrivyParser", "KaliParser",
-    "ZapParser", "OpenVasParser", "NucleiParser", "TlsScanParser",
+    "ZapParser", "OpenVasParser", "NucleiParser", "TlsScanParser", "CodeScanParser",
     "PentestReportParser", "PQCParser",
     "parse_tool_file", "pqc_extract_text",
 ]

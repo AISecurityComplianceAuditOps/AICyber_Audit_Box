@@ -135,7 +135,8 @@ def _detect_structured(content: str) -> str:
     if "<niktoscan" in content[:4000].lower():
         return "nikto_xml"
     head = content.lstrip()[:200]
-    if head.startswith('"Nikto - v') or head.lower().startswith('"host ip","host name","port"'):
+    # Quotes optional: a CSV re-saved from Excel loses them.
+    if re.match(r'"?Nikto - v\d', head) or re.match(r'"?host ip"?,"?host name"?,"?port"?', head.lower()):
         return "nikto_csv"
     if re.match(r'\s*Target URL,Place,Parameter,Technique\(s\)', content):
         return "sqlmap_csv"

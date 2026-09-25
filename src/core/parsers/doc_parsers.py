@@ -412,6 +412,50 @@ class _DocTRReaderAdapter:
                     lines_out.extend(t for _x0, _x1, _y, t in page_lines)
         return lines_out
 
+def ocr_image_row_text(image_bytes: bytes) -> str:
+    """An image's words regrouped strictly row by row (top to bottom, left to
+    right within a row), or "" when OCR is unavailable.
+
+    The reader's normal layout keeps two panes (a Burp request beside its
+    response) and table cells apart, which is right for those. A terminal
+    screenshot's aligned columns look like panes to it: an Nmap console read
+    "21/tcp open 23/tcp open Nmap done ... ftp telnet vsftpd", and the open
+    Telnet port on it was never seen. The VAPT worker asks for this reading
+    only when the normal one matched no parser.
+    """
+    reader = get_ocr_reader()
+    if reader is None or not hasattr(reader, "_predictor"):
+        return ""
+    try:
+        import io as _io
+        import numpy as np
+        import PIL.Image
+        img_np = _preprocess_image_for_ocr(np.array(PIL.Image.open(_io.BytesIO(image_bytes)).convert("RGB")))
+        exported = reader._predictor([img_np]).export()
+    except Exception:
+        return ""
+    words = []
+    for page in exported.get("pages", []):
+        for block in page.get("blocks", []):
+            for line in block.get("lines", []):
+                for w in line.get("words", []):
+                    if not w.get("value"):
+                        continue
+                    (x0, y0), (x1, y1) = w.get("geometry", ((0.0, 0.0), (0.0, 0.0)))
+                    words.append((y0, y1, x0, w["value"]))
+    rows = []
+    for y0, y1, x0, text in sorted(words):
+        mid = (y0 + y1) / 2.0
+        for row in rows:
+            if row["y0"] <= mid <= row["y1"]:
+                row["words"].append((x0, text))
+                break
+        else:
+            rows.append({"y0": y0, "y1": y1, "words": [(x0, text)]})
+    rows.sort(key=lambda r: r["y0"])
+    return "\n".join(" ".join(t for _x, t in sorted(r["words"])) for r in rows)
+
+
 def get_ocr_reader():
     global _OCR_READER
     if _OCR_READER is not None:

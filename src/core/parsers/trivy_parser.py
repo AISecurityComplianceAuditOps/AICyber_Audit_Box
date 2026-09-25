@@ -33,6 +33,16 @@ def _package_steps(pkg: str, installed: str, fixed: str, vid: str) -> str:
             f"3. Re-run Trivy after the fix is published.")
 
 
+def _next_text_line(lines, i):
+    """The next non-blank line after lines[i]. A document extractor puts a blank
+    line between paragraphs, which separated the target name from its "====="
+    underline and lost the target (Trivy output pasted into Word)."""
+    for follow in lines[i + 1:i + 3]:
+        if follow.strip():
+            return follow.strip()
+    return ""
+
+
 def _is_trivy_text(content: str) -> bool:
     return bool(_TABLE_HEADER_RE.search(content) or _MISCONF_TESTS_RE.search(content))
 
@@ -72,7 +82,7 @@ def _parse_trivy_text(content: str) -> List[Finding]:
 
     for i, raw in enumerate(lines):
         line = raw.rstrip()
-        nxt = lines[i + 1].strip() if i + 1 < len(lines) else ""
+        nxt = _next_text_line(lines, i)
         # "shop:1.0 (debian 11.6)" underlined with "=====" names the target.
         if line.strip() and nxt and set(nxt) == {"="} and not line.strip().startswith(("│", "|")):
             _flush()
@@ -111,7 +121,7 @@ def _parse_trivy_text(content: str) -> List[Finding]:
     if _MISCONF_TESTS_RE.search(content):
         section = ""
         for i, raw in enumerate(lines):
-            nxt = lines[i + 1].strip() if i + 1 < len(lines) else ""
+            nxt = _next_text_line(lines, i)
             if raw.strip() and nxt and set(nxt) == {"="}:
                 section = raw.strip()
                 continue

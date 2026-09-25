@@ -29,6 +29,103 @@ def _safe_float(value, default=0.0):
         return default
 
 
+def _decode_scan_bytes(data: bytes) -> str:
+    """A scan file's text, whatever encoding the auditor's machine wrote it in.
+
+    Decoded as UTF-8 with errors ignored, a file PowerShell 5 wrote with ">"
+    or Out-File (UTF-16) became NUL-separated noise and every parser returned
+    nothing; a UTF-8 BOM (Excel, Notepad) sat in front of the JSON "{" or the
+    CSV header and hid the format from its parser. Both lost every finding.
+    """
+    if not data:
+        return ""
+    if data.startswith(b"\xef\xbb\xbf"):
+        return data[3:].decode("utf-8", "ignore")
+    if data.startswith((b"\xff\xfe\x00\x00", b"\x00\x00\xfe\xff")):
+        return data.decode("utf-32", "ignore").lstrip("﻿")
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return data.decode("utf-16", "ignore").lstrip("﻿")
+    head = data[:4000]
+    if len(head) >= 8:
+        odd, even = head[1::2], head[0::2]
+        odd_nul, even_nul = odd.count(0) / len(odd), even.count(0) / len(even)
+        if odd_nul > 0.3 and even_nul < 0.05:
+            return data.decode("utf-16-le", "ignore")
+        if even_nul > 0.3 and odd_nul < 0.05:
+            return data.decode("utf-16-be", "ignore")
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        text = data.decode("utf-8", "ignore")
+        # A few stray bytes in a UTF-8 file: keep UTF-8. A legacy (cp1252)
+        # file: decode it as that, rather than dropping every accented byte.
+        return text if len(text) >= 0.99 * len(data) else data.decode("cp1252", "replace")
+
+
+# Members of an uploaded archive that can never be scan output.
+_NOT_EVIDENCE_EXT = (".exe", ".dll", ".so", ".bin", ".jar", ".class", ".pyc", ".o", ".dylib", ".msi")
+
+
+def _expand_scan_containers(files_data, _depth=0):
+    """One entry per real file for the VAPT worker.
+
+    A .zip was read by the document extractor, which keeps only document
+    types (a zip of .xml / .json / .nessus / .gnmap exports lost all of them)
+    and joins the rest into one text, so only the first tool in it was parsed.
+    An Excel workbook became "Column=Value | ..." lines for the ISO index, so
+    a Nessus or Qualys CSV saved as .xlsx was recognised by nothing. Each zip
+    member and each worksheet (as CSV) now goes through the worker on its own.
+    Anything that cannot be expanded is passed through unchanged.
+    """
+    import io as _io
+    import zipfile
+    out = []
+    for fd in files_data or []:
+        name = fd.get("name", "") or ""
+        data = fd.get("bytes") or b""
+        low = name.lower()
+        if data and low.endswith(".zip") and _depth < 2:
+            try:
+                from src.core.input_guardrail import MAX_UNCOMPRESSED_BYTES, MAX_ZIP_RATIO
+                members = []
+                with zipfile.ZipFile(_io.BytesIO(data)) as zf:
+                    for info in zf.infolist():
+                        entry = info.filename
+                        base = entry.rsplit("/", 1)[-1]
+                        if (info.is_dir() or "__MACOSX" in entry or not base or base.startswith(".")
+                                or base.lower().endswith(_NOT_EVIDENCE_EXT)):
+                            continue
+                        if info.file_size > MAX_UNCOMPRESSED_BYTES or (
+                                info.compress_size and info.file_size / info.compress_size > MAX_ZIP_RATIO):
+                            print(f"[VAPT] Skipped '{entry}' in '{name}': exceeds the archive safety limits.",
+                                  flush=True)
+                            continue
+                        members.append({"name": f"{name}/{entry}", "bytes": zf.read(entry), "text": None})
+                out.extend(_expand_scan_containers(members, _depth + 1))
+                continue
+            except Exception as _zip_err:
+                print(f"[VAPT] '{name}' not expanded as an archive ({_zip_err}); reading it whole.", flush=True)
+        if data and low.endswith((".xlsx", ".xls")):
+            try:
+                import pandas as pd
+                sheets = pd.read_excel(_io.BytesIO(data), sheet_name=None, header=None, dtype=str)
+                units = []
+                for sheet, df in sheets.items():
+                    df = df.fillna("")
+                    if df.empty:
+                        continue
+                    csv_text = df.to_csv(index=False, header=False)
+                    unit = f"{name}#{sheet}.csv" if len(sheets) > 1 else f"{name}.csv"
+                    units.append({"name": unit, "bytes": csv_text.encode("utf-8"), "text": None})
+                if units:
+                    out.extend(units)
+                    continue
+            except Exception as _xl_err:
+                print(f"[VAPT] '{name}' not read as a worksheet ({_xl_err}); reading it whole.", flush=True)
+        out.append(fd)
+    return out
+
+
 def _llm_answering(timeout=1.5) -> bool:
     """True when the configured LLM server accepts a connection right now.
     Never starts one."""
@@ -2531,6 +2628,8 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
         except Exception as _seed_err:
             print(f"[VAPT DEDUP] Failed to pre-seed existing dedup keys: {_seed_err}", flush=True)
 
+        # Archives and workbooks become one entry per member / worksheet.
+        files_data = _expand_scan_containers(files_data)
         _total_files = len(files_data) or 1
         _vapt_progress(3, f"Reading {_total_files} evidence file(s)...")
         for _fi, fd in enumerate(files_data, start=1):
@@ -2543,7 +2642,7 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
                 fbytes = fd.get("bytes")
                 if fname_lower.endswith((".html", ".htm", ".xml", ".csv", ".json", ".txt")):
                     try:
-                        ftext = fbytes.decode("utf-8", errors="ignore")
+                        ftext = _decode_scan_bytes(fbytes)
                     except Exception:
                         ftext = ""
                 elif fname_lower.endswith(".pdf"):
@@ -2583,7 +2682,7 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
                         ftext = ""
                 else:
                     try:
-                        ftext = fbytes.decode("utf-8", errors="ignore")
+                        ftext = _decode_scan_bytes(fbytes)
                     except Exception:
                         ftext = ""
 
@@ -2665,59 +2764,55 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
                     actionable_ocr, info_ocr = parse_tool_file("ocr_" + fname + ".txt", raw_ocr, framework=_dispatch_framework)
                     info_ocr_list = info_ocr if isinstance(info_ocr, list) else []
                     ocr_findings = actionable_ocr + info_ocr_list
+                    if not ocr_findings and fd.get("bytes"):
+                        # A terminal screenshot's aligned columns were read as
+                        # separate panes; read it once more strictly row by row.
+                        try:
+                            from src.core.parsers.doc_parsers import ocr_image_row_text
+                            _rows_text = ocr_image_row_text(fd["bytes"])
+                            if _rows_text and len(_rows_text.strip()) > 10:
+                                _a2, _i2 = parse_tool_file("ocr_" + fname + ".txt", _rows_text,
+                                                           framework=_dispatch_framework)
+                                ocr_findings = _a2 + (_i2 if isinstance(_i2, list) else [])
+                                if ocr_findings:
+                                    raw_ocr = _rows_text
+                        except Exception as _row_err:
+                            print(f"[VAPT] Row-wise OCR re-read of '{fname}' skipped: {_row_err}", flush=True)
                     if ocr_findings:
                         combined_tool_findings.extend(ocr_findings)
                     else:
+                        # No parser recognised the screenshot. It used to be turned
+                        # into a vulnerability by keyword: any image containing the
+                        # word "database" became a HIGH "SQL Injection Detected" -- a
+                        # screenshot of "Nightly database backup completed
+                        # successfully" did -- and anything else a MEDIUM "Visual
+                        # Security Evidence". A severity nobody assessed is a false
+                        # finding against the client. The screenshot is recorded for
+                        # the auditor to classify, with what it says.
                         import re
                         txt_low = raw_ocr.lower()
-                        # Word-boundary matching, not bare substring: "script" is a literal
-                        # substring of "de-SCRIPT-ion", and "port" of "re-PORT-ing"/"sup-PORT"/
-                        # "im-PORT-ant" -- a plain `in` check misclassified any screenshot
-                        # containing the ordinary word "Description" as XSS proof-of-concept,
-                        # and would do the same to "report"/"support" for the Nmap branch.
-                        def _kw_hit(*keywords):
-                            return any(re.search(r'\b' + re.escape(kw) + r'\b', txt_low) for kw in keywords)
-
-                        if _kw_hit("sql", "sqli", "union select", "database"):
-                            f_ocr = ParsedFinding(
-                                title=f"Visual PoC: SQL Injection Detected ({fname})",
-                                severity="HIGH",
-                                description=f"OCR extracted SQL injection proof-of-concept from evidence image '{fname}'.",
-                                evidence=f"Target: Image Screenshot ({fname})\nScanner: Visual OCR\nPlugin Output:\n{raw_ocr[:1200]}",
-                                source_tool="Visual OCR",
-                                control_id="VAPT-4"
-                            )
-                            combined_tool_findings.append(f_ocr)
-                        elif _kw_hit("xss", "script", "cross-site"):
-                            f_ocr = ParsedFinding(
-                                title=f"Visual PoC: Cross-Site Scripting (XSS) Detected ({fname})",
-                                severity="MEDIUM",
-                                description=f"OCR extracted XSS proof-of-concept from evidence image '{fname}'.",
-                                evidence=f"Target: Image Screenshot ({fname})\nScanner: Visual OCR\nPlugin Output:\n{raw_ocr[:1200]}",
-                                source_tool="Visual OCR",
-                                control_id="VAPT-4"
-                            )
-                            combined_tool_findings.append(f_ocr)
-                        elif _kw_hit("nmap", "port", "open", "tcp"):
-                            f_ocr = ParsedFinding(
-                                title=f"Visual PoC: Network Scan & Port Evidence ({fname})",
-                                severity="INFO",
-                                description=f"OCR extracted network scan and open port evidence from image '{fname}'.",
-                                evidence=f"Target: Image Screenshot ({fname})\nScanner: Visual OCR\nPlugin Output:\n{raw_ocr[:1200]}",
-                                source_tool="Visual OCR",
-                                control_id="VAPT-3"
-                            )
-                            combined_tool_findings.append(f_ocr)
-                        else:
-                            f_ocr = ParsedFinding(
-                                title=f"Visual Security Evidence ({fname})",
-                                severity="MEDIUM",
-                                description=f"OCR extracted security evidence from image '{fname}'.",
-                                evidence=f"Target: Image Screenshot ({fname})\nScanner: Visual OCR\nPlugin Output:\n{raw_ocr[:1200]}",
-                                source_tool="Visual OCR",
-                                control_id="VAPT-3"
-                            )
-                            combined_tool_findings.append(f_ocr)
+                        _terms = [label for label, pat in (
+                            ("SQL injection", r"sql\s*injection|\bsqli\b|union\s+select|' or '?1'?\s*=\s*'?1"),
+                            ("cross-site scripting", r"cross[- ]site scripting|\bxss\b|<script"),
+                            ("remote code execution", r"remote code execution|\brce\b"),
+                            ("open port / service listing", r"\b\d{1,5}/(?:tcp|udp)\b"),
+                        ) if re.search(pat, txt_low)]
+                        combined_tool_findings.append(ParsedFinding(
+                            title=f"Screenshot for auditor review ({fname})"
+                                  + (f": mentions {', '.join(_terms)}" if _terms else ""),
+                            severity="INFO",
+                            confidence="Tentative",
+                            description=(f"The screenshot '{fname}' was not recognised as the output of a "
+                                         f"supported scanner, so no vulnerability or severity was assigned. "
+                                         + (f"Its text mentions {', '.join(_terms)}. " if _terms else "")
+                                         + "Review it and record a finding manually if it shows one."),
+                            remediation="Auditor to review the screenshot and classify it.",
+                            remediation_actionable="Auditor to review the screenshot and classify it.",
+                            evidence=(f"Target: Image Screenshot ({fname})\nScanner: Visual OCR\n"
+                                      f"Plugin Output:\n{raw_ocr[:1200]}"),
+                            source_tool="Visual OCR",
+                            control_id="VAPT-3",
+                        ))
 
             for f in combined_tool_findings:
                 # Skip exact-duplicate findings (same CVE, or same tool+plugin_id, or

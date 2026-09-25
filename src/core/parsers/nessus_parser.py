@@ -430,7 +430,8 @@ class NessusParser(BaseParser):
         """
         import csv as _csv
         import io as _io
-        rows = list(_csv.DictReader(_io.StringIO(content.lstrip("\ufeff"))))
+        # Blank lines before the header made "" the header row.
+        rows = list(_csv.DictReader(_io.StringIO(content.lstrip("\ufeff \t\r\n"))))
         if not rows:
             return [], []
         norm = {k.strip().lower(): k for k in rows[0].keys() if k}
@@ -445,6 +446,11 @@ class NessusParser(BaseParser):
         grouped = {}
         for row in rows:
             plugin_id = col(row, "plugin id")
+            # Nessus plugin ids are integers. A row without one is a wrapped
+            # line of the previous row's multi-line cell read as a record: it
+            # came out as a finding titled "Nessus Plugin 10.6.0" on host "6.5".
+            if not plugin_id.isdigit():
+                continue
             host = col(row, "host", "ip address")
             port = col(row, "port")
             key = (plugin_id, host, port, col(row, "protocol"))

@@ -138,6 +138,11 @@ class Finding:
         Capped at 480 chars to prevent DB truncation.
         """
         t_clean = (self.target or "").strip().lower()
+        # The service name Nessus's XML appends ("10.20.30.40:443/tcp (www)")
+        # is not part of the location: without this the same scan uploaded as
+        # .nessus and as .csv listed every finding twice.
+        import re as _re
+        t_clean = _re.sub(r'(:\d+/(?:tcp|udp|sctp))\s*\([^)]*\)$', r'\1', t_clean)
         tool = (self.source_tool or "generic").lower().strip()
 
         if self.cve_list:

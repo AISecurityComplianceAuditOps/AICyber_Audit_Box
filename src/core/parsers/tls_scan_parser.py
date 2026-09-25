@@ -127,7 +127,8 @@ class TlsScanParser(BaseParser):
     @staticmethod
     def _kind(content: str) -> str:
         head = content.lstrip()[:600]
-        if re.match(r'"id","fqdn/ip","port","severity","finding"', head):
+        # Quotes optional: a CSV re-saved from Excel loses them.
+        if re.match(r'"?id"?,"?fqdn/ip"?,"?port"?,"?severity"?,"?finding"?', head):
             return "testssl_csv"
         if head[:1] in "[{" and '"finding"' in content and '"severity"' in content and (
                 '"fqdn/ip"' in content or '"scanResult"' in content or re.search(r'"id"\s*:\s*"(?:SSLv2|TLS1|service|heartbleed)"', content)):

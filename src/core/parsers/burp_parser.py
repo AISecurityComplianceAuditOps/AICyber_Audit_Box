@@ -758,8 +758,16 @@ class BurpParser(BaseParser):
                 title = "VAPT Finding"
                 target = "Web Application Endpoint"
 
-                # Check for explicit Issue / Vulnerability title
-                m_vuln = re.search(r'(?:Issue|Vulnerability|Finding|Title)\s*[:\-]\s*([^\n\r<]{3,100})', full_block, re.IGNORECASE)
+                # Check for explicit Issue / Vulnerability title: the LAST one
+                # between the previous finding's severity line and this one's,
+                # else the first after it. The first match in a 600-character
+                # lookback was the PREVIOUS finding's title: of two findings in
+                # one list, Apache 2.4.49 path traversal (CVE-2021-41773) was
+                # published as "Remote Code Execution via vsftpd 2.3.4 Backdoor".
+                _title_re = re.compile(r'(?:Issue|Vulnerability|Finding|Title)\s*[:\-]\s*([^\n\r<]{3,100})', re.IGNORECASE)
+                _prev_end = sev_matches[i - 1].end() if i > 0 else lookback_start
+                _before = list(_title_re.finditer(content, _prev_end, sm.start()))
+                m_vuln = _before[-1] if _before else _title_re.search(body_text)
                 if m_vuln:
                     title = m_vuln.group(1).strip()
 
@@ -796,6 +804,12 @@ class BurpParser(BaseParser):
                         # belonged to the previous issue. Let this finding's
                         # own Host and Path lines below supply the target.
                         target = 'Web Application Endpoint'
+
+                # A severity word with nothing naming a vulnerability is not a
+                # finding. A change record reading "Risk: Low" was published as
+                # a LOW finding titled "VAPT Finding".
+                if title == "VAPT Finding":
+                    continue
 
                 # Severity & Confidence
                 raw_sev = sm.group('sev').upper()
@@ -920,6 +934,49 @@ class BurpParser(BaseParser):
                         _label = f"{_mk.group(1)} {_mk.group(2)}" if _mk.group(2) else _mk.group(1)
                         evidence += f"[HTTP {_label}]\n{_chunk[:700]}\n\n"
 
+                # No Burp sections: a "Label: value" findings list ("1.
+                # Vulnerability: X / - Host: 192.168.1.105:21 / - Severity:
+                # CRITICAL (CVSS 9.8) / - CVE: ..."). Each field comes from THIS
+                # finding's block -- its title line to the next finding's --
+                # not from the 600-character lookback, which gave the second
+                # finding the first one's CVE, and not from Burp-only patterns,
+                # which found no host, score, description or remediation at all.
+                _tool_name = "Burp Suite"
+                if _sec is None:
+                    _blk_start = m_vuln.start() if (m_vuln is not None and m_vuln.start() < sm.start()) else sm.start()
+                    _blk_end = sev_matches[i + 1].start() if i + 1 < len(sev_matches) else len(content)
+                    _next_titles = [t.start() for t in _title_re.finditer(content, sm.end(), _blk_end)]
+                    if _next_titles:
+                        _blk_end = _next_titles[-1]
+                    _block = content[_blk_start:_blk_end]
+
+                    def _lab(*names, _block=_block):
+                        m = re.search(r'(?im)^[ \t\-\*•]*(?:' + "|".join(names) + r')\s*[:\-]\s*(.+)$', _block)
+                        return m.group(1).strip() if m else ""
+                    _t = _lab("Host", "Target", "URL", "Endpoint", r"Affected\s+(?:host|url|asset|system)s?",
+                              "Asset", r"IP(?:\s+address)?")
+                    if not _t:
+                        _dm = re.search(r'(?im)^\s*(?:Target|URL|Host)\s*[:\-]\s*(\S+)', content[:800])
+                        _t = _dm.group(1) if _dm else ""
+                    if _t and target == 'Web Application Endpoint':
+                        target = _t
+                    remed = remed or _lab("Remediation", "Recommendation", "Solution", "Fix", "Mitigation")
+                    _poc = _lab("POC", r"Proof\s+of\s+concept", "Evidence")
+                    # The list's own description, or one stated from its facts
+                    # -- not the raw "Severity: ... / - CVE: ..." lines.
+                    desc = _lab("Description", "Details", "Summary") or (
+                        f"{title} was reported on {_t or 'the target'}."
+                        + (f" Proof of concept: {_poc}" if _poc else ""))
+                    if _poc and _poc not in evidence:
+                        evidence = (evidence + "\n" + _poc).strip()
+                    _cv = re.search(r'CVSS(?:\s*v?\d(?:\.\d)?)?(?:\s*(?:base\s*)?score)?\s*[:=]?\s*\(?\s*(\d{1,2}(?:\.\d)?)\b',
+                                    _block, re.I)
+                    if _cv and 0.0 <= float(_cv.group(1)) <= 10.0:
+                        score = float(_cv.group(1))
+                    full_block = _block
+                    # The scanner named by the document, not assumed.
+                    _tool_name = "Burp Suite" if re.search(r'burp', content[:800], re.I) else "Pentest Report"
+
                 # CVEs from this finding's own section, not the 600-character
                 # lookback, which reaches into the previous issue.
                 _cve_scope = content[_sec[0]:_sec[1]] if _sec is not None else full_block
@@ -938,7 +995,7 @@ class BurpParser(BaseParser):
                     remediation=remed,
                     evidence=evidence.strip() or desc[:500],
                     plugin_id=_section_number(sm.start(), _sec) if _sec is not None else "burp-pdf",
-                    source_tool="Burp Suite",
+                    source_tool=_tool_name,
                 )
 
                 if severity in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
@@ -948,7 +1005,17 @@ class BurpParser(BaseParser):
 
         if not actionable_findings and not info_findings:
             # Fallback for OCR / PoC Screenshot text (e.g. shot_burp_sqli.png, shot_burp_xss.png)
-            poc_hits = list(re.finditer(r'(?:Vulnerability\s*Proof|Proof\s*of\s*Concept|SQL\s*Injection|Stored\s*XSS|Reflected\s*XSS|Cross-Site\s*Scripting|XSS)[A-Z]*[^\n\r<]{0,60}', content, re.IGNORECASE))
+            #
+            # Only for a captured exchange -- a request line or a response
+            # status line. Every file no parser recognises ends up here, and the
+            # bare words used to be enough: a WAF summary ("blocked 1,204 SQL
+            # injection attempts"), a methodology note, a secure-coding policy
+            # and a letter confirming an SQL injection FIXED each became a HIGH
+            # "Visual PoC: SQL Injection".
+            _has_exchange = re.search(
+                r'(?m)^\s*(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+\S+\s+HTTP/\d|HTTP/\d(?:\.\d)?\s+\d{3}\b',
+                content)
+            poc_hits = list(re.finditer(r'(?:Vulnerability\s*Proof|Proof\s*of\s*Concept|SQL\s*Injection|Stored\s*XSS|Reflected\s*XSS|Cross-Site\s*Scripting|XSS)[A-Z]*[^\n\r<]{0,60}', content, re.IGNORECASE)) if _has_exchange else []
             for ph in poc_hits:
                 if _is_non_finding_poc(ph.group(0)):
                     print(
@@ -985,7 +1052,10 @@ class BurpParser(BaseParser):
                 f_poc = Finding(
                     title=_title,
                     severity="HIGH",
-                    severity_score=7.5,
+                    # No CVSS was assessed from a screenshot; the class-level
+                    # severity stands, flagged for the auditor to confirm.
+                    severity_score=None,
+                    confidence="Tentative",
                     target="Web Application Endpoint",
                     description=_description,
                     evidence=content[:800],
