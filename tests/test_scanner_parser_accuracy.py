@@ -440,11 +440,11 @@ def test_burp_html_export_parses_under_either_html_parser(html_parser):
 def test_burp_html_keeps_the_reports_severity(html_parser):
     found = _burp_html()
     sqli = _one(found, "SQL injection")
-    assert sqli.severity == "HIGH"
-    assert 7.0 <= float(sqli.severity_score) < 9.0
+    assert sqli.severity == "HIGH" and sqli.confidence == "Certain"
     cookie = _one(found, "HttpOnly")
-    assert cookie.severity == "LOW"
-    assert 0.0 < float(cookie.severity_score) < 4.0
+    assert cookie.severity == "LOW" and cookie.confidence == "Firm"
+    # Burp assigns no CVSS, so none is invented.
+    assert sqli.severity_score is None and cookie.severity_score is None
 
 
 def test_burp_html_cwes_belong_to_their_own_issue(html_parser):

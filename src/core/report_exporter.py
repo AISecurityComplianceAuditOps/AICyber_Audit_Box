@@ -149,6 +149,134 @@ def _resolve_framework_label(raw_framework):
     return _FRAMEWORK_DISPLAY_NAMES.get(raw.upper(), raw) or "ISO 27001"
 
 
+# ── VAPT report facts: from the findings, or stated as absent ───────────────
+# A client reviewing a delivered PortSwigger (Burp) report listed what this
+# exporter printed that no scanner had said: "Internal Network VAPT" on a public
+# web application, "Network Network" in every header, testing dates of
+# 20-June-2026 to today against evidence dated October 2022, a footer naming
+# "XYZ Security Services" under a Dhiware cover, scanner names guessed from
+# keywords ("Nessus" for anything with a CVE, "Nmap" for TLS, otherwise
+# "Automated VAPT Scanner & RAG Engine"), "N/A - Vendor Security Advisory /
+# End-of-Life Notice" where a CWE belonged, a flat CVSS 8.0 on every High and
+# "apply vendor security patches" on findings that had no remediation text.
+_WEB_TOOLS = {"burp suite", "owasp zap", "nikto", "sqlmap", "wpscan", "gobuster", "dirb",
+              "ffuf", "feroxbuster", "nuclei"}
+_CONTAINER_TOOLS = {"trivy", "owasp dependency-check"}
+
+
+def _vapt_scope(findings, session_title=""):
+    """(scope label, document title) from what was actually tested."""
+    kinds = []
+    for f in findings or []:
+        f = f if isinstance(f, dict) else {}
+        tool = str(f.get("source_tool") or "").strip().lower()
+        target = str(f.get("target") or "").strip().lower()
+        if tool in _WEB_TOOLS or target.startswith(("http://", "https://")):
+            kind = "Web Application"
+        elif tool in _CONTAINER_TOOLS:
+            kind = "Container and Dependency"
+        elif tool or target:
+            kind = "Network"
+        else:
+            continue
+        if kind not in kinds:
+            kinds.append(kind)
+    t = (session_title or "").lower()
+    if not kinds:
+        kinds = ["Web Application"] if ("web" in t or "app" in t) else ["Network"]
+    order = ["Network", "Web Application", "Container and Dependency"]
+    label = " and ".join(k for k in order if k in kinds)
+    # Internal / external is the engagement's scope, not something a scan file
+    # shows: said only when the session names it.
+    if "internal" in t:
+        label = "Internal " + label
+    elif "external" in t:
+        label = "External " + label
+    return label, f"{label} Vulnerability Assessment and Penetration Testing Validation Report"
+
+
+def _vapt_tools(findings):
+    tools = []
+    for f in findings or []:
+        t = str((f if isinstance(f, dict) else {}).get("source_tool") or "").strip()
+        if t and t.lower() not in ("vapt engine", "vapt", "unknown", "none") and t not in tools:
+            tools.append(t)
+    return tools
+
+
+def _vapt_scanner(f):
+    t = str(f.get("source_tool") or f.get("tool") or "").strip()
+    if t and t.lower() not in ("vapt engine", "vapt", "unknown", "none"):
+        return t
+    m = re.search(r"(?m)^Scanner:\s*(.+?)\s*$", str(f.get("evidence_snippet") or ""))
+    return m.group(1).strip() if m else "Not recorded"
+
+
+def _vapt_score(f):
+    """The CVSS score the scanner assessed, or None when it assigned none."""
+    v = f.get("severity_score", f.get("score"))
+    try:
+        v = float(v) if v not in (None, "") else None
+    except (TypeError, ValueError):
+        v = None
+    return v if (v is not None and v > 0) else None
+
+
+def _vapt_refs(f, extra_text=""):
+    raw = f.get("cve_list") or []
+    if isinstance(raw, str):
+        raw = re.findall(r"CVE-\d{4}-\d{4,7}|CWE-\d+", raw, re.IGNORECASE)
+    refs = [str(r).strip().upper() for r in raw if str(r).strip()]
+    cves = [r for r in refs if r.startswith("CVE-")]
+    cwes = [r for r in refs if r.startswith("CWE-")]
+    if not refs and extra_text:
+        cves = sorted({c.upper() for c in re.findall(r"CVE-\d{4}-\d{4,7}", extra_text, re.IGNORECASE)})
+    return cves, cwes
+
+
+def _vapt_owasp(f, title, desc):
+    """Same source as the Risk Category: the finding's own CWE first."""
+    from src.core.parsers.control_mapper import CWE_TO_OWASP_MAP, map_finding_to_owasp
+    _cves, cwes = _vapt_refs(f)
+    for c in cwes:
+        if c in CWE_TO_OWASP_MAP:
+            return CWE_TO_OWASP_MAP[c]
+    cat = str(f.get("category") or "").strip().lower()
+    if cat:
+        from src.core.parsers.control_mapper import _OWASP_TO_CATEGORY
+        for code, name in _OWASP_TO_CATEGORY.items():
+            if name.lower() == cat:
+                for label in CWE_TO_OWASP_MAP.values():
+                    if label.startswith(code):
+                        return label
+    return map_finding_to_owasp(None, title, desc)
+
+
+def _vapt_remediation(f):
+    r = str(f.get("recommendation") or f.get("remediation") or "").strip()
+    if r and r != "NIL":
+        return r
+    a = str(f.get("remediation_actionable") or "").strip()
+    if a:
+        return a
+    if "INFO" in str(f.get("severity") or "").upper():
+        return "No action required; this is an informational result."
+    return "The scanner gave no remediation for this finding; see the developer steps."
+
+
+def _vapt_severity(f):
+    return str(f.get("severity", f.get("sev", "LOW")) or "LOW").split()[-1].upper()
+
+
+def _cut_words(text, limit, marker=" [...]"):
+    """Shorten at a word boundary, never mid-word."""
+    text = str(text or "")
+    if len(text) <= limit:
+        return text
+    cut = text.rfind(" ", 0, limit)
+    return text[:cut if cut > limit * 0.6 else limit].rstrip() + marker
+
+
 def _export_vapt_pdf(session_title, findings, resolved_list, status, comments="", custom_logo=None, metadata=None):
     from fpdf import FPDF
     from fpdf.enums import XPos, YPos
@@ -166,6 +294,9 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
         val = val.replace("“", "\"").replace("”", "\"").replace("‘", "'").replace("’", "'")
         val = val.replace("—", "-").replace("–", "-").replace("\u2013", "-").replace("\u2014", "-")
         val = val.replace("\u2022", "*").replace("•", "*").replace("\u25cf", "*").replace("\u25cb", "*")
+        # An ellipsis and the extractor's U+FFFD both printed as "?" -- a
+        # delivered report read "replacing it with two [?]".
+        val = val.replace("\u2026", "...").replace("[\ufffd]", "").replace("\ufffd", "")
         val = val.encode("latin-1", "replace").decode("latin-1")
         return val
 
@@ -186,7 +317,9 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
     auditor_address = meta.get("brand_address") or _PLACEHOLDER_ADDRESS
     auditor_email = meta.get("brand_email") or _PLACEHOLDER_EMAIL
 
-    testing_dates = f"20-June-2026 to {datetime.now().strftime('%d-%B-%Y')}"
+    # The auditor's own dates. This was "20-June-2026 to <today>" on every
+    # report, whatever the evidence said.
+    testing_dates = meta.get("brand_audit_dates") or "Not specified"
 
     assets_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "data", "assets"))
     custom_logo_file = os.path.join(assets_dir, "custom_company_logo.png")
@@ -197,19 +330,7 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
     bg_path   = os.path.join(assets_dir, "cover_matrix_bg.png")
     chart_path= os.path.join(assets_dir, "chart_risk_severity.png")
 
-    s_title_lower = session_title.lower()
-    if "combined" in s_title_lower or ("web" in s_title_lower and "internal" in s_title_lower):
-        scope_type = "Internal & Web App"
-        doc_title = "Combined Internal Network & Web Application VAPT Validation Report"
-    elif "web" in s_title_lower or "app" in s_title_lower:
-        scope_type = "Web Application"
-        doc_title = "Web Application Vulnerability Assessment and Penetration Testing Validation Report"
-    elif "external" in s_title_lower:
-        scope_type = "External Network"
-        doc_title = "External Network Vulnerability Assessment and Penetration Testing Validation Report"
-    else:
-        scope_type = "Internal Network"
-        doc_title = "Internal Network Vulnerability Assessment and Penetration Testing Validation Report"
+    scope_type, doc_title = _vapt_scope(findings, session_title)
 
     TUV_BLUE = (0, 80, 157)      # Report accent blue #00509D
     DARK_TEXT = (15, 23, 42)
@@ -222,9 +343,9 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
                 self.set_text_color(100, 116, 139)
                 if logo_path and os.path.exists(logo_path):
                     self.image(logo_path, x=184, y=4, w=10)
-                    self.cell(166, 5, clean_text(f"{scope_type} Network VAPT Validation Report"), align="R", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    self.cell(166, 5, clean_text(f"{scope_type} VAPT Validation Report"), align="R", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                 else:
-                    self.cell(0, 5, clean_text(f"{scope_type} Network VAPT Validation Report"), align="R", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                    self.cell(0, 5, clean_text(f"{scope_type} VAPT Validation Report"), align="R", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                 self.ln(3)
 
         def footer(self):
@@ -233,7 +354,7 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
                 self.set_font("Helvetica", "", 9)
                 self.set_text_color(15, 23, 42)
                 self.cell(20, 8, clean_text(str(self.page_no())), align="L")
-                self.cell(160, 8, clean_text("Cyber Security Services | XYZ Security Services Pvt. Ltd."), align="R")
+                self.cell(160, 8, clean_text(f"Cyber Security Services | {auditor_firm}"), align="R")
 
     pdf = VAPTPDF()
     pdf.set_auto_page_break(auto=True, margin=18)
@@ -272,7 +393,7 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
         pdf.set_font("Helvetica", "B", 10)
         pdf.set_text_color(*TUV_BLUE)
         pdf.set_xy(16, 22)
-        pdf.cell(26, 6, "XYZ Security", new_x=XPos.RIGHT, new_y=YPos.TOP)
+        pdf.cell(26, 6, clean_text(auditor_firm.split()[0] if auditor_firm else "-"), new_x=XPos.RIGHT, new_y=YPos.TOP)
 
     pdf.set_draw_color(180, 180, 180)
     pdf.line(45, 15, 45, 43) # vertical divider line
@@ -425,32 +546,36 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
         except Exception:
             s_num = 0.0
 
+        # The scanner's severity stands. A score used to override it (Qualys
+        # rates Sweet32 Medium with CVSS 7.5 -- printed as HIGH), and a missing
+        # score was replaced by 9.8 / 8.0 / 5.5 / 2.5 from the band.
         r_sev = str(f.get("severity", "")).upper()
-        if s_num > 0.0:
-            if s_num >= 9.0: c_sev = "CRITICAL"
-            elif s_num >= 7.0: c_sev = "HIGH"
-            elif s_num >= 4.0: c_sev = "MEDIUM"
-            else: c_sev = "LOW"
-        else:
-            if "CRIT" in r_sev or "P1" in r_sev: c_sev, s_num = "CRITICAL", 9.8
-            elif "HIGH" in r_sev or "P2" in r_sev: c_sev, s_num = "HIGH", 8.0
-            elif "MED" in r_sev or "P3" in r_sev: c_sev, s_num = "MEDIUM", 5.5
-            elif "LOW" in r_sev or "P4" in r_sev: c_sev, s_num = "LOW", 2.5
-            else: c_sev, s_num = "INFO", 0.0
+        if "CRIT" in r_sev or "P1" in r_sev: c_sev = "CRITICAL"
+        elif "HIGH" in r_sev or "P2" in r_sev: c_sev = "HIGH"
+        elif "MED" in r_sev or "P3" in r_sev: c_sev = "MEDIUM"
+        elif "LOW" in r_sev or "P4" in r_sev: c_sev = "LOW"
+        elif "INFO" in r_sev: c_sev = "INFO"
+        elif s_num >= 9.0: c_sev = "CRITICAL"
+        elif s_num >= 7.0: c_sev = "HIGH"
+        elif s_num >= 4.0: c_sev = "MEDIUM"
+        elif s_num > 0.0: c_sev = "LOW"
+        else: c_sev = "INFO"
 
         f["severity"] = c_sev
-        f["severity_score"] = s_num
-        f["score"] = s_num
+        f["severity_score"] = s_num if s_num > 0 else None
+        f["score"] = f["severity_score"]
 
     critical_cnt = sum(1 for f in active_findings if f.get("severity") == "CRITICAL")
     high_cnt = sum(1 for f in active_findings if f.get("severity") == "HIGH")
     medium_cnt = sum(1 for f in active_findings if f.get("severity") == "MEDIUM")
     low_cnt = sum(1 for f in active_findings if f.get("severity") == "LOW")
 
+    _SEV_RANK = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "INFO": 0}
+
     def sort_key(f):
         sc = float(f.get("severity_score") or f.get("score") or 0.0)
         is_web = 1.0 if (str(f.get("source_tool", "")).lower() in ("burp suite", "burp") or "http" in str(f.get("target", "")).lower()) else 0.0
-        return (sc, is_web)
+        return (_SEV_RANK.get(f.get("severity"), 0), sc, is_web)
 
     if active_findings:
         active_findings = sorted(active_findings, key=sort_key, reverse=True)
@@ -483,7 +608,7 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
         ("      2.3.3 Graphical Summary", "7"),
         ("      2.3.4 Vulnerabilities Summary", "8"),
         ("   2.4 Tactical Recommendations", str(p_sec_2_4)),
-        (f"3 Technical Detail Report: {scope_type} Network Vulnerability Assessment and Penetration Testing", str(p_sec_3_0)),
+        (f"3 Technical Detail Report: {scope_type} Vulnerability Assessment and Penetration Testing", str(p_sec_3_0)),
         ("   3.2 Testing Environment", str(p_sec_3_0)),
         ("   3.3 Findings", str(p_sec_3_0)),
         ("4 Appendix", str(p_sec_4_0)),
@@ -523,7 +648,8 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
     pdf.set_text_color(*BODY_TEXT)
     pdf.multi_cell(0, 4, clean_text(
         f"The overarching goal of a penetration test is to identify the vulnerabilities in a target of evaluation. To assist in the prioritization of vulnerability remediation, {auditor_firm} utilizes the Common Vulnerability Scoring System (CVSS v3.0 / v3.1 / v4.0). "
-        "CVSS assists in the assessment of a vulnerability's severity by providing a standard set of characteristics by which the vulnerability is scored. These scores are then used to calculate an overall severity score from 1-10; 1 being lowest and 10 being highest."
+        "CVSS assists in the assessment of a vulnerability's severity by providing a standard set of characteristics by which the vulnerability is scored. These scores are then used to calculate an overall severity score from 1-10; 1 being lowest and 10 being highest. "
+        "Each finding carries the severity rating of the tool that reported it. Where that tool assigns a CVSS score and vector (for example Nessus, Qualys, OpenVAS, Nuclei, Trivy), they are reported as given; where it does not (for example Burp Suite, OWASP ZAP, Nikto), the finding states that no CVSS score was assigned rather than estimating one."
     ))
     pdf.ln(2.5)
 
@@ -783,20 +909,8 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
         for idx, f in enumerate(list_to_show, 1):
             title = f.get("title", "") or f.get("finding", "") or f.get("control", "") or f"Vulnerability {idx}"
             sev_str = str(f.get("severity", f.get("sev", "LOW"))).split()[-1].upper()
-            score_val = f.get("severity_score") or f.get("score")
-            try:
-                score_num = float(score_val) if score_val is not None else 0.0
-            except Exception:
-                score_num = 0.0
-
-            if score_num <= 0.0:
-                if "CRIT" in sev_str: score_num = 9.5
-                elif "HIGH" in sev_str: score_num = 8.0
-                elif "MED" in sev_str: score_num = 5.5
-                elif "LOW" in sev_str: score_num = 2.5
-                else: score_num = 0.0
-
-            score_str = f"{score_num:.1f}"
+            _sc = _vapt_score(f)
+            score_str = f"{_sc:.1f}" if _sc is not None else "-"
             f["derived_score_str"] = score_str
             r = table.row()
             r.cell(f"{idx}.", style=body_style)
@@ -837,7 +951,7 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
 
     # ── PAGE 9+, TECHNICAL DETAIL REPORT: DYNAMIC FINDINGS ──────────────────
     pdf.add_page()
-    draw_banner(f"3 TECHNICAL DETAIL REPORT: {scope_type.upper()} NETWORK VULNERABILITY ASSESSMENT AND PENETRATION TESTING")
+    draw_banner(f"3 TECHNICAL DETAIL REPORT: {scope_type.upper()} VULNERABILITY ASSESSMENT AND PENETRATION TESTING")
 
     pdf.set_font("Helvetica", "B", 10)
     pdf.set_text_color(*DARK_TEXT)
@@ -891,19 +1005,19 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
         # VAPT reports: redact email/phone (incidental PII) but keep IPs -- the
         # vulnerable host's IP address is the report's actual content, not PII.
         desc = html.unescape(redact_pii(str(f.get("description") or f.get("gap_description") or f.get("finding") or "-"), redact_ip=False))
-        target = html.unescape(str(f.get("target") or f.get("control_id") or "Scoped Network Endpoints / Systems"))
+        target = html.unescape(str(f.get("target") or "Not recorded"))
         conf_val = str(f.get("confidence") or "").strip()
         status_str = f"Detected ({conf_val.capitalize()})" if conf_val and conf_val.lower() in ("certain", "firm", "tentative") else "Detected"
 
-        score_val = float(f.get("severity_score", f.get("score", 2.3)) or 2.3)
-        sev_val = str(f.get("severity", f.get("sev", "LOW"))).split()[-1].upper()
-        
-        if f.get("cvss_vector"):
-            metrics = f"{score_val:.1f} {sev_val}  |  Vector: {f.get('cvss_vector')}"
-        elif f.get("metrics_text"):
-            metrics = f.get("metrics_text")
+        score_val = _vapt_score(f)
+        sev_val = _vapt_severity(f)
+        _tool_name = _vapt_scanner(f)
+        # Only a score and vector the scanner assessed. Burp, ZAP, Nikto and
+        # the like assign no CVSS; saying so is the finding, not a gap in it.
+        if score_val is not None:
+            metrics = f"CVSS {score_val:.1f}" + (f"  |  Vector: {f.get('cvss_vector')}" if f.get("cvss_vector") else "")
         else:
-            metrics = f"{score_val:.1f} {sev_val}"
+            metrics = f"No CVSS score assigned by {_tool_name}"
 
         # ── Proof of Concept text: structured PoC block built in bg_worker takes priority ──
         # evidence_snippet = "Target Host: X.X.X.X\nPlugin ID: ...\nCVE(s): ...\nPlugin Output:\n..."
@@ -916,8 +1030,7 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
             "Console / Log Audit Verification"
         ), redact_ip=False))
 
-        remed_raw = str(f.get("recommendation") or f.get("remediation") or "").strip()
-        remed = html.unescape(redact_pii(remed_raw, redact_ip=False)) if remed_raw and ("no action" not in remed_raw.lower() and remed_raw != "NIL") else "Immediately apply vendor security patches or software updates to mitigate identified vulnerability."
+        remed = html.unescape(redact_pii(_vapt_remediation(f), redact_ip=False))
         ref = html.unescape(str(f.get("references") or f.get("reference") or "OWASP / OSSTMM / NIST Security Recommendations"))
         main_img = f.get("poc_image") or f.get("image_path")
         extra_img = f.get("extra_image")
@@ -940,26 +1053,14 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
         pdf.multi_cell(0, 5, clean_text(f"FN-{idx:02d}  {vuln_title}"), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         pdf.ln(1.5)
 
-        # Derive actual Tool / Scanner Name dynamically
-        raw_tool = f.get('source_tool') or f.get('tool') or ''
-        if not raw_tool or raw_tool.lower() in ('vapt engine', 'vapt', 'unknown', 'none'):
-            comb_text = (vuln_title + " " + desc + " " + str(f.get('source_files', ''))).lower()
-            if any(k in comb_text for k in ('nessus', 'cve-', 'ms10-', 'ms16-', 'ms15-', 'ms14-', 'ms12-', 'ms11-', 'smb', '.net', 'winrar')):
-                scanner_name = "Nessus Professional Scanner"
-            elif any(k in comb_text for k in ('burp', 'sql injection', 'xss', 'xxe', 'csti', 'ssrf')):
-                scanner_name = "Burp Suite Professional Scanner"
-            elif any(k in comb_text for k in ('nmap', 'syn scanner', 'port ')):
-                scanner_name = "Nmap Network Security Scanner"
-            else:
-                scanner_name = "Automated VAPT Scanner & RAG Engine"
-        else:
-            scanner_name = raw_tool
+        # The scanner that reported it -- never guessed from keywords.
+        scanner_name = _tool_name
 
         # Meta Summary Table Grid
         with pdf.table(col_widths=(40, 140), text_align="L") as table:
             r = table.row()
             r.cell("Severity / Score", style=lbl_style)
-            r.cell(clean_text(f"{sev_val} ({score_val:.1f})  —  {metrics}"), style=body_style)
+            r.cell(clean_text(f"{sev_val}  -  {metrics}"), style=body_style)
 
             r = table.row()
             r.cell("Location / Target", style=lbl_style)
@@ -969,22 +1070,20 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
             r.cell("Status / Scanner", style=lbl_style)
             r.cell(clean_text(f"{status_str}  |  Tool: {scanner_name}"), style=body_style)
 
-            # ── CVE References row ──────────────────────────────────────────────
-            raw_cve_list = f.get("cve_list") or []
-            if isinstance(raw_cve_list, str):
-                import re as _re_cve
-                raw_cve_list = _re_cve.findall(r'CVE-\d{4}-\d{4,7}', raw_cve_list, re.IGNORECASE)
-            if not raw_cve_list:
-                ext = re.findall(r'CVE-\d{4}-\d{4,7}', desc + " " + poc_text, re.IGNORECASE)
-                if ext: raw_cve_list = list(set([e.upper() for e in ext]))
-            cve_str = ", ".join(raw_cve_list) if raw_cve_list else "N/A - Vendor Security Advisory / End-of-Life Notice"
+            # ── CVE / CWE rows ───────────────────────────────────────────────
+            _cves, _cwes = _vapt_refs(f, desc + " " + poc_text)
             r = table.row()
             r.cell("CVE References", style=lbl_style)
-            r.cell(clean_text(cve_str[:400]), style=body_style)
+            r.cell(clean_text(", ".join(_cves) if _cves else "None assigned"), style=body_style)
+            if _cwes:
+                r = table.row()
+                r.cell("CWE", style=lbl_style)
+                r.cell(clean_text(", ".join(_cwes)), style=body_style)
 
             # ── OWASP Top 10 Classification ──────────────────────────────────
-            from src.core.parsers.control_mapper import map_finding_to_owasp
-            owasp_cat = f.get("owasp_category") or map_finding_to_owasp(f.get("cwe"), vuln_title, desc)
+            # From the same CWE as the Risk Category, so the two rows agree (XXE
+            # was "A03 Injection" beside "Risk Category: Security Misconfiguration").
+            owasp_cat = f.get("owasp_category") or _vapt_owasp(f, vuln_title, desc)
             r = table.row()
             r.cell("OWASP Top 10 (2021)", style=lbl_style)
             r.cell(clean_text(owasp_cat[:400]), style=body_style)
@@ -1104,7 +1203,7 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
                 out.pop()
             return "\n".join(out) if out else "Console / Log Audit Verification"
 
-        clean_poc = format_http_evidence(poc_text[:2500])
+        clean_poc = format_http_evidence(_cut_words(poc_text, 2500))
 
         pdf.set_font("Courier", "", 7.5)
         pdf.set_fill_color(248, 250, 252)
@@ -1167,22 +1266,10 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
             hrow.cell("Target",     style=hdr_blue)
             for sidx, sf_item in enumerate(summary_findings, len(detail_findings) + 1):
                 st_title  = clean_text((sf_item.get("title") or sf_item.get("finding") or sf_item.get("control_name") or f"Finding {sidx}")[:80])
-                st_score_val = sf_item.get("severity_score") or sf_item.get("score")
-                try:
-                    st_score_num = float(st_score_val) if st_score_val is not None else 0.0
-                except Exception:
-                    st_score_num = 0.0
-
                 st_sev = str(sf_item.get("severity", "—")).split()[-1].upper()[:8]
-                if st_score_num <= 0.0:
-                    if "CRIT" in st_sev: st_score_num = 9.5
-                    elif "HIGH" in st_sev: st_score_num = 8.0
-                    elif "MED" in st_sev: st_score_num = 5.5
-                    elif "LOW" in st_sev: st_score_num = 2.5
-                    else: st_score_num = 0.0
-                    
-                st_score = f"{st_score_num:.1f}"
-                st_target = clean_text(str(sf_item.get("target") or sf_item.get("control_id") or "—")[:30])
+                _st_sc = _vapt_score(sf_item)
+                st_score = f"{_st_sc:.1f}" if _st_sc is not None else "-"
+                st_target = clean_text(_cut_words(str(sf_item.get("target") or "Not recorded"), 30, "..."))
                 srow = tbl.row()
                 srow.cell(f"{sidx}.", style=body_style)
                 srow.cell(st_title,   style=body_style)
@@ -1274,10 +1361,20 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
     pdf.cell(0, 4.5, "4.1.1 Testing Environment Conditions", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     pdf.set_font("Helvetica", "", 8.5)
     pdf.set_text_color(*BODY_TEXT)
-    if scope_type == "Internal":
-        env_text = "The test was carried out as Gray Box (Internal Network & Authorized Access). No operational disruptions were encountered during testing. Industrial Standard for Security were followed, such as OWASP, OSSTMM and NIST."
+    # This compared scope_type with "Internal", a value it never held, so every
+    # report said "Black Box (External Perimeter Testing)" -- beside a title
+    # reading "Internal Network". The testing approach is the engagement's,
+    # not something the scan files show.
+    if scope_type.startswith("Internal"):
+        env_text = ("The assessment covered the internal targets listed in this report. No operational disruptions "
+                    "were encountered during testing. Industry standards such as OWASP, OSSTMM and NIST were followed.")
+    elif scope_type.startswith("External"):
+        env_text = ("The assessment covered the externally reachable targets listed in this report. Industry "
+                    "standards such as OWASP, OSSTMM and NIST were followed.")
     else:
-        env_text = "The test was carried out as Black Box (External Perimeter Testing). Industrial Standard for Security were followed, such as OWASP, OSSTMM and NIST."
+        env_text = (f"The assessment covered the {scope_type.lower()} targets listed in this report; the testing "
+                    "approach (black, grey or white box) is as agreed in the engagement scope. Industry standards "
+                    "such as OWASP, OSSTMM and NIST were followed.")
     pdf.multi_cell(0, 4, clean_text(env_text))
     pdf.ln(3)
 
@@ -1286,7 +1383,9 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
     pdf.cell(0, 4.5, "4.1.2 Tools Used", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     pdf.set_font("Helvetica", "", 8.5)
     pdf.set_text_color(*BODY_TEXT)
-    pdf.multi_cell(0, 4, "Nessus\nNmap\nBurp Suite / PortSwigger\nOpenSSL")
+    # The tools whose output this report was built from -- this was a fixed
+    # list naming Nessus and Nmap on a report made from one Burp file.
+    pdf.multi_cell(0, 4, clean_text("\n".join(_vapt_tools(findings)) or "Not recorded"))
     pdf.ln(3)
 
     pdf.set_font("Helvetica", "B", 9)
@@ -1294,10 +1393,12 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
     pdf.cell(0, 4.5, "4.1.3 Provided Documentation", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     pdf.set_font("Helvetica", "", 8.5)
     pdf.set_text_color(*BODY_TEXT)
-    if scope_type == "Internal":
+    if scope_type.startswith("Internal"):
         doc_text = "Internal Network Subnet Ranges & Target Host Lists.\nAuthorized Internal VPN / LAN Credentials."
-    else:
+    elif scope_type.startswith("External"):
         doc_text = "Public Domain Names, External IP Ranges & REST API Endpoints."
+    else:
+        doc_text = "As agreed in the engagement scope."
     pdf.multi_cell(0, 4, clean_text(doc_text))
 
     # ── PAGE 13: DISCLAIMER ───────────────────────────────────────────────
@@ -2510,11 +2611,9 @@ def _export_vapt_docx(session_title, findings, resolved_list, status, comments="
     custom_logo_file = os.path.join(assets_dir, "custom_company_logo.png")
     effective_custom_logo = custom_logo if (custom_logo and os.path.exists(custom_logo)) else (custom_logo_file if os.path.exists(custom_logo_file) else None)
     logo_path = effective_custom_logo if (effective_custom_logo and os.path.exists(effective_custom_logo)) else _default_auditor_logo(assets_dir)
-    testing_dates = f"20-June-2026 to {datetime.now().strftime('%d-%B-%Y')}"
+    testing_dates = meta.get("brand_audit_dates") or "Not specified"
 
-
-    scope_type = "External" if "external" in session_title.lower() else "Internal"
-    doc_title = f"{scope_type} Network Vulnerability Assessment and Penetration Testing Validation Report"
+    scope_type, doc_title = _vapt_scope(findings, session_title)
 
     # 1. COVER PAGE (Page 1)
     # Header Information Table
@@ -2737,10 +2836,12 @@ def _export_vapt_docx(session_title, findings, resolved_list, status, comments="
     high_cnt = sum(1 for f in active_findings if str(f.get("severity", "")).strip().upper() == "HIGH")
     medium_cnt = sum(1 for f in active_findings if str(f.get("severity", "")).strip().upper() == "MEDIUM")
     low_cnt = sum(1 for f in active_findings if str(f.get("severity", "")).strip().upper() == "LOW")
+    info_cnt = sum(1 for f in active_findings if str(f.get("severity", "")).strip().upper() == "INFO")
     total_cnt = critical_cnt + high_cnt + medium_cnt + low_cnt
 
-    
-    doc.add_paragraph(f"Based on the assessment, {total_cnt} vulnerabilities have been found in the target scope network which are categorized as follows:")
+    doc.add_paragraph(f"Based on the assessment, {total_cnt} vulnerabilities have been found in the target scope "
+                      f"which are categorized as follows"
+                      + (f", with {info_cnt} further informational observation(s) listed in the findings:" if info_cnt else ":"))
     
     p = doc.add_paragraph()
     p.add_run("2.3.2 Tabular Summary").bold = True
@@ -2778,15 +2879,16 @@ def _export_vapt_docx(session_title, findings, resolved_list, status, comments="
         
     max_score = 0.0
     for idx, f in enumerate(active_findings, 1):
-        score = float(f.get("severity_score", 0.0) or 0.0)
+        _sc = _vapt_score(f)
+        score = _sc or 0.0
         if score > max_score:
             max_score = score
         sev = str(f.get("severity", "Low")).split()[-1].upper()
-        
+
         row_cells = tbl_vulns.rows[idx].cells
         row_cells[0].paragraphs[0].add_run(str(idx))
         row_cells[1].paragraphs[0].add_run(f.get("control", "") or f.get("finding", ""))
-        row_cells[2].paragraphs[0].add_run(f"{score:.1f}")
+        row_cells[2].paragraphs[0].add_run(f"{_sc:.1f}" if _sc is not None else "-")
         row_cells[3].paragraphs[0].add_run(sev)
         
     overall_sev = "LOW"
@@ -2833,15 +2935,14 @@ def _export_vapt_docx(session_title, findings, resolved_list, status, comments="
         # Use auditor-set custom heading if available, else derive from finding metadata
         custom_h = (f.get("custom_heading") or "").strip()
         vuln_title = custom_h or f.get("title") or f.get("control") or f.get("finding") or f"Finding {idx}"
-        score = float(f.get("severity_score", 0.0) or 0.0)
-        sev_label = str(f.get("severity", "Low")).split()[-1].upper()
-        target_val = html.unescape(str(f.get("target") or f.get("control_id", "") or "Web / Network infrastructure"))
+        _sc = _vapt_score(f)
+        sev_label = _vapt_severity(f)
+        target_val = html.unescape(str(f.get("target") or "Not recorded"))
         # VAPT reports: redact email/phone (incidental PII) but keep IPs -- the
         # vulnerable host's IP address is the report's actual content, not PII.
         desc_val = html.unescape(redact_pii(str(f.get("description") or f.get("gap_description") or f.get("finding") or "-"), redact_ip=False))
-        poc_val = html.unescape(redact_pii(str(f.get("evidence") or f.get("evidence_snippet") or f.get("evidence_quote") or f.get("poc") or "Console / Log Audit Verification"), redact_ip=False))
-        remed_raw = str(f.get("recommendation") or f.get("remediation") or "").strip()
-        remed_val = html.unescape(redact_pii(remed_raw, redact_ip=False)) if remed_raw else "Immediately apply vendor security patches or software updates."
+        poc_val = html.unescape(redact_pii(_cut_words(str(f.get("evidence_snippet") or f.get("evidence") or f.get("evidence_quote") or f.get("poc") or "Console / Log Audit Verification"), 2500), redact_ip=False))
+        remed_val = html.unescape(redact_pii(_vapt_remediation(f), redact_ip=False))
 
         # ── Resolve uploaded screenshots/images for VAPT POC embedding ───────
         # Priority: explicit fields + ALL images listed in source_files / evidence_source_file
@@ -2881,14 +2982,25 @@ def _export_vapt_docx(session_title, findings, resolved_list, status, comments="
         pm = doc.add_paragraph()
         r_m1 = pm.add_run("Severity: ")
         r_m1.bold = True
-        r_m2 = pm.add_run(f"{sev_label} ({score:.1f})")
+        r_m2 = pm.add_run(f"{sev_label}" + (f" (CVSS {_sc:.1f})" if _sc is not None else ""))
         r_m2.bold = True
         r_m2.font.color.rgb = run_f.font.color.rgb
+        if _sc is None:
+            pm.add_run(f"   |   No CVSS score assigned by {_vapt_scanner(f)}")
+        elif f.get("cvss_vector"):
+            pm.add_run(f"   |   Vector: {f.get('cvss_vector')}")
+        _conf = str(f.get("confidence") or "").strip()
+        if _conf:
+            pm.add_run(f"   |   Confidence: {_conf.capitalize()}")
         r_m3 = pm.add_run(f"   |   Location / Target: {target_val}")
-        if f.get("source_tool"):
-            pm.add_run(f"   |   Tool: {f.get('source_tool')}")
+        pm.add_run(f"   |   Tool: {_vapt_scanner(f)}")
         if f.get("category"):
             pm.add_run(f"   |   Risk Category: {f.get('category')}")
+        _cves, _cwes = _vapt_refs(f, desc_val)
+        pm.add_run(f"   |   CVE: {', '.join(_cves) if _cves else 'None assigned'}")
+        if _cwes:
+            pm.add_run(f"   |   CWE: {', '.join(_cwes)}")
+        pm.add_run(f"   |   OWASP: {_vapt_owasp(f, vuln_title, desc_val)}")
 
         # CIA & PII Meta line
         cia_val = f.get("cia_impact") or ""
@@ -3062,13 +3174,14 @@ def _export_vapt_docx(session_title, findings, resolved_list, status, comments="
     p = doc.add_paragraph()
     p.add_run("4.1 Testing Environment: Production").bold = True
     doc.add_paragraph(
-        "The network validation testing was conducted against active production interfaces as Black Box testing. "
-        "No network degradation or host disruptions occurred during scanning."
+        f"The assessment covered the {scope_type.lower()} targets listed in this report; the testing approach "
+        "(black, grey or white box) is as agreed in the engagement scope. No degradation or disruption occurred "
+        "during scanning."
     )
     
     p = doc.add_paragraph()
     p.add_run("4.2 Tools Used").bold = True
-    doc.add_paragraph("Nmap Security Scanner\nNessus Vulnerability Scanner\nBurp Suite Professional Web Scanner\nOpenSSL TLS Testing Utility")
+    doc.add_paragraph("\n".join(_vapt_tools(findings)) or "Not recorded")
     
     p = doc.add_paragraph()
     p.add_run("4.3 Provided Documentation").bold = True

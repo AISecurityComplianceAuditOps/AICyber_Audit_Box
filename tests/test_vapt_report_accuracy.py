@@ -186,11 +186,18 @@ def test_the_reports_severity_is_never_overwritten():
     assert redirect and redirect[0].severity == "LOW", [f.severity for f in redirect]
 
 
-def test_the_estimated_score_stays_inside_the_reported_severity_band():
-    bands = {"HIGH": (7.0, 8.9), "LOW": (0.1, 3.9)}
+def test_burp_findings_carry_no_invented_cvss():
+    """Burp assigns no CVSS. The fixed per-type numbers (SQL injection 9.8,
+    anything High 8.0) were printed as if assessed; a client found XSS at 8.0
+    beside a vector that computes to 6.1."""
     for title, f in _burp().items():
-        lo, hi = bands[f.severity]
-        assert lo <= f.severity_score <= hi, (title, f.severity, f.severity_score)
+        assert f.severity_score is None and f.cvss_vector is None, (title, f.severity_score)
+
+
+def test_burp_findings_are_numbered_as_in_the_report():
+    """Two instances of one issue at one URL must stay two findings."""
+    ids = [f.plugin_id for f in _burp().values()]
+    assert len(ids) == len(set(ids)), ids
 
 
 def test_every_instance_inherits_its_issues_cwes():

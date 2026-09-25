@@ -55,7 +55,28 @@ ALL_PARSERS = [
     PQCParser(),
 ]
 
+_TEXT_FIELDS = ("title", "description", "remediation", "evidence", "remediation_actionable", "target")
+
+
+def _scrub(findings) -> None:
+    """Remove U+FFFD, the replacement character a PDF text extractor leaves for
+    a glyph it could not map. It reached a delivered report as "[?]" (Burp's
+    "replaced with two backslashes" came out "replaced with two [?]")."""
+    for f in findings if isinstance(findings, list) else []:
+        for name in _TEXT_FIELDS:
+            v = getattr(f, name, None)
+            if isinstance(v, str) and "�" in v:
+                setattr(f, name, v.replace("[�]", "").replace("�", "").replace("  ", " "))
+
+
 def parse_tool_file(filename: str, content: str, framework: str = "") -> Tuple[List[Finding], Any]:
+    findings, extra = _parse_tool_file(filename, content, framework)
+    _scrub(findings)
+    _scrub(extra)
+    return findings, extra
+
+
+def _parse_tool_file(filename: str, content: str, framework: str = "") -> Tuple[List[Finding], Any]:
     """
     Auto-detects file type and dispatches to the appropriate security tool parser.
 

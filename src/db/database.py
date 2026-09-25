@@ -187,6 +187,21 @@ class Finding(Base):
     # cross-run comparison exact instead of guessing from title text.
     dedup_key               = Column(String(500), nullable=True, index=True)
 
+    # What the scanner reported about the finding itself, which the report
+    # needs and had nowhere to be saved. Without these the exported report
+    # showed the uploaded FILE NAME as "Location / Target", guessed the scanner
+    # from keywords ("Nessus" for any CVE, "Nmap" for anything TLS, otherwise
+    # "Automated VAPT Scanner & RAG Engine"), dropped Burp's Certain/Firm/
+    # Tentative confidence, and printed "N/A - Vendor Security Advisory /
+    # End-of-Life Notice" where the finding's CWE belonged. Nullable, no
+    # server_default: reconcile_schemas() adds them to existing databases and
+    # rows saved before read back as None (the exporters fall back as before).
+    target      = Column(Text, nullable=True)         # host / URL / parameter the scanner named
+    source_tool = Column(String(100), nullable=True)  # "Burp Suite", "Nessus", "Nmap", ...
+    confidence  = Column(String(20), nullable=True)   # Certain | Firm | Tentative
+    cvss_vector = Column(String(200), nullable=True)  # only when the scanner provides one
+    cve_refs    = Column(Text, nullable=True)         # comma-separated CVE and CWE ids
+
     # PQC (Post-Quantum Cryptography Readiness) enrichment fields
     # (src/core/parsers/pqc_parser.py / finding_schema.py::Finding). Nullable/no
     # server_default so the schema-reconciliation in init_db() can add these to

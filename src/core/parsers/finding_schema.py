@@ -141,7 +141,13 @@ class Finding:
         tool = (self.source_tool or "generic").lower().strip()
 
         if self.cve_list:
-            clean_cves = sorted(set(c.strip().upper() for c in self.cve_list if c and c.strip()))
+            # CVEs only. cve_list also carries CWE ids, and a CWE is a weakness
+            # CLASS shared by unrelated issues: keyed on it, Burp's "External
+            # service interaction (DNS)" was dropped as a duplicate of the
+            # "(HTTP)" finding on the same URL (both CWE-918/406) -- four real
+            # findings silently removed from one report.
+            clean_cves = sorted(set(c.strip().upper() for c in self.cve_list
+                                    if c and c.strip().upper().startswith("CVE-")))
             if clean_cves:
                 cve_str = ":".join(clean_cves)
                 return f"CVE:{cve_str}|target:{t_clean}"[:480]

@@ -65,20 +65,26 @@ _PDF_ARTIFACT_PATTERNS = (
 #       -- the sibling sections Burp emits after the detail
 #   Request N / Response N   -- the raw HTTP capture that follows the prose
 #   <digits>. <Capital>      -- the next numbered finding's heading
+# Case-SENSITIVE (scoped (?-i:...)), although the callers search with
+# IGNORECASE: Burp's headings are capitalised, and read case-insensitively the
+# plain word in "defines an external entity, xxeay8km, which references a URL"
+# ended the XXE description at "which".
 _SECTION_END = (
-    r'(?=Issue\s+(?:background|remediation)'
+    r'(?=(?-i:Issue\s+(?:background|remediation)'
+    r'|Remediation\s+detail'
     r'|References\b'
     r'|Vulnerability\s+classifications'
     r'|(?:HTTP\s+)?Request\s+\d'
     r'|(?:HTTP\s+)?Response\s+\d'
-    r'|\d{1,3}\.\s+[A-Z]'
+    r'|\d{1,3}\.\s+[A-Z])'
     r'|$)'
 )
 _ISSUE_DETAIL_RE = r'Issue detail[s]?\s*[:\n]?\s*(.*?)' + _SECTION_END
 _ISSUE_BACKGROUND_RE = r'Issue background\s*[:\n]?\s*(.*?)' + _SECTION_END
 
 # Hard ceiling on a description, as a backstop for export shapes not seen here.
-_MAX_DESC_CHARS = 1500
+# 1500 cut real Burp issue details mid-sentence.
+_MAX_DESC_CHARS = 4000
 
 
 def _scrub_pdf_artifacts(text: str) -> str:
@@ -478,11 +484,9 @@ class BurpParser(BaseParser):
                 else:
                     severity = "INFO"
 
-                score, cvss_vector = self._calculate_score_and_vector(cat_title, raw_sev, raw_conf)
-                # The report's severity stands; see the plain-text path. This
-                # recomputed it from the estimate, publishing Burp's High SQL
-                # injection as Critical.
-                score = _clamp_to_band(score, severity)
+                # Burp's severity and confidence stand and no CVSS is invented;
+                # see the plain-text path.
+                score, cvss_vector = None, None
 
                 # Extract issue detail and request/response snippets
                 issue_detail = ""
@@ -583,7 +587,8 @@ class BurpParser(BaseParser):
             else:
                 severity = "INFO"
 
-            score, cvss_vector = self._calculate_score_and_vector(title, raw_sev, raw_conf)
+            # Burp assigns no CVSS; see the plain-text path.
+            score, cvss_vector = None, None
 
             h_str = _get_child_text(issue, 'host')
             p_str = _get_child_text(issue, 'path')
@@ -632,7 +637,12 @@ class BurpParser(BaseParser):
                     if resp_text and "[HTTP Response]" not in evidence:
                         evidence += f"[HTTP Response Snippet]\n{resp_text[:1200]}\n\n"
 
-            cves = sorted(list(set(re.findall(r'CVE-\d{4}-\d{4,7}', full_desc + evidence, re.IGNORECASE))))
+            cves = sorted(list(set(c.upper() for c in re.findall(r'CVE-\d{4}-\d{4,7}', full_desc + evidence, re.IGNORECASE))))
+            # <vulnerabilityClassifications> lists the issue's CWEs; unread, so
+            # every finding from a Burp XML export went out with none.
+            _cls = _get_child_text(issue, 'vulnerabilityClassifications')
+            cves += [c for c in dict.fromkeys(m.upper() for m in re.findall(r'CWE-\d+', _cls, re.IGNORECASE))
+                     if c not in cves]
 
             type_elem = issue.find('type')
             plugin_id = type_elem.get_text().strip() if type_elem else "burp-issue"
@@ -720,6 +730,19 @@ class BurpParser(BaseParser):
             hits = [(s, u) for s, n, u in _instances if n == num and start <= s <= pos < end]
             return hits[-1][1] if hits else None
 
+        def _section_number(pos, sec):
+            """Burp's own number for the finding: "7.2" for an instance, "2" for
+            an issue with no instances. It was the constant "burp-pdf" for
+            every finding, so two instances of one issue at one URL (7.1 and
+            7.2, both DOM open redirection on /catalog/product) shared a
+            dedup key and the second was dropped from the report."""
+            start, end, _fi, num, _t = sec
+            last = None
+            for m in _BURP_INSTANCE_RE.finditer(content, start, min(pos + 1, end)):
+                if m.group(1) == num:
+                    last = m
+            return f"{num}.{last.group(2)}" if last else str(num)
+
         if sev_matches:
             for i, sm in enumerate(sev_matches):
                 next_start = sev_matches[i+1].start() if i+1 < len(sev_matches) else len(content)
@@ -794,15 +817,13 @@ class BurpParser(BaseParser):
                 elif "LOW" in raw_sev: severity = "LOW"
                 else: severity = "INFO"
 
-                score, cvss_vector = self._calculate_score_and_vector(title, raw_sev, raw_conf)
-                # The report's severity stands. This used to be recomputed from
-                # the estimated score, so a finding Burp rated High came out
-                # Critical and one it rated Low came out Medium -- the tool
-                # contradicting the evidence it was reading, on a customer's
-                # report. Burp gives no CVSS; the score is an estimate for the
-                # vulnerability class, kept inside the band the report's own
-                # severity names so the two can never disagree.
-                score = _clamp_to_band(score, severity)
+                # The report's severity and confidence stand, and no CVSS is
+                # given: Burp assigns none. The score was a fixed number per
+                # issue type (SQL injection 9.8, anything High 8.0) printed as
+                # if assessed; a client reviewing a delivered report found XSS
+                # at 8.0 beside C:L/I:L/A:N, which cannot produce 8.0, and a
+                # Tentative High SQL injection shown as Critical 9.8.
+                score, cvss_vector = None, None
 
                 # Extract Issue detail section.
                 #
@@ -834,7 +855,8 @@ class BurpParser(BaseParser):
                 # whole block. A description is a summary field; nothing legitimate
                 # needs 20KB of it.
                 if len(desc) > _MAX_DESC_CHARS:
-                    desc = desc[:_MAX_DESC_CHARS].rstrip() + " […]"
+                    _cut = desc.rfind(" ", 0, _MAX_DESC_CHARS)
+                    desc = desc[:_cut if _cut > 0 else _MAX_DESC_CHARS].rstrip() + " [...]"
 
                 # Extract Remediation
                 remed = ""
@@ -859,14 +881,44 @@ class BurpParser(BaseParser):
                     if _mc:
                         _cwes = ["CWE-" + n for n in _CWE_RE.findall(_mc.group(1))]
 
-                # Evidence: Request / Response snippets
+                # The instance's own "Remediation detail" is advice for THIS
+                # finding; it was read into the description and lost from the
+                # remediation. It now leads the remediation, ahead of the issue's
+                # general text.
+                _m_rd = re.search(r'Remediation detail\s*[:\n]?\s*(.*?)' + _SECTION_END,
+                                  body_text, re.DOTALL | re.IGNORECASE)
+                if _m_rd and _m_rd.group(1).strip():
+                    remed = (_m_rd.group(1).strip() + ("\n\n" + remed if remed else "")).strip()
+
+                # Evidence: the finding's own request/response exchanges, each
+                # under its own heading. Burp numbers them ("Request 1",
+                # "Response 1", "Request 2"...); the pattern here wanted a bare
+                # "Request" line, missed them, and matched loosely elsewhere --
+                # a delivered report showed a RESPONSE under "[HTTP Request]".
                 evidence = ""
-                m_req = re.search(r'(?:HTTP )?[Rr]equest\s*\n(.*?)(?=\n(?:HTTP )?[Rr]esponse|\nIssue|$)', body_text, re.DOTALL)
-                m_res = re.search(r'(?:HTTP )?[Rr]esponse\s*\n(.*?)(?=\nIssue|\nReferences|$)', body_text, re.DOTALL)
-                if m_req:
-                    evidence += f"[HTTP Request]\n{m_req.group(1).strip()[:800]}\n\n"
-                if m_res:
-                    evidence += f"[HTTP Response]\n{m_res.group(1).strip()[:800]}"
+                _marks = list(re.finditer(r'(?m)^[ \t]*(Request|Response)(?:[ \t]+(\d+))?[ \t]*$', body_text))
+                _stop = re.search(r'(?m)^[ \t]*(?:Collaborator (?:HTTP|DNS) interaction|References|'
+                                  r'Vulnerability classifications|Issue background|Issue remediation)\b', body_text)
+                for _k, _mk in enumerate(_marks[:4]):
+                    _end = _marks[_k + 1].start() if _k + 1 < len(_marks) else len(body_text)
+                    if _stop and _mk.start() < _stop.start() < _end:
+                        _end = _stop.start()
+                    # ...and at the next section's heading ("3.2. https://..."):
+                    # where the PDF's exchange is not extractable as text the
+                    # heading follows directly, and was being printed as the
+                    # response.
+                    _next_head = re.search(r'(?m)^[ \t]*\d{1,3}\.(?:\d{1,3}\.)?[ \t\xa0]',
+                                           body_text[_mk.end():_end])
+                    if _next_head:
+                        _end = _mk.end() + _next_head.start()
+                    _chunk = body_text[_mk.end():_end].strip()
+                    # Keep a block only if it IS what its label says.
+                    _is_req = _mk.group(1) == "Request" and re.match(
+                        r'(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|TRACE|CONNECT)\s', _chunk)
+                    _is_res = _mk.group(1) == "Response" and _chunk.startswith("HTTP/")
+                    if _is_req or _is_res:
+                        _label = f"{_mk.group(1)} {_mk.group(2)}" if _mk.group(2) else _mk.group(1)
+                        evidence += f"[HTTP {_label}]\n{_chunk[:700]}\n\n"
 
                 # CVEs from this finding's own section, not the 600-character
                 # lookback, which reaches into the previous issue.
@@ -885,7 +937,7 @@ class BurpParser(BaseParser):
                     description=desc,
                     remediation=remed,
                     evidence=evidence.strip() or desc[:500],
-                    plugin_id="burp-pdf",
+                    plugin_id=_section_number(sm.start(), _sec) if _sec is not None else "burp-pdf",
                     source_tool="Burp Suite",
                 )
 

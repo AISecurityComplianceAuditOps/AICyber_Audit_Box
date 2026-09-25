@@ -115,14 +115,20 @@ def _clip(text, limit):
     return text[:limit].rstrip() + "…"
 
 
-def _format_finding_block(idx: int, f: Dict) -> str:
+def _format_finding_block(idx: int, f: Dict, instances: int = 1) -> str:
     cve_list = f.get("cve_list") or []
     cves = ", ".join(cve_list) if cve_list else "none"
+    # The answer for a grouped finding is copied onto every other host it was
+    # found on, so it must not name this one's host, IP or URL.
+    shared = (f"\n    NOTE: this same finding was reported on {instances} targets. Write text that "
+              f"is correct for all of them: do NOT name a specific host, IP address or URL."
+              if instances > 1 else "")
     return (
         f"[{idx}] Title: {f.get('title', '')}\n"
         f"    Severity: {f.get('severity', '')}   CVE(s): {cves}   Target: {f.get('target') or 'n/a'}\n"
         f"    Evidence: {_clip(f.get('evidence', ''), _MAX_EVIDENCE_CHARS)}\n"
         f"    Description: {_clip(f.get('description', ''), _MAX_DESCRIPTION_CHARS)}"
+        f"{shared}"
     )
 
 
@@ -199,7 +205,8 @@ def _enrich_batch(batch: List[Dict], model: str, session_id=None, timeout=None) 
     the caller moves on to the next batch rather than aborting the run."""
     from src.core.llm_client import query_llm
 
-    findings_block = "\n".join(_format_finding_block(i, f) for i, f in enumerate(batch))
+    findings_block = "\n".join(_format_finding_block(i, f, f.get("_group_size", 1))
+                               for i, f in enumerate(batch))
     prompt = _PROMPT_TEMPLATE.format(n=len(batch), findings_block=findings_block)
 
     try:
@@ -267,19 +274,21 @@ def _vuln_type_key(f: Dict) -> str:
     still lists every host's own finding row untouched) asks it once per
     distinct vulnerability instead.
 
-    Same fallback order as dedup_key(), minus the target component: CVE list,
-    then tool+plugin, then tool+normalized title.
+    Only IDENTICAL findings group: same tool, same title, same CVE/CWE list --
+    one issue repeated on many hosts. The key used to be the CVE list alone, or
+    tool + plugin id, with the title ignored. Every Burp PDF finding had the
+    plugin id "burp-pdf" and, then, no CVE, so a whole report was ONE group: the
+    LLM answered the first finding (SQL injection in the "category" parameter on
+    /catalog/filter) and that answer was copied onto XXE, XSS, SSRF, HSTS and
+    the rest -- 14 of 16 findings in a delivered report told developers to fix
+    a different bug. Keyed on CWEs it would still have merged three SQL
+    injections on three different endpoints under the first one's text.
     """
     cve_list = f.get("cve_list") or []
     clean_cves = sorted(set(str(c).strip().upper() for c in cve_list if c and str(c).strip()))
-    if clean_cves:
-        return "cve:" + ":".join(clean_cves)
     tool = str(f.get("source_tool") or "generic").lower().strip()
-    plugin_id = str(f.get("plugin_id") or "").strip()
-    if plugin_id:
-        return f"{tool}:plugin:{plugin_id}"
     title = re.sub(r"\s+", " ", str(f.get("title") or "").strip().lower())
-    return f"{tool}:title:{title}"
+    return f"{tool}|{title}|{':'.join(clean_cves)}"
 
 
 def enrich_remediations(findings: List[Dict], model: str = "gemma4:e4b",
@@ -322,6 +331,8 @@ def enrich_remediations(findings: List[Dict], model: str = "gemma4:e4b",
         groups[key].append(f)
 
     representatives = [groups[key][0] for key in order]
+    for key in order:
+        groups[key][0]["_group_size"] = len(groups[key])
     if len(representatives) < len(findings):
         print(f"[REMEDIATION LLM] {len(findings)} finding(s) collapsed to "
               f"{len(representatives)} unique vulnerability type(s) for enrichment "
@@ -372,6 +383,7 @@ def enrich_remediations(findings: List[Dict], model: str = "gemma4:e4b",
     for key in order:
         members = groups[key]
         rep = members[0]
+        rep.pop("_group_size", None)
         for dup in members[1:]:
             dup["remediation"] = rep.get("remediation", dup.get("remediation"))
             dup["remediation_actionable"] = rep.get("remediation_actionable", dup.get("remediation_actionable"))

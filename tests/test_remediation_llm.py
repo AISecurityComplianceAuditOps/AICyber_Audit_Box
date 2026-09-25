@@ -373,3 +373,53 @@ def test_a_failed_enrichment_call_does_not_crash_the_scan():
     enrich_block = src[src.index("if ai_recommendations and all_findings:"):]
     enrich_block = enrich_block[:enrich_block.index("# Update database")]
     assert "try:" in enrich_block and "except Exception" in enrich_block
+
+
+# ── Grouping: only identical findings share an answer ────────────────────────
+
+def _answer_each_by_title(prompts):
+    """A fake LLM that answers every finding with its own title, so a copied
+    answer is visible as the wrong title."""
+    import json
+    import re as _re
+
+    def _fake(prompt, *a, **kw):
+        prompts.append(prompt)
+        titles = dict(_re.findall(r"^\[(\d+)\] Title: (.*)$", prompt, _re.MULTILINE))
+        return json.dumps({"remediations": {
+            i: {"remediation": f"Fix for {t} in its own code path.",
+                "actionable": f"Developer steps for {t} only."} for i, t in titles.items()}})
+    return _fake
+
+
+def test_every_distinct_finding_gets_its_own_answer():
+    """A delivered report gave 14 of 16 Burp findings the SQL-injection fix of
+    the first: every Burp PDF finding had plugin id "burp-pdf" and no CVE, so
+    the whole report was one group and one answer was copied onto all of it."""
+    titles = ["SQL injection (/catalog/filter [category parameter])",
+              "SQL injection (/catalog/product/stock [request body])",
+              "XML external entity injection",
+              "Cross-site scripting (reflected) (/catalog/search/2 [term parameter])",
+              "Strict transport security not enforced"]
+    findings = [_finding(title=t, source_tool="Burp Suite", plugin_id="burp-pdf",
+                         cve_list=["CWE-89"] if t.startswith("SQL") else [])
+                for t in titles]
+    prompts = []
+    with mock.patch("src.core.llm_client.query_llm", side_effect=_answer_each_by_title(prompts)):
+        enrich_remediations(findings)
+    for f in findings:
+        assert f["remediation"] == f"Fix for {f['title']} in its own code path.", f["title"]
+        assert f["remediation_actionable"] == f"Developer steps for {f['title']} only."
+
+
+def test_one_finding_on_many_hosts_is_asked_once_and_names_no_host():
+    findings = [_finding(title="Nmap: Weak Cipher Suites Supported (443/tcp)", source_tool="Nmap",
+                         target=f"10.0.0.{n}") for n in (5, 6, 7)]
+    prompts = []
+    with mock.patch("src.core.llm_client.query_llm", side_effect=_answer_each_by_title(prompts)):
+        enrich_remediations(findings)
+    body = "\n".join(prompts)
+    assert body.count("Title: Nmap: Weak Cipher Suites Supported") == 1
+    assert "do NOT name a specific host" in body
+    assert len({f["remediation"] for f in findings}) == 1
+    assert all("_group_size" not in f for f in findings)

@@ -95,6 +95,47 @@ def retrieve_chat_context(db, session_id: str, query_text: str, top_k: int = 5) 
 router = APIRouter(prefix="/audit", tags=["Auditing Operations"])
 
 
+def _poc_line(block, label):
+    """A "Label: value" line from the proof-of-concept block the VAPT worker
+    writes into evidence_snippet ("Target Host: ...", "Scanner: ...")."""
+    import re as _re
+    m = _re.search(rf"(?m)^{_re.escape(label)}:\s*(.+?)\s*$", block or "")
+    return m.group(1).strip() if m else ""
+
+
+def _vapt_scanner_fields(f):
+    """What the scanner itself reported about a VAPT finding, for the report.
+
+    The exporters were given the uploaded FILE NAME as the target, a score from
+    a fixed table (Critical 9.8, High 8.0, Medium 5.5) in place of the one the
+    scanner assessed, no scanner name (so they guessed one from keywords), no
+    confidence and no CWE. A client reviewing a delivered PortSwigger report
+    listed every one of these. Rows saved before the columns existed fall back
+    to the lines the worker wrote into the proof block.
+    """
+    import re as _re
+    block = f.evidence_snippet or ""
+    refs = [r.strip() for r in (getattr(f, "cve_refs", None) or "").split(",") if r.strip()]
+    if not refs:
+        refs = list(dict.fromkeys(r.upper() for r in _re.findall(
+            r"CVE-\d{4}-\d{4,7}|CWE-\d+", _poc_line(block, "CVE(s)"), _re.IGNORECASE)))
+    try:
+        score = float(f.severity_score or 0.0)
+    except (TypeError, ValueError):
+        score = 0.0
+    return {
+        "target": (getattr(f, "target", None) or _poc_line(block, "Target Host")
+                   or f.source_files or "Not recorded"),
+        "source_tool": getattr(f, "source_tool", None) or _poc_line(block, "Scanner") or "",
+        "confidence": getattr(f, "confidence", None) or "",
+        "cvss_vector": getattr(f, "cvss_vector", None) or "",
+        "cve_list": refs,
+        # None = the scanner assigned no score; the exporters say so rather
+        # than print a number nobody assessed.
+        "severity_score": score if score > 0 else None,
+    }
+
+
 def _load_report_narrative(report):
     """The scan's own executive summary / tactical recommendations, or None.
 
@@ -3442,6 +3483,8 @@ def api_export_docx(
                     if _ev.filename and _ev.file_path:
                         _ev_path_lookup[_ev.filename.strip()] = _ev.file_path
 
+            _fw_up_docx = (report.framework or "").upper()
+            _vapt_only_docx = "VAPT" in _fw_up_docx and "PQC" not in _fw_up_docx
             findings_mapped = []
             resolved_list = []
             for f in db_findings:
@@ -3569,6 +3612,10 @@ def api_export_docx(
                     "requirement_question": getattr(f, "requirement_question", None) or "Requirement question not provided",
                     "policy_required": bool(getattr(f, "policy_required", False)),
                 })
+                if _vapt_only_docx:
+                    findings_mapped[-1].update(_vapt_scanner_fields(f))
+                    if "INFO" in str(f.severity or "").upper():
+                        findings_mapped[-1]["severity"] = "INFO"
                 if f.status == "Compliant":
                     resolved_list.append(f.control_id)
                     
@@ -3873,11 +3920,18 @@ def api_export_pdf(
                 raise HTTPException(status_code=404, detail="Session not found.")
             _assert_session_access(db, report, auth_user)
 
-            query = db.query(Finding).filter(
-                Finding.report_id == report.id,
-                ~Finding.severity.ilike("%INFO%"),
-                ~Finding.status.ilike("%INFO%")
-            )
+            # A VAPT report keeps the scanner's informational findings: a client
+            # found all 18 of Burp's dropped from a delivered report, among them
+            # prototype pollution and request URL override, both worth reporting.
+            # ISO and PQC reports keep excluding them, as before.
+            _fw_up = (report.framework or "").upper()
+            _vapt_only_pdf = "VAPT" in _fw_up and "PQC" not in _fw_up
+            query = db.query(Finding).filter(Finding.report_id == report.id)
+            if not _vapt_only_pdf:
+                query = query.filter(
+                    ~Finding.severity.ilike("%INFO%"),
+                    ~Finding.status.ilike("%INFO%")
+                )
             if saved_only or report.status == "Reviewed & Finalized":
                 query = query.filter((Finding.is_saved_to_shakthi == True) | (Finding.human_verified == True))
             db_findings = query.all()
@@ -4034,9 +4088,13 @@ def api_export_pdf(
                     "requirement_question": getattr(f, "requirement_question", None) or "Requirement question not provided",
                     "policy_required": bool(getattr(f, "policy_required", False)),
                 })
+                if _vapt_only_pdf:
+                    findings_mapped[-1].update(_vapt_scanner_fields(f))
+                    if "INFO" in raw_sev:
+                        findings_mapped[-1]["severity"] = "INFO"
                 if is_comp:
                     resolved_list.append(f.control_id)
-                    
+
             is_vapt = _session_is_technical(
                 report.framework,
                 (c for f in db_findings

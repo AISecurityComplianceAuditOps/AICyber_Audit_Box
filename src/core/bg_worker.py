@@ -29,6 +29,30 @@ def _safe_float(value, default=0.0):
         return default
 
 
+def _llm_answering(timeout=1.5) -> bool:
+    """True when the configured LLM server accepts a connection right now.
+    Never starts one."""
+    import socket
+    from urllib.parse import urlsplit
+    try:
+        from src.core.llm_client import _get_next_llm_host
+        parts = urlsplit(_get_next_llm_host())
+        with socket.create_connection((parts.hostname or "127.0.0.1", parts.port or 11434), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
+def _cut_words(text, limit):
+    """Shorten proof text at a word boundary with a visible marker. A hard
+    slice cut words in half in a delivered report ("You shoul")."""
+    text = str(text or "")
+    if len(text) <= limit:
+        return text
+    cut = text.rfind(" ", 0, limit)
+    return text[:cut if cut > limit * 0.6 else limit].rstrip() + " [...]"
+
+
 def _detect_physical_cores():
     """Physical core count, or None when it can't be determined.
 
@@ -2742,9 +2766,9 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
                     poc_lines.append(f"CVE(s):      {_cve_str}")
                 poc_lines.append(f"Scanner:     {_tool}")
                 if _plugin_out and "Not available in scan report" not in _plugin_out:
-                    poc_lines.append(f"Plugin Output:\n{_plugin_out[:1200]}")
+                    poc_lines.append(f"Plugin Output:\n{_cut_words(_plugin_out, 1200)}")
                 elif _desc_text:
-                    poc_lines.append(f"Plugin Output:\n{_desc_text[:1200]}")
+                    poc_lines.append(f"Plugin Output:\n{_cut_words(_desc_text, 1200)}")
                 else:
                     poc_lines.append(f"Plugin Output:\nTarget endpoint verified: {_target}")
                 poc_block = "\n".join(poc_lines)
@@ -2800,6 +2824,19 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
                 print(f"[VAPT/PQC] Recommendation enrichment failed, findings "
                       f"keep their parser-generated text: {_enrich_err}", flush=True)
 
+        # The executive summary and tactical recommendations run for EVERY
+        # technical scan, not only when per-finding AI recommendations were
+        # ticked. It is one call, fed the deterministic counts, and the model
+        # writes no severity, score or CVE. A client comparing the two report
+        # styles asked for exactly this: parser facts and remediation per
+        # finding, the model only for the summary, which in parser mode was
+        # fixed boilerplate.
+        # Without per-finding AI the auditor asked for no model at all, so the
+        # summary is only requested from one that is already answering: on a
+        # workstation the LLM client otherwise auto-launches llama-server with a
+        # 12 GB model for a parser-only scan.
+        if all_findings and (ai_recommendations or _llm_answering()):
+            _model = _resolve_llm_model(ai_model) if ai_model else "gemma4:e4b"
             _vapt_progress(90, "Writing executive summary and tactical recommendations...")
 
             # ── Scan-level narrative: executive summary + tactical recommendations ──
@@ -2950,6 +2987,13 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
                             is_pii_exposed=bool(f.get("is_pii_exposed") or False),
                             remediation_actionable=f.get("remediation_actionable") or "",
                             dedup_key=f.get("dedup_key"),
+                            # The scanner's own facts, for the report (see the
+                            # columns' note in database.py).
+                            target=str(f.get("target") or "")[:4000] or None,
+                            source_tool=str(f.get("source_tool") or "")[:100] or None,
+                            confidence=str(f.get("confidence") or "")[:20] or None,
+                            cvss_vector=str(f.get("cvss_vector") or "")[:200] or None,
+                            cve_refs=", ".join(str(c) for c in (f.get("cve_list") or [])) or None,
                             # PQC (Post-Quantum Cryptography Readiness) enrichment fields --
                             # same pattern as the VAPT enrichment fields above: computed at
                             # parse time by pqc_parser.py, flow through Finding.to_dict(), but
