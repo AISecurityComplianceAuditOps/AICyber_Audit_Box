@@ -64,8 +64,17 @@ jobs:
       # AUDITBOX_STACK_TESTS=1.
       #
       # Baseline on 2026-09-06: 222 passed, 6 skipped, 0 failed in 27s.
+      #
+      # Each failing test is also written as an annotation. Annotations show on
+      # the run's page to anyone who can see the repository; the job log asks
+      # for a signed-in account with admin rights.
       - name: Run tests
-        run: python -m pytest --no-header
+        run: |
+          set -o pipefail
+          python -m pytest --no-header -rfE 2>&1 | tee pytest.log || {
+            grep -E '^(FAILED|ERROR) ' pytest.log | sed 's/^/::error::/'
+            exit 1
+          }
 
   review-gate-reminder:
     runs-on: ubuntu-latest
