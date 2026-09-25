@@ -2631,6 +2631,12 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
                         ftext = "\n".join(pages_text).strip()
                     except Exception:
                         ftext = ""
+                    # A printed Burp report stores its collapsed request /
+                    # response boxes after its closing line; put them back
+                    # under their headings (read by position, not OCR).
+                    if ftext:
+                        from src.core.parsers.doc_parsers import fill_burp_pdf_exchanges
+                        ftext = fill_burp_pdf_exchanges(ftext, fbytes)
                     # Fall back to extract_text (hybrid OCR) if sparse/scanned
                     if not ftext or len(ftext.strip()) < 50:
                         try:
