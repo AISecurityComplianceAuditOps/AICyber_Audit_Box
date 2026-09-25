@@ -37,6 +37,8 @@ from src.core.finding_status import WORKFLOW_ONLY_STATUSES, normalise_status
 _PLACEHOLDER_TARGETS = frozenset((
     "", "web application endpoint", "n/a", "na", "none", "unknown",
     "localhost", "target", "host", "-",
+    # What the parsers write when a report names no host.
+    "not recorded", "scoped target systems",
 ))
 
 

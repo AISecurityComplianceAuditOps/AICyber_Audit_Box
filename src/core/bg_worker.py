@@ -2922,7 +2922,11 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
                                    f"AI recommendations: {_done}/{_total} "
                                    f"batch(es) complete...")
 
-                enrich_remediations(all_findings, model=_model, session_id=bg_key,
+                # Not a closed finding: it is fixed, needs no fix text, and what
+                # the model wrote would be saved as the report's own advice.
+                # (The dicts are shared, so the open ones are enriched in place.)
+                enrich_remediations([f for f in all_findings if f.get("status") != "Closed"],
+                                    model=_model, session_id=bg_key,
                                     progress_cb=_enrich_progress)
 
                 # Report a partial or total enrichment failure. Without this the
@@ -2965,8 +2969,12 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
             # severity, score, CVE or count is ever produced by the model.
             try:
                 from src.core.parsers.report_narrative_llm import generate_report_narrative
+                # Open findings only: a closed one is not a current risk, and
+                # its severity would be counted as an open one. (None open: no
+                # narrative, and the report keeps its standard text.)
                 _narrative = generate_report_narrative(
-                    all_findings, model=_model, session_id=bg_key
+                    [f for f in all_findings if f.get("status") != "Closed"],
+                    model=_model, session_id=bg_key
                 )
                 if _narrative:
                     _bg_store.setdefault("report_narrative", {})[bg_key] = _narrative
@@ -3093,6 +3101,9 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
                             recommendation=f.get("remediation") or f.get("recommendation", ""),
                             reasoning=f.get("reasoning", ""),
                             status=f.get("status", "Non-Compliant"),
+                            # A closed finding's verdict, so Accept (which keeps the
+                            # verdict) leaves it closed. Open ones keep none, as before.
+                            final_result="CLOSED" if f.get("status") == "Closed" else None,
                             source_files=f.get("source_files", ""),  # Now = scan filename, NOT host IP
                             # VAPT enrichment fields -- previously computed by map_findings_list()
                             # then silently dropped here (no columns existed to persist them into),

@@ -225,25 +225,53 @@ def _vapt_score(f):
 
 
 def _vapt_is_closed(f):
-    """A VAPT finding the pentest report records as closed / remediated.
+    """A VAPT finding recorded as closed / remediated, by the pentest report
+    or by the auditor in the Modify dialog.
 
-    Its status is "Closed"; an Accept confirms that, so an accepted finding
-    whose proof block says "Status in report: Closed" is still closed. Any
-    other status -- an auditor reopening it -- is taken as open.
+    Its status is "Closed" and its verdict CLOSED; an Accept keeps the
+    verdict, so an accepted closed finding is still closed. Any other status
+    -- an auditor reopening it -- is taken as open.
     """
     st = str(f.get("status") or "").strip().lower()
     if st == "closed":
         return True
     if st in ("accepted", "confirmed"):
-        ev = str(f.get("evidence_snippet") or f.get("evidence") or "")
-        return bool(re.search(r"Status in report:\s*Closed", ev, re.I))
+        # Accept keeps the verdict: a closed finding's is CLOSED, whether the
+        # report or the auditor closed it. One reopened in the Modify dialog
+        # has another, whatever its proof says.
+        return str(f.get("final_result") or "").strip().upper() == "CLOSED"
     return False
+
+
+_VAPT_SEVERITY_WORDS = (("CRIT", "CRITICAL"), ("HIGH", "HIGH"), ("MED", "MEDIUM"),
+                        ("LOW", "LOW"), ("INFO", "INFO"))
+
+
+def _vapt_plain_severity(sev):
+    """CRITICAL / HIGH / MEDIUM / LOW / INFO, as the parsers write it.
+
+    The Modify dialog saved "High (CVSS 7.0-8.9)", which the report's counts
+    (exact "HIGH") and its severity column (the last word, "7.0-8.9)") could
+    not read: a modified finding dropped out of the summary. Anything not
+    recognised is left as it was.
+    """
+    s = str(sev or "").upper()
+    for word, plain in _VAPT_SEVERITY_WORDS:
+        if word in s:
+            return plain
+    return sev
+
+
+def _vapt_plain_severities(findings):
+    """The findings with plain severities (dicts copied; others unchanged)."""
+    return [dict(f, severity=_vapt_plain_severity(f.get("severity"))) if isinstance(f, dict) else f
+            for f in (findings or [])]
 
 
 # The labels the parsers put over each part of a proof of concept:
 # "[HTTP Request 1]", "[HTTP Response 1]", "[Issue detail]", "[Request 2]".
 _POC_LABEL_RE = re.compile(r"^[ \t]*\[((?:HTTP[ \t]+)?(?:Request|Response)(?:[ \t]+Snippet)?(?:[ \t]+\d+)?"
-                           r"|Issue detail)\][ \t]*$", re.I | re.M)
+                           r"|Issue detail|Collaborator (?:HTTP|DNS|SMTP) interaction)\][ \t]*$", re.I | re.M)
 
 
 def _poc_sections(text):
@@ -335,6 +363,28 @@ def _vapt_remediation(f):
     return "The scanner gave no remediation for this finding; see the developer steps."
 
 
+_VAPT_CLOSED_NOTE = ("No action required - this finding is closed (remediated). "
+                     "Re-verify it in the next test.")
+
+
+def _vapt_remediation_parts(f):
+    """(heading, text, developer steps) for a VAPT finding's report section.
+
+    A closed finding is fixed: it was given fix steps -- for the six closed
+    rows of a real report, MITRE guidance the report never gave -- as if work
+    remained. It now says no action is required, keeps the report's own advice
+    for reference, and has no developer steps. An open finding is as before.
+    """
+    if _vapt_is_closed(f):
+        own = str(f.get("recommendation") or f.get("remediation") or "").strip()
+        own = "" if own.upper() == "NIL" else own
+        return ("Remediation Status:",
+                _VAPT_CLOSED_NOTE + (f"\n\nOriginal recommendation (for reference): {own}" if own else ""), "")
+    remed = _vapt_remediation(f)
+    steps = str(f.get("remediation_actionable") or f.get("actionable_remediation") or "").strip()
+    return "Recommendation:", remed, (steps if steps and steps != remed.strip() else "")
+
+
 def _vapt_severity(f):
     return str(f.get("severity", f.get("sev", "LOW")) or "LOW").split()[-1].upper()
 
@@ -355,8 +405,8 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
     import io as _io
     import os
 
-    findings = sorted(findings or [], key=severity_sort_key)
-    
+    findings = sorted(_vapt_plain_severities(findings), key=severity_sort_key)
+
     def clean_text(val):
         if not val:
             return "-"
@@ -1114,7 +1164,8 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
             "Console / Log Audit Verification"
         ), redact_ip=False))
 
-        remed = html.unescape(redact_pii(_vapt_remediation(f), redact_ip=False))
+        _rem_head, remed, remed_actionable = _vapt_remediation_parts(f)
+        remed = html.unescape(redact_pii(remed, redact_ip=False))
         ref = html.unescape(str(f.get("references") or f.get("reference") or "OWASP / OSSTMM / NIST Security Recommendations"))
         main_img = f.get("poc_image") or f.get("image_path")
         extra_img = f.get("extra_image")
@@ -1311,15 +1362,14 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
         # Recommendation Section
         pdf.set_font("Helvetica", "B", 9)
         pdf.set_text_color(15, 23, 42)
-        pdf.cell(0, 5, "Recommendation:", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.cell(0, 5, _rem_head, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         pdf.set_font("Helvetica", "", 8.5)
         pdf.set_text_color(51, 65, 85)
         pdf.multi_cell(0, 4.5, clean_text(remed), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         pdf.ln(2)
 
-        # Developer-Actionable Mitigation Steps Section
-        remed_actionable = f.get("remediation_actionable") or f.get("actionable_remediation") or ""
-        if remed_actionable and remed_actionable.strip() != remed.strip():
+        # Developer-Actionable Mitigation Steps Section (none for a closed finding)
+        if remed_actionable:
             pdf.set_font("Helvetica", "B", 9)
             pdf.set_text_color(15, 23, 42)
             pdf.cell(0, 5, "Developer Actionable Mitigation Steps:", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
@@ -2657,7 +2707,8 @@ def _export_vapt_docx(session_title, findings, resolved_list, status, comments="
     from datetime import datetime
     import io as _io
     import os
-    
+    findings = _vapt_plain_severities(findings)
+
     doc = Document()
     for section in doc.sections:
         section.top_margin    = Cm(2)
@@ -3041,7 +3092,8 @@ def _export_vapt_docx(session_title, findings, resolved_list, status, comments="
         # vulnerable host's IP address is the report's actual content, not PII.
         desc_val = html.unescape(redact_pii(str(f.get("description") or f.get("gap_description") or f.get("finding") or "-"), redact_ip=False))
         poc_val = html.unescape(redact_pii(full_poc(str(f.get("evidence_snippet") or f.get("evidence") or f.get("evidence_quote") or f.get("poc") or "Console / Log Audit Verification")), redact_ip=False))
-        remed_val = html.unescape(redact_pii(_vapt_remediation(f), redact_ip=False))
+        _rem_head, remed_val, remed_actionable = _vapt_remediation_parts(f)
+        remed_val = html.unescape(redact_pii(remed_val, redact_ip=False))
 
         # ── Resolve uploaded screenshots/images for VAPT POC embedding ───────
         # Priority: explicit fields + ALL images listed in source_files / evidence_source_file
@@ -3165,14 +3217,13 @@ def _export_vapt_docx(session_title, findings, resolved_list, status, comments="
         # Recommendation
         p_rec_hdr = doc.add_paragraph()
         p_rec_hdr.paragraph_format.space_before = Pt(6)
-        r_rh = p_rec_hdr.add_run("Recommendation:")
+        r_rh = p_rec_hdr.add_run(_rem_head)
         r_rh.bold = True
         r_rh.font.color.rgb = _rgb(217, 119, 6)
         doc.add_paragraph(remed_val)
 
-        # Developer Actionable Mitigation Steps
-        remed_actionable = f.get("remediation_actionable") or f.get("actionable_remediation") or ""
-        if remed_actionable and remed_actionable.strip() != remed_val.strip():
+        # Developer Actionable Mitigation Steps (none for a closed finding)
+        if remed_actionable:
             p_act_hdr = doc.add_paragraph()
             p_act_hdr.paragraph_format.space_before = Pt(4)
             r_ah = p_act_hdr.add_run("Developer Actionable Mitigation Steps:")

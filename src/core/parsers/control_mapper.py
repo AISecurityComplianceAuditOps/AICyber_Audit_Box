@@ -548,7 +548,19 @@ def evaluate_cia_and_pii_impact(finding: Finding) -> tuple:
     Returns (cia_impact_str, is_pii_exposed).
     100% offline — uses local regex patterns only.
     """
-    combined = f"{finding.title or ''} {finding.description or ''} {finding.evidence or ''} {finding.remediation or ''}"
+    # What the finding IS -- title, description, remediation -- not its raw
+    # proof. A proof is a request / response or plugin output, now kept whole,
+    # and its page text decided the estimate: two identical "Open redirection"
+    # findings came out C:MEDIUM|I:NONE and C:MEDIUM|I:HIGH from the HTML in
+    # their responses, an informational SMB enumeration C:HIGH, and
+    # "timeout" in Nessus' scan-information output A:MEDIUM. Measured over
+    # 899 findings of seven real reports, every change dropping the proof makes
+    # is one of those. PQC findings read it as before (their config output is
+    # what they are about).
+    _pqc_source = (getattr(finding, "source_tool", "") == "PQC-Scan"
+                   or bool(getattr(finding, "quantum_status", "")))
+    _proof = (finding.evidence or "") if _pqc_source else ""
+    combined = f"{finding.title or ''} {finding.description or ''} {_proof} {finding.remediation or ''}"
 
     # ── PII Exposure Detection ──
     # PQC-Scan findings come from configuration files (TLS/SSH/IPSec config exports)

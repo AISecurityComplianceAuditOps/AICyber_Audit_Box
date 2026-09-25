@@ -4,6 +4,7 @@ from typing import List, Optional
 from src.core.text_validation import clean_safe_text as _clean_safe_text
 import os
 import io
+import re
 import shutil
 import uuid
 import json
@@ -214,6 +215,18 @@ class StartAuditRequest(BaseModel):
     # stated -- the findings themselves are identical either way.
     ai_recommendations: Optional[bool] = True
 
+# Longer than the 5000 the other content fields of a finding keep. A VAPT proof
+# of concept is kept whole (up to finding_schema.POC_MAX_CHARS plus the worker's
+# header lines), and the Modify dialog sends it back on every save -- at 5000 a
+# finding with a 5,285-character proof could not be saved at all. A scanner's
+# description and remediation can run as long.
+_FINDING_CONTENT_LIMITS = {"evidence_snippet": 30000, "description": 20000, "reasoning": 20000,
+                           "recommendation": 20000, "remediation_actionable": 20000, "target": 4000}
+# VAPT scanner fields picked or typed as short values.
+_VAPT_SHORT_LIMITS = {"source_tool": 100, "confidence": 20, "cvss_vector": 200,
+                      "category": 200, "cia_impact": 300}
+
+
 class UpdateFindingRequest(BaseModel):
     status: str
     severity: Optional[str] = None
@@ -248,6 +261,17 @@ class UpdateFindingRequest(BaseModel):
     final_reason: Optional[str] = None
     # Custom heading override (VAPT + ISO): auditor-set display title in UI and reports
     custom_heading: Optional[str] = None
+    # What the scanner reported about a VAPT finding (the same columns the
+    # worker saves), editable from the Modify dialog. None = leave unchanged.
+    target: Optional[str] = None
+    source_tool: Optional[str] = None
+    confidence: Optional[str] = None
+    cvss_vector: Optional[str] = None
+    cve_refs: Optional[str] = None             # "CVE-2021-44228, CWE-502"
+    category: Optional[str] = None             # risk category
+    cia_impact: Optional[str] = None           # "C:HIGH | I:HIGH | A:NONE"
+    remediation_actionable: Optional[str] = None
+    severity_score: Optional[str] = None       # "7.5"; "" = no score assigned
 
     # Short status/enum-like fields (e.g. "COMPLIANT", version strings, dates)
     _SHORT_FIELDS = (
@@ -262,7 +286,7 @@ class UpdateFindingRequest(BaseModel):
     _CONTENT_FIELDS = (
         "description", "evidence_snippet", "recommendation", "reasoning", "comment",
         "policy_finding", "policy_gap", "evidence_finding", "evidence_gap",
-        "final_reason", "custom_heading",
+        "final_reason", "custom_heading", "remediation_actionable", "target",
     )
     # Long fields holding a value picked from a list, or a filename. No legitimate
     # markup, so the strict rule stays.
@@ -287,8 +311,48 @@ class UpdateFindingRequest(BaseModel):
     def _validate_content_fields(cls, v, info):
         if v is None:
             return v
-        return _clean_safe_text(v, info.field_name.replace("_", " ").title(), 5000,
+        return _clean_safe_text(v, info.field_name.replace("_", " ").title(),
+                                _FINDING_CONTENT_LIMITS.get(info.field_name, 5000),
                                 allow_markup=True)
+
+    @field_validator(*_VAPT_SHORT_LIMITS)
+    @classmethod
+    def _validate_vapt_short_fields(cls, v, info):
+        if v is None:
+            return v
+        return _clean_safe_text(v, info.field_name.replace("_", " ").title(),
+                                _VAPT_SHORT_LIMITS[info.field_name])
+
+    @field_validator("cve_refs")
+    @classmethod
+    def _validate_cve_refs(cls, v):
+        """CVE and CWE ids only, upper-cased, comma-separated. Anything else is
+        refused rather than stored: these ids become NVD links, KEV look-ups
+        and the OWASP category."""
+        if v is None:
+            return v
+        refs = [r.strip().upper() for r in re.split(r"[,;\s]+", _clean_safe_text(v, "CVE / CWE", 2000)) if r.strip()]
+        bad = [r for r in refs if not re.fullmatch(r"CVE-\d{4}-\d{4,7}|CWE-\d{1,5}", r)]
+        if bad:
+            raise ValueError(f"CVE / CWE must be ids like CVE-2021-44228 or CWE-79, not: {', '.join(bad[:3])}")
+        return ", ".join(dict.fromkeys(refs))
+
+    @field_validator("severity_score")
+    @classmethod
+    def _validate_severity_score(cls, v):
+        """A CVSS base score, 0.0-10.0, or "" for none assigned."""
+        if v is None:
+            return v
+        v = str(v).strip()
+        if not v:
+            return ""
+        try:
+            score = float(v)
+        except ValueError:
+            raise ValueError("CVSS score must be a number from 0.0 to 10.0.")
+        if not 0.0 <= score <= 10.0:
+            raise ValueError("CVSS score must be a number from 0.0 to 10.0.")
+        return f"{score:.1f}"
 
 class ChatSendRequest(BaseModel):
     session_id: str
@@ -2382,6 +2446,19 @@ def api_get_findings(request: Request, session_id: str, saved_only: bool = False
                         {"cve_list": _sf["cve_list"], "category": f.category or ""},
                         f.control_name or "", f.description or "")
                     result[-1]["confidence"] = _sf["confidence"]
+                    # The scanner fields as stored, for the card and the Modify
+                    # dialog. Raw: no file-name fallback for the target (the card
+                    # reads the proof's "Target Host" line when there is none).
+                    result[-1]["target"] = getattr(f, "target", None) or ""
+                    result[-1]["source_tool"] = _sf["source_tool"]
+                    result[-1]["cvss_vector"] = _sf["cvss_vector"]
+                    result[-1]["cve_refs"] = ", ".join(_sf["cve_list"])
+                    # The report's own advice, or nothing. The fallback above put
+                    # the VAPT control's generic text, or ISO wording ("Establish,
+                    # document, and implement procedures to satisfy VAPT-5"), on a
+                    # card whose report said something else; the card now shows
+                    # what the report shows (see vaptRemediationView in app.js).
+                    result[-1]["recommendation"] = f.recommendation or ""
                     # CVEs known to be exploited in the wild (CISA KEV), looked
                     # up from the saved CVEs so earlier scans are marked too.
                     from src.core.parsers.control_mapper import known_exploited
@@ -2490,6 +2567,20 @@ def api_update_finding(finding_id: int, req: UpdateFindingRequest, request: Requ
             if req.final_reason is not None: finding.final_reason = req.final_reason
             # Custom heading override (VAPT + ISO): auditor-set title for UI and exported reports
             if req.custom_heading is not None: finding.custom_heading = req.custom_heading
+            # VAPT scanner fields, as the auditor corrected them. "" clears one.
+            for _col in ("target", "source_tool", "confidence", "cvss_vector", "cve_refs",
+                         "category", "cia_impact", "remediation_actionable"):
+                _val = getattr(req, _col)
+                if _val is not None:
+                    setattr(finding, _col, _val or None)
+            if req.severity_score is not None:
+                _score = float(req.severity_score) if req.severity_score else 0.0
+                # A vector with no score: the score is the vector's (FIRST's
+                # formula), as the parsers compute it.
+                if not _score and finding.cvss_vector:
+                    from src.core.parsers.finding_schema import _calculate_cvss_score
+                    _score = _calculate_cvss_score(finding.cvss_vector) or 0.0
+                finding.severity_score = _score
 
             # Explicitly mark as reviewed and saved to Shakthi DB
             finding.is_saved_to_shakthi = True

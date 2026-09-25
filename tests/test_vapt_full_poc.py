@@ -271,7 +271,7 @@ def _run(expr):
     const = const[:const.index("\n") + 1]
     script = "\n".join([
         "function escapeHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }",
-        const, _function(src, "pocSections"), _function(src, "pocHtml")])
+        const, _function(src, "pocSections"), _function(src, "pocLabelColours"), _function(src, "pocHtml")])
     script += "\nprocess.stdout.write(JSON.stringify(%s));\n" % expr
     out = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
     assert out.returncode == 0, out.stderr
@@ -284,10 +284,15 @@ def test_the_card_splits_the_proof_as_the_reports_do():
     assert got[2]["body"] == RESPONSE
 
 
-def test_the_card_shows_each_part_whole_under_its_label():
+def test_the_card_shows_each_part_whole_in_one_scrolling_box():
     html = _run("pocHtml(%s)" % json.dumps(POC.split("Plugin Output:\n")[1]))
-    assert html.count("<details open") == 4 and "max-height" not in html
-    assert "END-OF-RESPONSE-2" in html
+    assert html.count('class="poc-box"') == 1                  # one box...
+    box = html[html.index('class="poc-box"'):]
+    assert "max-height:420px; overflow-y:auto" in box[:120]    # ...that scrolls
+    labels = re.findall(r'class="poc-part-label"[^>]*>([^<]+)<', html)
+    assert labels == ["HTTP Request 1", "HTTP Response 1", "HTTP Request 2", "HTTP Response 2"]
+    assert "position:sticky" in html                           # a label stays in view over its part
+    assert "END-OF-RESPONSE-2" in html                         # and nothing is cut
 
 
 def test_a_vapt_card_uses_it_and_pqc_keeps_its_box():
@@ -300,3 +305,27 @@ def test_a_pentest_reports_facts_become_chips():
     html = _run("pocHtml(%s)" % json.dumps(poc))
     assert "<b>Source:</b> pentest_report.pdf" in html and "<b>Status in report:</b> Closed / remediated" in html
     assert html.count("<pre") == 1 and "| row |" in html
+    assert html.index("<b>Source:</b>") < html.index('class="poc-box"')    # chips above the box
+
+
+# -- a whole proof decides nothing it should not --------------------------------
+
+def _classified(evidence, **kw):
+    from src.core.parsers.control_mapper import evaluate_cia_and_pii_impact
+    from src.core.parsers.finding_schema import Finding as ParsedFinding
+    f = ParsedFinding(title="Open redirection (DOM-based)", severity="LOW",
+                      description="Data is read from location.search and passed to location.href.",
+                      remediation="Do not set redirection targets from untrusted data.", evidence=evidence, **kw)
+    return evaluate_cia_and_pii_impact(f)
+
+
+def test_the_cia_estimate_does_not_come_from_the_page_in_a_response():
+    """Two identical findings came out C:MEDIUM|I:NONE and C:MEDIUM|I:HIGH from
+    the HTML in their responses; a contact address in a page flagged personal data."""
+    page = ("[HTTP Response 1]\nHTTP/2 200 OK\n\n<form action=/delete-account>password: hunter2 "
+            "admin@shop.test session token overwrite remote code execution denial of service</form>")
+    assert _classified(page) == _classified("") == _classified("[HTTP Response 1]\nHTTP/2 200 OK\n\n<p>hi</p>")
+
+
+def test_a_pqc_finding_still_reads_its_config_output():
+    assert _classified("timeout", source_tool="PQC-Scan")[0].endswith("A:MEDIUM")

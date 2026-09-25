@@ -107,7 +107,15 @@ document.addEventListener("DOMContentLoaded", () => {
     const editStatusSel = document.getElementById("edit-finding-status");
     if (editStatusSel) {
         editStatusSel.addEventListener("change", function () {
+            // A VAPT finding: keep Severity in step (Closed <-> Closed, ...).
+            if (_editDialogIsVapt()) { _vaptSyncFromStatus(); return; }
             _updateSeverityVisibility(this.value);
+        });
+    }
+    const editSevSel = document.getElementById("edit-finding-severity");
+    if (editSevSel) {
+        editSevSel.addEventListener("change", function () {
+            if (_editDialogIsVapt()) _vaptSyncFromSeverity();
         });
     }
 });
@@ -4984,17 +4992,20 @@ function isPqcFinding(f) {
     return !!(f && f.quantum_status);
 }
 
-// A VAPT finding the pentest report records as closed / remediated: status
-// "Closed", or an Accepted one whose proof says so (Accept confirms it). A
-// finding the auditor reopened is open. Only ever true on a VAPT session --
+// A VAPT finding recorded as closed / remediated, by the pentest report or by
+// the auditor in the Modify dialog: status "Closed", or an Accepted one whose
+// verdict is CLOSED (Accept confirms it). A finding the auditor reopened is
+// open. Only ever true on a VAPT session --
 // no other framework has closed findings -- so ISO, PQC and the rest keep
 // every count and filter they had.
 function isFindingClosed(f) {
     if (!f || !isVaptOnlySession()) return false;
     const st = String(f.status || "").trim().toLowerCase();
     if (st === "closed") return true;
+    // Accept keeps the verdict: a closed finding's is CLOSED. One reopened in
+    // the Modify dialog has another, whatever its proof says.
     if (st === "accepted" || st === "confirmed") {
-        return /Status in report:\s*Closed/i.test(String(f.evidence_snippet || f.evidence || ""));
+        return String(f.final_result || "").trim().toUpperCase() === "CLOSED";
     }
     return false;
 }
@@ -5319,7 +5330,7 @@ function formatStructuredPoc(pocText) {
 // The labels the parsers put over each part of a proof of concept -- "[HTTP
 // Request 1]", "[HTTP Response 1]", "[Issue detail]" (mirrors _poc_sections in
 // src/core/report_exporter.py).
-const _POC_LABEL_RE = /^[ \t]*\[((?:HTTP[ \t]+)?(?:Request|Response)(?:[ \t]+Snippet)?(?:[ \t]+\d+)?|Issue detail)\][ \t]*$/gim;
+const _POC_LABEL_RE = /^[ \t]*\[((?:HTTP[ \t]+)?(?:Request|Response)(?:[ \t]+Snippet)?(?:[ \t]+\d+)?|Issue detail|Collaborator (?:HTTP|DNS|SMTP) interaction)\][ \t]*$/gim;
 
 // A proof of concept as [{label, body}]: what precedes the first label (label
 // ""), then each labelled part. Text with no labels is one part.
@@ -5338,26 +5349,44 @@ function pocSections(text) {
     return parts;
 }
 
-// A VAPT card's proof of concept, whole: the report's own facts (source,
-// severity, status) as chips, then each request / response / issue detail in
-// its own box under its label. It was one box 240px high over text the
-// parsers had already cut at 500-1500 characters.
+// Label colours inside the proof box: requests blue, responses green, the
+// scanner's issue detail amber.
+function pocLabelColours(label) {
+    if (/collaborator/i.test(label)) return ["#6d28d9", "#ede9fe"];
+    if (/request/i.test(label)) return ["#1d4ed8", "#dbeafe"];
+    if (/response/i.test(label)) return ["#047857", "#d1fae5"];
+    return ["#92400e", "#fef3c7"];
+}
+
+// A VAPT card's proof of concept, whole, in one scrolling box: the report's
+// own facts (source, severity, status) as chips above it, then each request /
+// response / issue detail inside it under a label that stays in view while
+// its part scrolls. It was one box 240px high over text the parsers had
+// already cut at 500-1500 characters.
 function pocHtml(text) {
-    const pre = body => `<pre class="finding-snippet" style="margin:0; font-family:'Consolas','Fira Code',monospace; font-size:0.78rem; color:#064e3b; background:rgba(16,185,129,0.08); padding:10px 12px; border-radius:8px; border:1px solid rgba(16,185,129,0.25); line-height:1.45; white-space:pre-wrap; word-break:break-word; font-weight:600;">${escapeHtml(body)}</pre>`;
-    return pocSections(text).map(({ label, body }) => {
-        if (label) {
-            return `<details open style="margin-top:6px;"><summary style="cursor:pointer; font-weight:800; font-size:0.72rem; color:#047857; text-transform:uppercase; letter-spacing:0.4px; margin-bottom:4px;">${escapeHtml(label)}</summary>${pre(body)}</details>`;
+    const facts = [];
+    const parts = [];
+    pocSections(text).forEach(({ label, body }) => {
+        if (!label) {
+            const lines = body.split("\n");
+            while (lines.length && /^(Source|Reported severity|Status in report):\s*\S/.test(lines[0])) {
+                const m = lines.shift().match(/^([^:]+):\s*(.*)$/);
+                facts.push(`<span style="font-size:0.74rem; padding:2px 8px; border-radius:4px; background:rgba(16,185,129,0.1); color:#065f46; border:1px solid rgba(16,185,129,0.25);"><b>${escapeHtml(m[1])}:</b> ${escapeHtml(m[2])}</span>`);
+            }
+            body = lines.join("\n").trim();
+            if (!body) return;
         }
-        const lines = body.split("\n");
-        const facts = [];
-        while (lines.length && /^(Source|Reported severity|Status in report):\s*\S/.test(lines[0])) {
-            const m = lines.shift().match(/^([^:]+):\s*(.*)$/);
-            facts.push(`<span style="font-size:0.74rem; padding:2px 8px; border-radius:4px; background:rgba(16,185,129,0.1); color:#065f46; border:1px solid rgba(16,185,129,0.25);"><b>${escapeHtml(m[1])}:</b> ${escapeHtml(m[2])}</span>`);
-        }
-        const rest = lines.join("\n").trim();
-        return (facts.length ? `<div style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:6px;">${facts.join("")}</div>` : "")
-            + (rest ? pre(rest) : "");
+        parts.push({ label, body });
+    });
+    const pre = body => `<pre style="margin:0; padding:8px 12px; font-family:'Consolas','Fira Code',monospace; font-size:0.78rem; color:#064e3b; line-height:1.45; white-space:pre-wrap; word-break:break-word; font-weight:600; background:transparent; border:0;">${escapeHtml(body)}</pre>`;
+    const sections = parts.map(({ label, body }, k) => {
+        const sep = k ? "border-top:1px solid rgba(16,185,129,0.25);" : "";
+        if (!label) return `<section class="poc-part" style="${sep}">${pre(body)}</section>`;
+        const [fg, bg] = pocLabelColours(label);
+        return `<section class="poc-part" style="${sep}"><div class="poc-part-label" style="position:sticky; top:0; z-index:1; background:${bg}; color:${fg}; font-weight:800; font-size:0.7rem; text-transform:uppercase; letter-spacing:0.4px; padding:4px 12px; border-bottom:1px solid rgba(16,185,129,0.2);">${escapeHtml(label)}</div>${pre(body)}</section>`;
     }).join("");
+    return (facts.length ? `<div style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:6px;">${facts.join("")}</div>` : "")
+        + (sections ? `<div class="poc-box" style="max-height:420px; overflow-y:auto; background:rgba(16,185,129,0.08); border:1px solid rgba(16,185,129,0.25); border-radius:8px;">${sections}</div>` : "");
 }
 
 /**
@@ -6188,6 +6217,31 @@ function getCleanRecommendation(f) {
     return rec;
 }
 
+// A VAPT card's remediation, as the report shows it (_vapt_remediation_parts
+// in report_exporter.py): the report's own advice, else the general guidance
+// (which says it is not from the report), else a plain statement. A closed
+// finding is fixed: no fix steps, a note that no action is required, and the
+// report's own advice for reference. VAPT sessions only (the API sends the
+// recommendation as the report gave it there).
+const VAPT_CLOSED_NOTE = "No action required - this finding is closed (remediated). Re-verify it in the next test.";
+
+function vaptRemediationView(f) {
+    const own = String((f && f.recommendation) || "").trim();
+    const ownText = own.toUpperCase() === "NIL" ? "" : own;
+    const steps = String((f && (f.remediation_actionable || f.actionable_remediation)) || "").trim();
+    if (isFindingClosed(f)) return { closed: true, text: VAPT_CLOSED_NOTE, own: ownText, steps: "" };
+    const text = ownText || steps || (isFindingInformational(f)
+        ? "No action required; this is an informational result."
+        : "The scanner gave no remediation for this finding.");
+    return { closed: false, text, own: ownText, steps: steps !== text ? steps : "" };
+}
+
+// A closed finding's own advice from the report, shown for reference only
+// (formatRemediationSteps escapes it).
+function vaptOwnAdviceHtml(own) {
+    return `<div style="margin-top:8px;"><div style="font-size:0.72rem; font-weight:700; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.4px; margin-bottom:2px;">Original recommendation (for reference)</div>${formatRemediationSteps(own, '#64748b')}</div>`;
+}
+
 function isFindingCompliant(f, singleSnip) {
     if (!f) return false;
 
@@ -6656,6 +6710,9 @@ function renderFindingsList() {
             ? `<span class="badge" style="background:#0f766e; color:#ffffff; font-weight:800; padding:4px 10px; border-radius:4px; font-size:0.78rem;" title="Recorded as closed / remediated in the pentest report">CLOSED</span>`
             : (isVaptFinding(f) && isFindingInformational(f))
             ? `<span class="badge" style="background:#64748b; color:#ffffff; font-weight:800; padding:4px 10px; border-radius:4px; font-size:0.78rem;">INFORMATIONAL</span>`
+            // A vulnerability is open, not "non-compliant" (VAPT sessions only).
+            : (isVaptOnlySession() && isVaptFinding(f))
+            ? `<span class="badge badge-danger" style="background:#ef4444; color:#ffffff; font-weight:800; padding:4px 10px; border-radius:4px; font-size:0.78rem;" title="Open vulnerability">OPEN</span>`
             : (isComp
                 ? `<span class="badge badge-success" style="background:#10b981; color:#ffffff; font-weight:800; padding:4px 10px; border-radius:4px; font-size:0.78rem;">COMPLIANT</span>`
                 : `<span class="badge badge-danger" style="background:#ef4444; color:#ffffff; font-weight:800; padding:4px 10px; border-radius:4px; font-size:0.78rem;">NON_COMPLIANT</span>`);
@@ -6668,21 +6725,27 @@ function renderFindingsList() {
         const safeDocForClick = escapeHtml(singleDoc).replace(/'/g, "\\'");
 
         if (isVapt) {
-            let _target = f.target_host || f.host || f.ip || "";
+            // f.target / f.source_tool: the saved scanner fields (VAPT sessions),
+            // as the auditor may have corrected them in the Modify dialog.
+            let _target = f.target || f.target_host || f.host || f.ip || "";
             let _cves = f.cves || f.cve_list || [];
             if (typeof _cves === "string") {
                 _cves = _cves.split(",").map(s => s.trim()).filter(Boolean);
             }
             let _pluginId = f.plugin_id || "";
-            let _tool = f.tool || f.scanner || "";
+            let _tool = f.source_tool || f.tool || f.scanner || "";
             let _cvssVec = f.cvss_vector || f.cvss || "";
             const _poc = String(singleSnip || f.evidence_snippet || f.evidence || "").trim();
             const _desc = String(getCleanFindingDescription(f)).trim();
-            const _remed = String(getCleanRecommendation(f)).trim();
+            // VAPT sessions: the report's remediation rule (none for a closed
+            // finding). PQC cards keep theirs.
+            const _vRem = isVaptOnlySession() ? vaptRemediationView(f) : null;
+            const _remed = _vRem ? _vRem.text : String(getCleanRecommendation(f)).trim();
             const _riskCategory = String(f.category || "").trim();
             const _ciaImpact = String(f.cia_impact || "").trim();
             const _isPii = !!f.is_pii_exposed;
-            const _remedActionable = String(f.remediation_actionable || f.actionable_remediation || "").trim();
+            const _remedActionable = _vRem ? _vRem.steps
+                : String(f.remediation_actionable || f.actionable_remediation || "").trim();
 
             // PQC (Post-Quantum Cryptography Readiness) extra fields -- empty for
             // plain VAPT findings, only populated when this session was PQC-scanned.
@@ -6923,13 +6986,19 @@ function renderFindingsList() {
                         ${isVaptOnlySession() ? pocHtml(_cleanPoc) : `<pre class="finding-snippet" style="margin:0; font-family:'Consolas','Fira Code',monospace; font-size:0.78rem; color:#064e3b; background:rgba(16,185,129,0.08); padding:10px 12px; border-radius:8px; border:1px solid rgba(16,185,129,0.25); line-height:1.45; max-height:240px; overflow-y:auto; white-space:pre-wrap; word-break:break-word; font-weight:600;">${escapeHtml(_cleanPoc)}</pre>`}
                     </div>` : ""}
 
+                    ${(_vRem && _vRem.closed) ? `
+                    <div class="finding-detail-row" style="margin-bottom: 12px;">
+                        <label style="font-weight:700; font-size:0.78rem; color:#0f766e; text-transform:uppercase; letter-spacing:0.5px; display:block; margin-bottom:4px;">✅ Remediation Status</label>
+                        <div class="vapt-closed-note" style="padding:8px 12px; border-radius:8px; background:rgba(15,118,110,0.08); border:1px solid rgba(15,118,110,0.25); color:#0f766e; font-weight:600; font-size:0.85rem;">${escapeHtml(_vRem.text)}</div>
+                        ${_vRem.own ? vaptOwnAdviceHtml(_vRem.own) : ""}
+                    </div>` : `
                     <div class="finding-detail-row" style="margin-bottom: 12px;">
                         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
                             <label style="font-weight:700; font-size:0.78rem; color:#3b82f6; text-transform:uppercase; letter-spacing:0.5px;">🔧 Recommended Remediation & Action</label>
-                            <button type="button" onclick="navigator.clipboard.writeText('${safeRemedForClick}'); showToastBanner('Remediation script copied to clipboard!');" style="padding:2px 8px; font-size:0.72rem; border-radius:4px; border:1px solid rgba(59,130,246,0.4); background:rgba(59,130,246,0.1); color:#3b82f6; font-weight:700; cursor:pointer;">📋 Copy Fix Command</button>
+                            <button type="button" onclick="navigator.clipboard.writeText('${_vRem ? escapeHtml(_remed).replace(/'/g, "\\'") : safeRemedForClick}'); showToastBanner('Remediation script copied to clipboard!');" style="padding:2px 8px; font-size:0.72rem; border-radius:4px; border:1px solid rgba(59,130,246,0.4); background:rgba(59,130,246,0.1); color:#3b82f6; font-weight:700; cursor:pointer;">📋 Copy Fix Command</button>
                         </div>
                         <div style="margin:0;">${formatRemediationSteps(_remed, '#2563eb')}</div>
-                    </div>
+                    </div>`}
 
                     ${(_remedActionable && _remedActionable !== _remed) ? `
                     <div class="finding-detail-row" style="margin-bottom: 12px;">
@@ -7092,9 +7161,9 @@ async function rejectSingleDocCard(findingId, docName, controlId) {
 // scanner's informational finding, which the audit files as "Informational",
 // goes back to that rather than to "Non-Compliant".
 function statusBeforeReview(f) {
-    // A pentest report's closed finding (VAPT) goes back to Closed.
-    if (/Status in report:\s*Closed/i.test(String((f && (f.evidence_snippet || f.evidence)) || ""))) return "Closed";
     const verdict = String((f && f.final_result) || "").trim().toUpperCase();
+    // A closed VAPT finding (by the report or the auditor) goes back to Closed.
+    if (verdict === "CLOSED") return "Closed";
     if (verdict === "COMPLIANT") return "Compliant";
     if (String((f && f.severity) || "").toUpperCase().includes("INFO")) return "Informational";
     return "Non-Compliant";
@@ -7166,6 +7235,7 @@ function deriveFinalResult(status, currentFinalResult) {
     if (_AFFIRMING_STATUSES.indexOf(n) !== -1 || _WORKFLOW_ONLY_STATUSES.indexOf(n) !== -1) {
         return String(currentFinalResult || "").trim().toUpperCase() || "NON_COMPLIANT";
     }
+    if (n === "CLOSED") return "CLOSED";      // a VAPT finding recorded as fixed
     return "NON_COMPLIANT";
 }
 
@@ -7310,11 +7380,17 @@ function openEditFindingModal(finding) {
         headingEl.value = finding.custom_heading || finding.control_name || "";
     }
 
-    // 1. Normalize and pre-select Compliance Status
+    // 1. Normalize and pre-select Compliance Status. A VAPT finding has its own
+    //    status list (Open / Informational / Closed) and fields.
     const statusSelect = document.getElementById("edit-finding-status");
-    const targetStatusVal = modifyDialogStatus(finding);
-    _applyModifyStatusOptions(statusSelect, targetStatusVal);
+    const _vaptMode = _isVaptDialogFinding(finding, _fwHint);
+    _setEditDialogMode(_vaptMode, statusSelect);
+    const _vaptState = _vaptMode ? vaptDialogState(finding) : null;
+    const targetStatusVal = _vaptMode ? _vaptState.status : modifyDialogStatus(finding);
+    if (!_vaptMode) _applyModifyStatusOptions(statusSelect, targetStatusVal);
     statusSelect.value = targetStatusVal;
+    const _modal = document.getElementById("edit-finding-modal");
+    _modal.dataset.origSeverity = _vaptMode ? String(finding.severity || "") : "";
 
     // 2. Normalize and pre-select Policy Present
     const polSelect = document.getElementById("edit-finding-policy");
@@ -7349,11 +7425,7 @@ function openEditFindingModal(finding) {
     // ("P1 Critical (Critical Gap)") instead of the quantum risk bands. Use both
     // signals here so the dialog always agrees with the card behind it.
     const isPqc = isPqcFinding(finding) || _fwHint.includes("PQC");
-    const isVapt = !isPqc && (
-        (finding.control_id && String(finding.control_id).toUpperCase().includes("VAPT")) ||
-        (finding.category && String(finding.category).toUpperCase().includes("VAPT")) ||
-        (typeof activeSessionTitle !== "undefined" && activeSessionTitle && String(activeSessionTitle).toUpperCase().includes("VAPT"))
-    );
+    const isVapt = _vaptMode;
 
     const sevSelect = document.getElementById("edit-finding-severity");
     const rawSev = (finding.severity || "").toUpperCase().trim();
@@ -7385,28 +7457,12 @@ function openEditFindingModal(finding) {
             sevSelect.value = "P3 Medium";
         }
     } else if (isVapt) {
-        // VAPT CVSS v3.1 Score Scale
-        sevSelect.innerHTML = `
-            ${severityIsNil ? '<option value="" disabled selected style="color:var(--text-muted);">— Select Severity —</option>' : ''}
-            <option value="Critical (CVSS 9.0-10.0)">Critical (CVSS 9.0 - 10.0)</option>
-            <option value="High (CVSS 7.0-8.9)">High (CVSS 7.0 - 8.9)</option>
-            <option value="Medium (CVSS 4.0-6.9)">Medium (CVSS 4.0 - 6.9)</option>
-            <option value="Low (CVSS 0.1-3.9)">Low (CVSS 0.1 - 3.9)</option>
-            <option value="Informational (CVSS 0.0)">Informational (CVSS 0.0)</option>
-        `;
-        if (severityIsNil) {
-            sevSelect.value = "";
-        } else if (rawSev.includes("CRIT") || rawSev.includes("9.") || rawSev.includes("10.")) {
-            sevSelect.value = "Critical (CVSS 9.0-10.0)";
-        } else if (rawSev.includes("HIGH") || rawSev.includes("7.") || rawSev.includes("8.")) {
-            sevSelect.value = "High (CVSS 7.0-8.9)";
-        } else if (rawSev.includes("LOW") || rawSev.includes("1.") || rawSev.includes("2.") || rawSev.includes("3.")) {
-            sevSelect.value = "Low (CVSS 0.1-3.9)";
-        } else if (rawSev.includes("INFO") || rawSev.includes("0.0")) {
-            sevSelect.value = "Informational (CVSS 0.0)";
-        } else {
-            sevSelect.value = "Medium (CVSS 4.0-6.9)";
-        }
+        // VAPT: the scanner's band, saved as the parsers write it (HIGH, not
+        // "High (CVSS 7.0-8.9)", which the reports could not count), and
+        // Closed beside them as the KPI row has it.
+        sevSelect.innerHTML = '<option value="" disabled style="color:var(--text-muted);">— Select Severity —</option>'
+            + _VAPT_SEVERITY_OPTIONS.map(([v, t]) => `<option value="${v}">${t}</option>`).join("");
+        sevSelect.value = _vaptState.severity;
     } else {
         // ISO NIST Priority Scale (P1-P4)
         sevSelect.innerHTML = `
@@ -7441,6 +7497,7 @@ function openEditFindingModal(finding) {
     document.getElementById("edit-finding-snippet").value = finding.evidence_snippet || "";
     document.getElementById("edit-finding-recommendation").value = finding.recommendation || "";
     document.getElementById("edit-finding-reasoning").value = getCleanFindingDescription(finding);
+    if (_vaptMode) _fillVaptFields(finding);
 
     document.getElementById("edit-finding-modal").classList.add("active");
 }
@@ -7542,6 +7599,146 @@ function _applyModifyStatusOptions(select, current) {
     });
 }
 
+// ── A VAPT finding in the Modify dialog ──────────────────────────────────────
+//
+// A VAPT finding is a vulnerability, never "Compliant": the dialog offered
+// Compliant / Non-Compliant and the ISO labels. Its status is now one of the
+// KPI boxes -- Open (a severity), Informational or Closed -- with Closed in the
+// severity list too, as the KPI row has it; and what the scanner reported
+// (target, CVSS score and vector, CVE / CWE, risk category, CIA impact, tool,
+// confidence, developer steps) is editable. Every other framework's dialog is
+// as it was.
+const _VAPT_STATUS_OPTIONS = [
+    ["Non-Compliant", "Open (vulnerability)"],
+    ["Informational", "Informational"],
+    ["Closed", "Closed (remediated)"],
+];
+const _VAPT_SEVERITY_OPTIONS = [
+    ["CRITICAL", "Critical (CVSS 9.0 - 10.0)"],
+    ["HIGH", "High (CVSS 7.0 - 8.9)"],
+    ["MEDIUM", "Medium (CVSS 4.0 - 6.9)"],
+    ["LOW", "Low (CVSS 0.1 - 3.9)"],
+    ["INFO", "Informational (CVSS 0.0)"],
+    ["CLOSED", "Closed (remediated)"],
+];
+const _EDIT_LABELS_VAPT = {
+    "edit-status-label": "Finding Status",
+    "edit-desc-label": "Vulnerability Description",
+    "edit-src-label": "Source File(s)",
+    "edit-snippet-label": "Proof of Concept",
+    "edit-rec-label": "Recommended Remediation",
+};
+
+// CRITICAL / HIGH / MEDIUM / LOW / INFO, as the parsers write it, or "".
+function vaptSeverityWord(sev) {
+    const s = String(sev || "").toUpperCase();
+    if (s.includes("CRIT")) return "CRITICAL";
+    if (s.includes("HIGH")) return "HIGH";
+    if (s.includes("MED")) return "MEDIUM";
+    if (s.includes("LOW")) return "LOW";
+    if (s.includes("INFO")) return "INFO";
+    return "";
+}
+
+// What the dialog opens on: {status, severity} ("" severity = not set).
+function vaptDialogState(f) {
+    const st = String((f && f.status) || "").trim().toUpperCase();
+    const verdict = String((f && f.final_result) || "").trim().toUpperCase();
+    const sev = vaptSeverityWord(f && f.severity);
+    if (st === "CLOSED" || verdict === "CLOSED") return { status: "Closed", severity: "CLOSED" };
+    if (sev === "INFO" || st.includes("INFORMATIONAL")) return { status: "Informational", severity: "INFO" };
+    return { status: "Non-Compliant", severity: sev };
+}
+
+// What the dialog saves: {status, severity}. A closed finding keeps the
+// severity it had (null = leave it), which the reports print beside Closed;
+// "" means an open vulnerability with no severity chosen.
+function vaptDialogSave(statusChoice, severityChoice, originalSeverity) {
+    if (statusChoice === "Closed" || severityChoice === "CLOSED") {
+        return { status: "Closed", severity: vaptSeverityWord(originalSeverity) || null };
+    }
+    if (statusChoice === "Informational" || severityChoice === "INFO") {
+        return { status: "Informational", severity: "INFO" };
+    }
+    return { status: "Non-Compliant", severity: severityChoice || "" };
+}
+
+// The same test the dialog always used for a VAPT finding (PQC excluded).
+function _isVaptDialogFinding(finding, fwHint) {
+    if (isPqcFinding(finding) || fwHint.includes("PQC")) return false;
+    return (finding.control_id && String(finding.control_id).toUpperCase().includes("VAPT")) ||
+        (finding.category && String(finding.category).toUpperCase().includes("VAPT")) ||
+        (typeof activeSessionTitle !== "undefined" && activeSessionTitle && String(activeSessionTitle).toUpperCase().includes("VAPT"));
+}
+
+function _editDialogIsVapt() {
+    const m = document.getElementById("edit-finding-modal");
+    return !!(m && m.dataset.mode === "vapt");
+}
+
+// Labels, the status list and the VAPT fields for the finding being opened.
+// Explicit both ways: the modal is reused, so what one finding set must be
+// put back for the next.
+function _setEditDialogMode(vapt, statusSelect) {
+    const modal = document.getElementById("edit-finding-modal");
+    if (modal) modal.dataset.mode = vapt ? "vapt" : "";
+    Object.keys(_EDIT_LABELS_VAPT).forEach(id => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        if (el.dataset.isoText === undefined) el.dataset.isoText = el.textContent;
+        el.textContent = vapt ? _EDIT_LABELS_VAPT[id] : el.dataset.isoText;
+    });
+    ["edit-vapt-fields", "edit-vapt-steps-group"].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.style.display = vapt ? "" : "none";
+    });
+    if (statusSelect) {
+        if (statusSelect.dataset.isoOptions === undefined) statusSelect.dataset.isoOptions = statusSelect.innerHTML;
+        statusSelect.innerHTML = vapt
+            ? _VAPT_STATUS_OPTIONS.map(([v, t]) => `<option value="${v}">${t}</option>`).join("")
+            : statusSelect.dataset.isoOptions;
+    }
+}
+
+function _fillVaptFields(f) {
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = (v === null || v === undefined) ? "" : v; };
+    const target = f.target || ((String(f.evidence_snippet || "").match(/^Target Host:\s*(.+)$/m) || [])[1] || "");
+    const score = (f.severity_score === null || f.severity_score === undefined || f.severity_score === "")
+        ? "" : Number(f.severity_score).toFixed(1);
+    const conf = String(f.confidence || "");
+    const confCap = conf.charAt(0).toUpperCase() + conf.slice(1).toLowerCase();
+    set("edit-vapt-target", String(target).trim());
+    set("edit-vapt-score", score);
+    set("edit-vapt-vector", f.cvss_vector || "");
+    set("edit-vapt-refs", f.cve_refs || (Array.isArray(f.cve_list) ? f.cve_list.join(", ") : ""));
+    set("edit-vapt-category", f.category || "");
+    set("edit-vapt-cia", f.cia_impact || "");
+    set("edit-vapt-tool", f.source_tool || "");
+    set("edit-vapt-confidence", ["Certain", "Firm", "Tentative"].includes(confCap) ? confCap : "");
+    set("edit-vapt-steps", f.remediation_actionable || "");
+}
+
+// Status and severity move together: Closed <-> Closed, Informational <->
+// Informational, a band <-> Open.
+function _vaptSyncFromStatus() {
+    const st = document.getElementById("edit-finding-status").value;
+    const sev = document.getElementById("edit-finding-severity");
+    if (st === "Closed") sev.value = "CLOSED";
+    else if (st === "Informational") sev.value = "INFO";
+    else if (!sev.value || sev.value === "CLOSED" || sev.value === "INFO") {
+        const band = vaptSeverityWord(document.getElementById("edit-finding-modal").dataset.origSeverity);
+        sev.value = (band && band !== "INFO") ? band : "";
+    }
+    _updateSeverityVisibility(st);
+}
+
+function _vaptSyncFromSeverity() {
+    const v = document.getElementById("edit-finding-severity").value;
+    const st = v === "CLOSED" ? "Closed" : v === "INFO" ? "Informational" : "Non-Compliant";
+    document.getElementById("edit-finding-status").value = st;
+    _updateSeverityVisibility(st);
+}
+
 function closeEditFindingModal() {
     document.getElementById("edit-finding-modal").classList.remove("active");
 }
@@ -7572,6 +7769,30 @@ async function handleEditFindingSubmit(e) {
         reasoning: descValue,
         custom_heading: customHeadingVal.trim() || null
     };
+
+    // A VAPT finding: its own status / severity, and what the scanner reported.
+    if (_editDialogIsVapt()) {
+        const v = vaptDialogSave(chosenStatus, document.getElementById("edit-finding-severity").value,
+                                 document.getElementById("edit-finding-modal").dataset.origSeverity);
+        if (v.severity === "") {
+            alert("Choose a severity for this open vulnerability, or mark it Informational or Closed.");
+            return;
+        }
+        body.status = v.status;
+        body.severity = v.severity;          // null: a closed finding keeps its own
+        const val = id => String((document.getElementById(id) || {}).value || "").trim();
+        Object.assign(body, {
+            target: val("edit-vapt-target"),
+            severity_score: val("edit-vapt-score"),
+            cvss_vector: val("edit-vapt-vector"),
+            cve_refs: val("edit-vapt-refs"),
+            category: val("edit-vapt-category"),
+            cia_impact: val("edit-vapt-cia"),
+            source_tool: val("edit-vapt-tool"),
+            confidence: val("edit-vapt-confidence"),
+            remediation_actionable: val("edit-vapt-steps"),
+        });
+    }
 
     try {
         const response = await authFetch(`${API_BASE}/audit/findings/${id}`, {

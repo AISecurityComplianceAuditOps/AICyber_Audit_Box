@@ -47,6 +47,9 @@ AFFIRMING_STATUSES = ("ACCEPTED", "CONFIRMED")
 # was met, so these must not overwrite a verdict.
 WORKFLOW_ONLY_STATUSES = ("REJECTED", "DISMISSED", "FALSE_POSITIVE", "OUT_OF_SCOPE", "EXCLUDED")
 
+# A VAPT finding the pentest report, or the auditor, records as fixed.
+CLOSED_STATUS = "CLOSED"
+
 # Statuses that assert a real shortfall.
 FAILING_STATUSES = (
     "NON_COMPLIANT", "NONCOMPLIANT", "FAIL", "FAILED", "GAP",
@@ -76,6 +79,11 @@ def derive_final_result(status, current_final_result=None):
         return "COMPLIANT"
     if normalised in AFFIRMING_STATUSES or normalised in WORKFLOW_ONLY_STATUSES:
         return str(current_final_result or "").strip().upper() or "NON_COMPLIANT"
+    # A VAPT finding recorded as fixed (only VAPT has this status). Its own
+    # verdict, so Accept -- which keeps the verdict -- leaves it closed; it is
+    # not a pass (is_compliant_verdict reads only COMPLIANT as one).
+    if normalised == CLOSED_STATUS:
+        return CLOSED_STATUS
     return "NON_COMPLIANT"
 
 

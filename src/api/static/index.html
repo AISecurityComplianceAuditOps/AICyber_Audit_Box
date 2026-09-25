@@ -1330,7 +1330,7 @@
                 </div>
 
                 <div class="form-group">
-                    <label>Compliance Status</label>
+                    <label id="edit-status-label">Compliance Status</label>
                     <select id="edit-finding-status">
                         <option value="Compliant">Compliant</option>
                         <option value="Partially Compliant">Partially Compliant</option>
@@ -1368,25 +1368,80 @@
                     </select>
                 </div>
 
+                <!-- What the scanner reported about a VAPT finding. Shown for VAPT
+                     findings only (openEditFindingModal); hidden for every other
+                     framework, and never sent for them. -->
+                <div id="edit-vapt-fields" style="display:none;">
+                    <div class="form-group">
+                        <label>Target Host / URL</label>
+                        <input type="text" id="edit-vapt-target" style="width:100%;"
+                            placeholder="e.g. https://portal.example.com/login [username parameter]">
+                    </div>
+                    <div class="form-row-2">
+                        <div class="form-group">
+                            <label>CVSS Score <span style="color:#64748b; font-weight:400; font-size:0.78rem;">(0.0 - 10.0; empty = none assigned)</span></label>
+                            <input type="text" inputmode="decimal" id="edit-vapt-score" placeholder="e.g. 7.5">
+                        </div>
+                        <div class="form-group">
+                            <label>CVSS Vector</label>
+                            <input type="text" id="edit-vapt-vector" placeholder="e.g. CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>CVE / CWE References <span style="color:#64748b; font-weight:400; font-size:0.78rem;">(comma-separated)</span></label>
+                        <input type="text" id="edit-vapt-refs" style="width:100%;" placeholder="e.g. CVE-2021-44228, CWE-502">
+                    </div>
+                    <div class="form-row-2">
+                        <div class="form-group">
+                            <label>Risk Category</label>
+                            <input type="text" id="edit-vapt-category" placeholder="e.g. Injection">
+                        </div>
+                        <div class="form-group">
+                            <label>CIA Impact</label>
+                            <input type="text" id="edit-vapt-cia" placeholder="e.g. C:HIGH | I:HIGH | A:NONE">
+                        </div>
+                    </div>
+                    <div class="form-row-2">
+                        <div class="form-group">
+                            <label>Scanner / Tool</label>
+                            <input type="text" id="edit-vapt-tool" placeholder="e.g. Burp Suite">
+                        </div>
+                        <div class="form-group">
+                            <label>Confidence</label>
+                            <select id="edit-vapt-confidence">
+                                <option value="">Not stated</option>
+                                <option value="Certain">Certain</option>
+                                <option value="Firm">Firm</option>
+                                <option value="Tentative">Tentative</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="form-group">
-                    <label>Detailed Finding Description</label>
+                    <label id="edit-desc-label">Detailed Finding Description</label>
                     <textarea id="edit-finding-reasoning"></textarea>
                 </div>
 
                 <div class="form-group">
-                    <label>Evidence Cross Reference Source (Document &amp; File Path)</label>
+                    <label id="edit-src-label">Evidence Cross Reference Source (Document &amp; File Path)</label>
                     <textarea id="edit-finding-source-files" rows="2"
                         placeholder="e.g. ISO_27001_Access_Policy.pdf (c:\Users\...\uploads\ISO_27001_Access_Policy.pdf)"></textarea>
                 </div>
 
                 <div class="form-group">
-                    <label>Evidence Text Snippet / Quotation</label>
+                    <label id="edit-snippet-label">Evidence Text Snippet / Quotation</label>
                     <textarea id="edit-finding-snippet"></textarea>
                 </div>
 
                 <div class="form-group">
-                    <label>Lead Auditor Recommendations</label>
+                    <label id="edit-rec-label">Lead Auditor Recommendations</label>
                     <textarea id="edit-finding-recommendation"></textarea>
+                </div>
+
+                <div class="form-group" id="edit-vapt-steps-group" style="display:none;">
+                    <label>Developer Actionable Mitigation Steps</label>
+                    <textarea id="edit-vapt-steps"></textarea>
                 </div>
 
                 <div class="modal-actions">
@@ -2121,7 +2176,7 @@
     <script src="/static/js/config.js?v=20260807_v410055"></script>
     <script src="/static/js/sidebar.js?v=20260807_v410055"></script>
     <script src="/static/js/admin.js?v=20260807_v410055"></script>
-    <script src="/static/app.js?v=20260925_v410059"></script>
+    <script src="/static/app.js?v=20260925_v410062"></script>
 </body>
 
 </html>

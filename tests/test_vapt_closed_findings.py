@@ -50,13 +50,15 @@ def test_the_worker_stores_a_closed_finding_as_closed_with_its_severity(tmp_path
     s = S()
     try:
         rep = s.query(AuditReport).filter(AuditReport.session_id == "c1").first()
-        got = {r.control_name: (r.status, r.severity) for r in s.query(Finding).filter(Finding.report_id == rep.id)}
+        got = {r.control_name: (r.status, r.severity, r.final_result)
+               for r in s.query(Finding).filter(Finding.report_id == rep.id)}
     finally:
         s.close()
     by = {t: next(v for k, v in got.items() if t in k) for t in ("SQL Injection", "HSTS", "TLS")}
-    assert by["SQL Injection"] == ("Non-Compliant", "CRITICAL")
-    assert by["HSTS"] == ("Closed", "LOW")
-    assert by["TLS"] == ("Closed", "HIGH")
+    assert by["SQL Injection"] == ("Non-Compliant", "CRITICAL", None)
+    # The verdict CLOSED too, so an Accept (which keeps the verdict) leaves it closed.
+    assert by["HSTS"] == ("Closed", "LOW", "CLOSED")
+    assert by["TLS"] == ("Closed", "HIGH", "CLOSED")
 
 
 # -- the reports --------------------------------------------------------------
@@ -70,15 +72,16 @@ def _findings():
         dict(base, control_id="VAPT-1", title="SQL Injection", severity="HIGH", status="Non-Compliant",
              final_result="NON_COMPLIANT", evidence_snippet="proof"),
         dict(base, control_id="VAPT-2", title="Missing HSTS", severity="LOW", status="Closed",
-             final_result="NON_COMPLIANT", evidence_snippet=_CLOSED_NOTE),
+             final_result="CLOSED", evidence_snippet=_CLOSED_NOTE),
         dict(base, control_id="VAPT-3", title="Server banner", severity="INFO", status="Informational",
              final_result="NON_COMPLIANT", evidence_snippet="Server: nginx"),
-        # Accept confirms a closed finding: still closed.
+        # Accept confirms a closed finding (keeps its verdict CLOSED): still closed.
         dict(base, control_id="VAPT-4", title="Weak TLS", severity="MEDIUM", status="Accepted",
-             final_result="NON_COMPLIANT", evidence_snippet=_CLOSED_NOTE),
-        # Accept on an open one: still an open Medium.
+             final_result="CLOSED", evidence_snippet=_CLOSED_NOTE),
+        # Accept on an open one: still an open Medium. So is one the auditor
+        # reopened, although its proof still carries the report's closed line.
         dict(base, control_id="VAPT-5", title="Clickjacking", severity="MEDIUM", status="Accepted",
-             final_result="NON_COMPLIANT", evidence_snippet="no X-Frame-Options"),
+             final_result="NON_COMPLIANT", evidence_snippet=_CLOSED_NOTE),
         dict(base, control_id="VAPT-6", title="Rejected one", severity="CRITICAL", status="Rejected",
              final_result="NON_COMPLIANT", evidence_snippet="x"),
     ]
@@ -145,8 +148,8 @@ PAGE_FINDINGS = [
     {"severity": "HIGH", "status": "Non-Compliant", "final_result": "NON_COMPLIANT"},
     {"severity": "HIGH", "status": "Non-Compliant", "final_result": "NON_COMPLIANT"},
     {"severity": "LOW", "status": "Non-Compliant", "final_result": "NON_COMPLIANT"},
-    {"severity": "LOW", "status": "Closed", "final_result": "NON_COMPLIANT"},
-    {"severity": "MEDIUM", "status": "Accepted", "final_result": "NON_COMPLIANT",
+    {"severity": "LOW", "status": "Closed", "final_result": "CLOSED"},
+    {"severity": "MEDIUM", "status": "Accepted", "final_result": "CLOSED",
      "evidence_snippet": "Status in report: Closed / remediated"},
     {"severity": "INFO", "status": "Informational", "final_result": "NON_COMPLIANT"},
     {"severity": "CRITICAL", "status": "Rejected", "final_result": "NON_COMPLIANT"},

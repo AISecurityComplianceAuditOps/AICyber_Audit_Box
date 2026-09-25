@@ -44,7 +44,7 @@ def _section_host_ip(block) -> str:
     """The host a block of a "vulnerabilities by host" HTML export belongs to.
 
     That export lists each host once, in a "Host Information" table ("IP: |
-    3.108.211.52"), and under it the host's plugins, whose own output names
+    203.0.113.52"), and under it the host's plugins, whose own output names
     only the port ("tcp/445/cifs"). Read block by block, 347 findings of a real
     export had no host at all.
     """
@@ -55,6 +55,59 @@ def _section_host_ip(block) -> str:
     value = td.find_next_sibling("td")
     m = re.search(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", value.get_text() if value else "")
     return m.group(0) if m else ""
+
+
+# "tcp/445/cifs" -- the first line of each instance's output in a "by host"
+# HTML export ("tcp/0" for a host-level plugin).
+_PORT_LINE_RE = re.compile(r'(?m)^[ \t]*(tcp|udp|sctp)/(\d{1,5})(?:/([\w\-.]+))?[ \t]*$', re.IGNORECASE)
+
+
+def _with_ports(host, output):
+    """host:port/proto (service) for each port the instance's output names,
+    as the .nessus reader writes it; the host alone for a host-level plugin.
+
+    The HTML reader kept only the host, so one plugin on two ports of a host
+    ("SMB Service Detection" on 139 and on 445) had the same identity and the
+    worker's duplicate check kept one: a real export lost 10 of 347 findings.
+    """
+    if not host or host == _NO_HOST or "," in host:
+        return host
+    seen = []
+    for proto, port, svc in _PORT_LINE_RE.findall(output or ""):
+        if port == "0":
+            continue
+        t = f"{host}:{port}/{proto.lower()}" + (f" ({svc})" if svc and svc.lower() != "general" else "")
+        if t not in seen:
+            seen.append(t)
+    return ", ".join(seen) if seen else host
+
+
+def _text_with_breaks(tag):
+    """The block's text with each <br> kept as a line break. Dropped, the
+    sentences either side ran together: "privilege escalation attacks.An
+    unprivileged user..." in 21 descriptions and solutions of a real export."""
+    for br in tag.find_all("br"):
+        br.replace_with("\n")
+    return tag.get_text()
+
+
+def _plugin_details(txt):
+    """A plugin block's own details: everything before its output."""
+    return re.split(r'\n\s*Plugin Output\s*\n', txt or "", maxsplit=1)[0]
+
+
+def _stated_cves(txt, title=""):
+    """The plugin's own CVEs: its References entries and its title.
+
+    Not every CVE its output mentions: the "Patch Report" plugin lists the
+    CVEs of the patches it recommends, was given them, and so took a KEV
+    badge and the identity of the WinRAR finding it named (CVE-2025-8088),
+    which the worker then dropped as a duplicate.
+    """
+    details = _plugin_details(txt)
+    m = re.search(r'\n\s*References\s*\n(.*)', details, re.S)
+    scope = (m.group(1) if m else details) + " " + (title or "")
+    return sorted(set(c.upper() for c in re.findall(r'CVE-\d{4}-\d{4,7}', scope, re.IGNORECASE)))
 
 
 def _stated_target(content: str) -> str:
@@ -236,7 +289,7 @@ class NessusParser(BaseParser):
         wrappers = soup.find_all('div', class_='section-wrapper')
         if wrappers:
             for w in wrappers:
-                txt = w.get_text()
+                txt = _text_with_breaks(w)
                 header = w.find_previous_sibling('div')
                 h_text = header.get_text().strip() if header else ''
                 
@@ -263,10 +316,13 @@ class NessusParser(BaseParser):
                 else:
                     severity = raw_sev.upper()
 
-                m_cvss = re.search(r'CVSS\s*(?:v[32]\.0)?\s*Base\s*Score\s*:?\s*([\d\.]+)', txt, re.IGNORECASE)
+                # Score, vector and CVEs from the plugin's own details, never
+                # from what its output happens to mention.
+                _details = _plugin_details(txt)
+                m_cvss = re.search(r'CVSS\s*(?:v[32]\.0)?\s*Base\s*Score\s*:?\s*([\d\.]+)', _details, re.IGNORECASE)
                 if not m_cvss:
-                    m_cvss = re.search(r'CVSS\s*Score\s*:?\s*([\d\.]+)', txt, re.IGNORECASE)
-                
+                    m_cvss = re.search(r'CVSS\s*Score\s*:?\s*([\d\.]+)', _details, re.IGNORECASE)
+
                 score = None
                 if m_cvss:
                     try:
@@ -276,10 +332,10 @@ class NessusParser(BaseParser):
 
                 severity, score = _stated_severity(raw_sev, score)
 
-                m_vec = re.search(r'\(CVSS:3\.0/([^\)]+)\)', txt)
+                m_vec = re.search(r'\(CVSS:3\.0/([^\)]+)\)', _details)
                 cvss_vector = f"CVSS:3.0/{m_vec.group(1)}" if m_vec else None
 
-                cves = sorted(list(set(re.findall(r'CVE-\d{4}-\d{4,7}', txt, re.IGNORECASE))))
+                cves = _stated_cves(txt, title)
 
                 desc = ""
                 m_desc = re.search(r'Description\s*\n\s*(.*?)(?=\n\s*(?:See Also|Solution|Risk Factor|Plugin Information|Plugin Output|$))', txt, re.DOTALL)
@@ -300,8 +356,16 @@ class NessusParser(BaseParser):
                         r'\s*[:/]\s*(\d{1,5})\s*[:/]\s*(tcp|udp)',
                         t_str, re.IGNORECASE
                     )
+                    # A "by plugin" export heads each output "203.0.113.52
+                    # (tcp/445/cifs)"; "(tcp/0)" is host-level.
+                    m_paren = re.search(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\s*\(\s*(tcp|udp|sctp)/(\d{1,5})(?:/([\w\-.]+))?\s*\)',
+                                        t_str, re.IGNORECASE)
                     if m_full:
                         targets.append(f"{m_full.group(1)}:{m_full.group(2)}/{m_full.group(3).lower()}")
+                    elif m_paren:
+                        ip, proto, port, svc = m_paren.groups()
+                        targets.append(ip if port == "0" else
+                                       f"{ip}:{port}/{proto.lower()}" + (f" ({svc})" if svc and svc.lower() != "general" else ""))
                     else:
                         m_ip = re.search(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})', t_str)
                         if m_ip:
@@ -332,7 +396,7 @@ class NessusParser(BaseParser):
                     cve_list=cves,
                     description=desc,
                     remediation=remed,
-                    target=t_host,
+                    target=_with_ports(t_host, evidence if m_out else ""),
                     evidence=evidence,
                     source_tool="Nessus"
                 )
@@ -347,7 +411,7 @@ class NessusParser(BaseParser):
 
         # 2. Fallback to generic leaf div search
         for div in soup.find_all('div'):
-            txt = div.get_text()
+            txt = _text_with_breaks(div)
             if 'Risk Factor' in txt and 'Synopsis' in txt and 'Description' in txt:
                 # Ensure this is a leaf plugin container div
                 if any('Risk Factor' in child.get_text() and 'Synopsis' in child.get_text() for child in div.find_all('div', recursive=False)):
@@ -376,15 +440,15 @@ class NessusParser(BaseParser):
                 else:
                     severity = raw_sev.upper()
 
-                # Extract CVSS Score & Vector
-                m_cvss = re.search(r'CVSS v3\.0 Base Score\s*\n*\s*([\d\.]+)', txt)
+                # Extract CVSS Score & Vector -- and CVEs -- from the plugin's
+                # own details, not from what its output mentions.
+                m_cvss = re.search(r'CVSS v3\.0 Base Score\s*\n*\s*([\d\.]+)', _plugin_details(txt))
                 score = float(m_cvss.group(1)) if m_cvss else None
 
-                m_vec = re.search(r'\(CVSS:3\.0/([^\)]+)\)', txt)
+                m_vec = re.search(r'\(CVSS:3\.0/([^\)]+)\)', _plugin_details(txt))
                 cvss_vector = f"CVSS:3.0/{m_vec.group(1)}" if m_vec else None
 
-                # Extract CVEs
-                cves = sorted(list(set(re.findall(r'CVE-\d{4}-\d{4,7}', txt, re.IGNORECASE))))
+                cves = _stated_cves(txt, title)
 
                 # Extract Synopsis / Description
                 desc = ""
@@ -707,9 +771,10 @@ class NessusParser(BaseParser):
             raw_sev = m_rf.group(1).strip() if m_rf else "INFO"
             severity = "INFO" if raw_sev.lower() in ("none", "informational") else raw_sev.upper()
 
-            m_cvss = re.search(r'CVSS\s*(?:v[32]\.0)?\s*Base\s*Score\s*:?\s*([\d\.]+)', txt, re.IGNORECASE)
+            _details = _plugin_details(txt)       # not what the output mentions
+            m_cvss = re.search(r'CVSS\s*(?:v[32]\.0)?\s*Base\s*Score\s*:?\s*([\d\.]+)', _details, re.IGNORECASE)
             if not m_cvss:
-                m_cvss = re.search(r'CVSS\s*Score\s*:?\s*([\d\.]+)', txt, re.IGNORECASE)
+                m_cvss = re.search(r'CVSS\s*Score\s*:?\s*([\d\.]+)', _details, re.IGNORECASE)
             score = None
             if m_cvss:
                 try:
@@ -718,10 +783,10 @@ class NessusParser(BaseParser):
                     score = None
             severity, score = _stated_severity(raw_sev, score)
 
-            m_vec = re.search(r'\(CVSS:3\.0/([^\)]+)\)', txt)
+            m_vec = re.search(r'\(CVSS:3\.0/([^\)]+)\)', _details)
             cvss_vector = f"CVSS:3.0/{m_vec.group(1)}" if m_vec else None
 
-            cves = sorted(list(set(re.findall(r'CVE-\d{4}-\d{4,7}', txt, re.IGNORECASE))))
+            cves = _stated_cves(txt, title)
 
             desc = ""
             m_desc = re.search(r'Description\s*\n\s*(.*?)(?=\n\s*(?:See Also|Solution|Risk Factor|Plugin Information|Plugin Output|$))', txt, re.DOTALL)

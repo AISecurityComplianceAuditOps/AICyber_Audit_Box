@@ -13,6 +13,9 @@ except ImportError:
     _HTML_PARSER = "html.parser"
     _XML_PARSER = "html.parser"
 from .finding_schema import Finding, full_poc
+
+# What a finding says when the report names no host (as the Nessus reader).
+_NO_TARGET = "Not recorded"
 from .control_mapper import map_findings_list
 
 # Phrases that mean the surrounding sentence is NOT reporting a live vulnerability:
@@ -76,7 +79,9 @@ _SECTION_END = (
     r'|Vulnerability\s+classifications'
     r'|(?:HTTP\s+)?Request\s+\d'
     r'|(?:HTTP\s+)?Response\s+\d'
-    r'|\d{1,3}\.\s+[A-Z])'
+    # Not glued to a "." or a letter: "uses AngularJS v1.7.7. This proof..."
+    # ended the Client-side template injection detail at "v1.7."
+    r'|(?<![\w.])\d{1,3}\.\s+[A-Z])'
     r'|$)'
 )
 _ISSUE_DETAIL_RE = r'Issue detail[s]?\s*[:\n]?\s*(.*?)' + _SECTION_END
@@ -417,6 +422,17 @@ class BurpParser(BaseParser):
         # it is None. The one unguarded comparison raised TypeError, so every
         # Burp HTML export failed to parse at all; the guarded ones never
         # stopped, and each issue collected the CWEs of every issue after it.
+        # A <br> is a line break. get_text() drops it, and a request came out
+        # as one line: "GET /catalog/filter?category=Books HTTP/2Host:
+        # ginandjuice.shopAccept-Encoding: gzip, deflate..."; the paragraphs
+        # of an issue detail ran together the same way.
+        for _br in soup.find_all("br"):
+            _br.replace_with("\n")
+        # ...and so is the end of a list item: "does not have the secure flag
+        # set: AWSALB" read "set:AWSALBThe cookie does not...".
+        for _li in soup.find_all(["li", "p"]):      # and of a paragraph
+            _li.append("\n")
+
         _order = {id(t): i for i, t in enumerate(soup.find_all(True))}
 
         def _pos(tag):
@@ -513,12 +529,28 @@ class BurpParser(BaseParser):
                         next_span = h2.find_next_sibling('span', class_='TEXT')
                         if next_span:
                             remed_detail = next_span.get_text().strip()
+                    elif "collaborator" in h2_text:
+                        # "Collaborator HTTP interaction": what Burp's server
+                        # received -- for an out-of-band finding, the proof
+                        # itself. Its note, then "Request to Collaborator" /
+                        # "Response from Collaborator" and their exchanges,
+                        # up to the next section. It was not read at all.
+                        parts = []
+                        for sib in h2.find_next_siblings():
+                            if sib.name == "h2" or (sib.name == "span" and set(sib.get("class") or []) & {"BODH0", "BODH1"}) \
+                                    or (sib.name == "div" and "rule" in (sib.get("class") or [])):
+                                break
+                            txt = sib.get_text().strip()
+                            if txt:
+                                parts.append(txt)
+                        if parts:
+                            evidence += f"\n[{h2.get_text().strip()}]\n" + "\n\n".join(parts) + "\n"
                     elif "request" in h2_text or "response" in h2_text:
                         rr_div = h2.find_next_sibling('div', class_='rr_div')
                         if rr_div:
                             evidence += f"\n[{h2.get_text().strip()}]\n{rr_div.get_text().strip()}\n"
 
-                target_str = f"{host}{path}".strip() if host else (path or "Web Application Endpoint")
+                target_str = f"{host}{path}".strip() if host else (path or _NO_TARGET)
 
                 # Clean Title formatting
                 if is_b1 and inst_title and inst_title != cat_title:
@@ -661,7 +693,7 @@ class BurpParser(BaseParser):
                 cvss_vector=cvss_vector,
                 confidence=raw_conf,
                 cve_list=cves,
-                target=target_str or "Web Application Endpoint",
+                target=target_str or _NO_TARGET,
                 description=full_desc,
                 remediation=full_remed,
                 evidence=full_poc(evidence) or _detail_poc(desc_detail),
@@ -778,6 +810,16 @@ class BurpParser(BaseParser):
                 if m_vuln:
                     title = m_vuln.group(1).strip()
 
+                # A numbered heading after the last instance line: that URL was
+                # the previous finding's ("6. ... https://.../stock" then "7.
+                # Vulnerable JavaScript dependency"), and finding 7 was given
+                # finding 6's title and URL. The heading is this finding's.
+                _later = (list(re.finditer(r'(?m)^\s*(\d{1,3})\.\s+([A-Z][^\n]{2,120})$',
+                                           pre_text[m_inst[-1].end():])) if m_inst else [])
+                if _later:
+                    m_inst = []
+                    if title == "VAPT Finding":
+                        title = cat_map.get(_later[-1].group(1), _later[-1].group(2).strip())
                 if m_inst:
                     last_inst = m_inst[-1]
                     url = last_inst.group('url') or ''
@@ -785,6 +827,14 @@ class BurpParser(BaseParser):
                     cat_num = last_inst.group('cat_num') or ''
                     target = f"{url} [{param}]" if param else url
                     cat_title = cat_map.get(cat_num, '')
+                    if not cat_title:
+                        # An instance line with no "6.1." number (a page printed
+                        # in part) belongs to the numbered heading above it; the
+                        # URL was being published as the finding's title.
+                        _heads = [h for h in re.finditer(r'(?m)^\s*(\d{1,3})\.\s+([A-Z][^\n]{2,120})$',
+                                                         pre_text[:last_inst.start()])]
+                        if _heads:
+                            cat_title = cat_map.get(_heads[-1].group(1), _heads[-1].group(2).strip())
                     if title == "VAPT Finding":
                         if cat_title:
                             title = f"{cat_title} ({target})" if target else cat_title
@@ -917,12 +967,19 @@ class BurpParser(BaseParser):
                 # "Request" line, missed them, and matched loosely elsewhere --
                 # a delivered report showed a RESPONSE under "[HTTP Request]".
                 evidence = ""
-                _marks = list(re.finditer(r'(?m)^[ \t]*(Request|Response)(?:[ \t]+(\d+))?[ \t]*$', body_text))
+                # The Collaborator interaction is a part of the proof in its own
+                # right -- for an out-of-band finding (XXE, external service
+                # interaction) it IS the proof: the DNS lookup or HTTP request
+                # Burp's server received. It ended the response before it and
+                # was then dropped.
+                _marks = list(re.finditer(
+                    r'(?m)^[ \t]*(Request|Response|Collaborator (?:HTTP|DNS|SMTP) interaction)'
+                    r'(?:[ \t]+(\d+))?[ \t]*$', body_text))
                 # A block ends at the first of these after it -- including the
                 # report's closing line: the last issue's block runs to the end
                 # of the text, where a printed report carries the exchanges its
                 # collapsed sections could not show inline.
-                _stop_re = re.compile(r'(?m)^[ \t]*(?:Collaborator (?:HTTP|DNS) interaction|References|'
+                _stop_re = re.compile(r'(?m)^[ \t]*(?:References|'
                                       r'Vulnerability classifications|Issue background|Issue remediation|'
                                       r'Report generated by Burp Suite)\b')
                 for _k, _mk in enumerate(_marks):
@@ -946,6 +1003,8 @@ class BurpParser(BaseParser):
                     if _is_req or _is_res:
                         _label = f"{_mk.group(1)} {_mk.group(2)}" if _mk.group(2) else _mk.group(1)
                         evidence += f"[HTTP {_label}]\n{_chunk}\n\n"
+                    elif _mk.group(1).startswith("Collaborator") and _chunk:
+                        evidence += f"[{_mk.group(1)}]\n{_chunk}\n\n"
 
                 # No Burp sections: a "Label: value" findings list ("1.
                 # Vulnerability: X / - Host: 192.168.1.105:21 / - Severity:
@@ -969,7 +1028,10 @@ class BurpParser(BaseParser):
                     _t = _lab("Host", "Target", "URL", "Endpoint", r"Affected\s+(?:host|url|asset|system)s?",
                               "Asset", r"IP(?:\s+address)?")
                     if not _t:
-                        _dm = re.search(r'(?im)^\s*(?:Target|URL|Host)\s*[:\-]\s*(\S+)', content[:800])
+                        # The document's own scope line. Not a "Host:" line --
+                        # that is one finding's, and the next finding, which
+                        # names no host, was given it.
+                        _dm = re.search(r'(?im)^\s*(?:Target|URL)\s*[:\-]\s*(\S+)', content[:800])
                         _t = _dm.group(1) if _dm else ""
                     if _t and target == 'Web Application Endpoint':
                         target = _t
@@ -1003,7 +1065,7 @@ class BurpParser(BaseParser):
                     cvss_vector=cvss_vector,
                     confidence=raw_conf,
                     cve_list=cves,
-                    target=target,
+                    target=_NO_TARGET if target == 'Web Application Endpoint' else target,
                     description=desc,
                     remediation=remed,
                     evidence=full_poc(evidence) or (_detail_poc(desc) if _sec is not None else full_poc(desc)),
@@ -1069,7 +1131,7 @@ class BurpParser(BaseParser):
                     # severity stands, flagged for the auditor to confirm.
                     severity_score=None,
                     confidence="Tentative",
-                    target="Web Application Endpoint",
+                    target=_NO_TARGET,
                     description=_description,
                     evidence=full_poc(content),
                     source_tool="Burp Suite / Visual OCR"

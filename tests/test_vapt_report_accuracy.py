@@ -671,8 +671,10 @@ def test_a_nessus_by_host_export_gives_each_finding_its_host():
     a, i = NessusParser().parse("scan_by_host.html", html)
     got = sorted((f.plugin_id, f.title, f.target, f.severity, f.severity_score) for f in a + i)
     title = "MS10-031: Vulnerability in Microsoft Visual Basic for Applications"
-    assert got == [("46313", title, "10.0.0.5", "CRITICAL", 9.8),
-                   ("46313", title, "10.0.0.6", "CRITICAL", 9.8)], got
+    # With the port its output names ("tcp/445/cifs"), as the .nessus reader
+    # writes it: the host alone gave one plugin on two ports one identity.
+    assert got == [("46313", title, "10.0.0.5:445/tcp (cifs)", "CRITICAL", 9.8),
+                   ("46313", title, "10.0.0.6:445/tcp (cifs)", "CRITICAL", 9.8)], got
 
 
 def test_a_subsystem_column_is_the_findings_target_so_two_rows_stay_two():
