@@ -12,7 +12,7 @@ try:
 except ImportError:
     _HTML_PARSER = "html.parser"
     _XML_PARSER = "html.parser"
-from .finding_schema import Finding
+from .finding_schema import Finding, full_poc
 from .control_mapper import map_findings_list
 
 _NESSUS_NUMERIC_SEVERITY = {"0": "INFO", "1": "LOW", "2": "MEDIUM", "3": "HIGH", "4": "CRITICAL"}
@@ -129,7 +129,7 @@ class NessusParser(BaseParser):
 
                 desc = _child_text(item, 'description') or _child_text(item, 'synopsis')
                 remed = _child_text(item, 'solution')
-                evidence = _child_text(item, 'plugin_output') or desc[:500]
+                evidence = full_poc(_child_text(item, 'plugin_output') or desc)
 
                 if port and port != '0':
                     target = f"{display_host}:{port}/{protocol}" + (f" ({svc})" if svc and svc != "general" else "")
@@ -321,7 +321,7 @@ class NessusParser(BaseParser):
                 if m_out:
                     evidence = m_out.group(1).strip()
                 else:
-                    evidence = txt[:500]
+                    evidence = full_poc(txt)
 
                 finding = Finding(
                     plugin_id=plugin_id,
@@ -402,7 +402,7 @@ class NessusParser(BaseParser):
                 targets = []
                 m_out = re.search(r'Plugin Output\s*\n\s*(.*?)(?=\n\s*(?:Algorithm|Risk Factor|$))', txt, re.DOTALL)
                 if m_out:
-                    evidence = m_out.group(1).strip()[:1500]
+                    evidence = full_poc(m_out.group(1))
                     # Try "IP:PORT/tcp" or "IP / PORT / tcp" patterns first
                     full_hits = re.findall(
                         r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'
@@ -523,7 +523,7 @@ class NessusParser(BaseParser):
                 description=desc,
                 remediation=col(row, "solution"),
                 target=target or "Unknown Host",
-                evidence=col(row, "plugin output") or desc[:500],
+                evidence=full_poc(col(row, "plugin output") or desc),
                 source_tool="Nessus",
             )
             if f.severity not in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
@@ -649,7 +649,7 @@ class NessusParser(BaseParser):
                 target=port or _NO_HOST,
                 description=desc or title,
                 remediation=remed,
-                evidence=(body.strip()[:800]) or title,
+                evidence=full_poc(body) or title,
                 plugin_id=f"nessus-text-{i + 1}",
                 source_tool="Nessus",
             )
@@ -749,9 +749,9 @@ class NessusParser(BaseParser):
             evidence = ""
             m_out = re.search(r'Plugin Output\s*\n\s*(.*?)(?=\n\s*(?:Algorithm|Risk Factor|Plugin Information|CVSS|\Z))', txt, re.DOTALL)
             if m_out:
-                evidence = m_out.group(1).strip()[:1500]
+                evidence = full_poc(m_out.group(1))
             else:
-                evidence = txt.strip()[:500]
+                evidence = full_poc(txt)
 
             finding = Finding(
                 plugin_id=plugin_id,

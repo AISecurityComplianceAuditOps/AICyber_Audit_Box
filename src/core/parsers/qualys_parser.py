@@ -14,7 +14,7 @@ try:
 except ImportError:
     _HTML_PARSER = "html.parser"
     _XML_PARSER = "html.parser"
-from .finding_schema import Finding
+from .finding_schema import Finding, full_poc
 from .control_mapper import map_findings_list
 
 # Qualys' standard numeric severity scale (1-5). Different report templates label
@@ -277,7 +277,7 @@ class QualysParser(BaseParser):
                     target=target,
                     description=results_text or title,
                     remediation="Apply vendor patch per Qualys solution guidance.",
-                    evidence=results_text[:500] if results_text else f"QID {qid}",
+                    evidence=full_poc(results_text) if results_text else f"QID {qid}",
                     plugin_id=qid,
                     source_tool="Qualys",
                 ))
@@ -352,7 +352,7 @@ class QualysParser(BaseParser):
                 target=target,
                 description="\n\n".join(p for p in (threat, consequence) if p) or title,
                 remediation=solution,
-                evidence=(result[:500] if result else "") or (f"QID {qid}" if qid else ""),
+                evidence=(full_poc(result) if result else "") or (f"QID {qid}" if qid else ""),
                 plugin_id=qid,
                 source_tool="Qualys",
             ))

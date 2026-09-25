@@ -4984,6 +4984,37 @@ function isPqcFinding(f) {
     return !!(f && f.quantum_status);
 }
 
+// A VAPT finding the pentest report records as closed / remediated: status
+// "Closed", or an Accepted one whose proof says so (Accept confirms it). A
+// finding the auditor reopened is open. Only ever true on a VAPT session --
+// no other framework has closed findings -- so ISO, PQC and the rest keep
+// every count and filter they had.
+function isFindingClosed(f) {
+    if (!f || !isVaptOnlySession()) return false;
+    const st = String(f.status || "").trim().toLowerCase();
+    if (st === "closed") return true;
+    if (st === "accepted" || st === "confirmed") {
+        return /Status in report:\s*Closed/i.test(String(f.evidence_snippet || f.evidence || ""));
+    }
+    return false;
+}
+
+// A VAPT session's Informational / Closed / Total boxes: select that status,
+// or clear it on a second click.
+function toggleVaptStatusFilter(value) {
+    document.querySelectorAll(".kpi-box").forEach(b => b.style.outline = "none");
+    const sel = document.getElementById("status-filter");
+    const next = (sel && sel.value === value) ? "All" : value;
+    if (sel) sel.value = next;
+    activeSeverityFilter = "";
+    activeComplianceFilter = "";
+    currentFilter = next === "All" ? "all" : next;
+    const box = { Informational: ".info-box", Closed: ".closed-box" }[next];
+    const el = box ? document.querySelector(`#kpi-row-vapt ${box}`) : null;
+    if (el) el.style.outline = "2px solid #3b82f6";
+    renderFindingsList();
+}
+
 function isFindingInformational(f) {
     const sev = (f.severity || "").toUpperCase();
     const st = (f.status || "").toUpperCase();
@@ -5034,8 +5065,22 @@ function syncStatusFilterForSession() {
         }
         if (comp) comp.hidden = vapt;
         info.hidden = !vapt;
+        let closedOpt = sel.querySelector('option[value="Closed"]');
+        if (!closedOpt) {
+            closedOpt = new Option("Closed (remediated per report)", "Closed");
+            sel.insertBefore(closedOpt, info.nextSibling);
+        }
+        closedOpt.hidden = !vapt;
         if (vapt && sel.value === "Compliant") sel.value = "All";
-        if (!vapt && sel.value === "Informational") sel.value = "All";
+        if (!vapt && (sel.value === "Informational" || sel.value === "Closed")) sel.value = "All";
+    }
+    // VAPT sessions have their own row of counters, in the order a VAPT report
+    // reads: Critical, High, Medium, Low, Informational, Closed, Total.
+    const stdRow = document.getElementById("kpi-row-standard");
+    const vaptRow = document.getElementById("kpi-row-vapt");
+    if (stdRow && vaptRow) {
+        stdRow.style.display = vapt ? "none" : "";
+        vaptRow.style.display = vapt ? "" : "none";
     }
     const label = document.querySelector(".kpi-box.compliant-box .kpi-label");
     if (label) {
@@ -5121,7 +5166,8 @@ function toggleSeverityFilter(sev) {
         else if (sev.includes("P4")) selector = ".p4-box";
 
         if (selector) {
-            const box = document.querySelector(selector);
+            const row = isVaptOnlySession() ? "#kpi-row-vapt" : "#kpi-row-standard";
+            const box = document.querySelector(`${row} ${selector}`) || document.querySelector(selector);
             if (box) box.style.outline = "2px solid #3b82f6";
         }
     }
@@ -5165,6 +5211,8 @@ function calculateSeverityStats(currentExpandedCards) {
     let p2Count = 0;
     let p3Count = 0;
     let p4Count = 0;
+    let closedCount = 0;
+    let totalCount = 0;
 
     const cardsToCount = currentExpandedCards || [];
 
@@ -5172,6 +5220,9 @@ function calculateSeverityStats(currentExpandedCards) {
         cardsToCount.forEach(item => {
             const f = item.originalFinding;
             const singleSnip = item.singleSnippet;
+            totalCount++;
+            // A closed VAPT finding counts under Closed only (never true elsewhere).
+            if (isFindingClosed(f)) { closedCount++; return; }
             // A VAPT informational result is not a gap (only VAPT sessions list them).
             if (isFindingInformational(f)) { infoCount++; return; }
             const isComp = isFindingCompliant(f, singleSnip);
@@ -5191,6 +5242,8 @@ function calculateSeverityStats(currentExpandedCards) {
         (findingsList || []).forEach(f => {
             const statusLower = (f.status || "").toLowerCase();
             if (statusLower === "rejected" || statusLower === "excluded") return;
+            totalCount++;
+            if (isFindingClosed(f)) { closedCount++; return; }
             if (isFindingInformational(f)) { infoCount++; return; }
 
             const isComp = isFindingCompliant(f);
@@ -5226,6 +5279,16 @@ function calculateSeverityStats(currentExpandedCards) {
 
     const elP4 = document.getElementById("count-p4");
     if (elP4) elP4.innerText = p4Count;
+
+    // The VAPT row (shown only for VAPT sessions).
+    const vaptCounts = { "count-vapt-critical": p1Count, "count-vapt-high": p2Count,
+                         "count-vapt-medium": p3Count, "count-vapt-low": p4Count,
+                         "count-vapt-info": infoCount, "count-vapt-closed": closedCount,
+                         "count-vapt-total": totalCount };
+    Object.keys(vaptCounts).forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.innerText = vaptCounts[id];
+    });
 }
 
 function formatStructuredPoc(pocText) {
@@ -5253,6 +5316,50 @@ function formatStructuredPoc(pocText) {
     return clean.trim();
 }
 
+// The labels the parsers put over each part of a proof of concept -- "[HTTP
+// Request 1]", "[HTTP Response 1]", "[Issue detail]" (mirrors _poc_sections in
+// src/core/report_exporter.py).
+const _POC_LABEL_RE = /^[ \t]*\[((?:HTTP[ \t]+)?(?:Request|Response)(?:[ \t]+Snippet)?(?:[ \t]+\d+)?|Issue detail)\][ \t]*$/gim;
+
+// A proof of concept as [{label, body}]: what precedes the first label (label
+// ""), then each labelled part. Text with no labels is one part.
+function pocSections(text) {
+    const t = String(text || "").replace(/\r\n/g, "\n").trim();
+    const marks = [...t.matchAll(_POC_LABEL_RE)];
+    if (!marks.length) return t ? [{ label: "", body: t }] : [];
+    const parts = [];
+    const head = t.slice(0, marks[0].index).replace(/\n?Plugin Output:\s*$/, "").trim();
+    if (head) parts.push({ label: "", body: head });
+    marks.forEach((m, k) => {
+        const end = k + 1 < marks.length ? marks[k + 1].index : t.length;
+        const body = t.slice(m.index + m[0].length, end).trim();
+        if (body) parts.push({ label: m[1].split(/\s+/).join(" "), body });
+    });
+    return parts;
+}
+
+// A VAPT card's proof of concept, whole: the report's own facts (source,
+// severity, status) as chips, then each request / response / issue detail in
+// its own box under its label. It was one box 240px high over text the
+// parsers had already cut at 500-1500 characters.
+function pocHtml(text) {
+    const pre = body => `<pre class="finding-snippet" style="margin:0; font-family:'Consolas','Fira Code',monospace; font-size:0.78rem; color:#064e3b; background:rgba(16,185,129,0.08); padding:10px 12px; border-radius:8px; border:1px solid rgba(16,185,129,0.25); line-height:1.45; white-space:pre-wrap; word-break:break-word; font-weight:600;">${escapeHtml(body)}</pre>`;
+    return pocSections(text).map(({ label, body }) => {
+        if (label) {
+            return `<details open style="margin-top:6px;"><summary style="cursor:pointer; font-weight:800; font-size:0.72rem; color:#047857; text-transform:uppercase; letter-spacing:0.4px; margin-bottom:4px;">${escapeHtml(label)}</summary>${pre(body)}</details>`;
+        }
+        const lines = body.split("\n");
+        const facts = [];
+        while (lines.length && /^(Source|Reported severity|Status in report):\s*\S/.test(lines[0])) {
+            const m = lines.shift().match(/^([^:]+):\s*(.*)$/);
+            facts.push(`<span style="font-size:0.74rem; padding:2px 8px; border-radius:4px; background:rgba(16,185,129,0.1); color:#065f46; border:1px solid rgba(16,185,129,0.25);"><b>${escapeHtml(m[1])}:</b> ${escapeHtml(m[2])}</span>`);
+        }
+        const rest = lines.join("\n").trim();
+        return (facts.length ? `<div style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:6px;">${facts.join("")}</div>` : "")
+            + (rest ? pre(rest) : "");
+    }).join("");
+}
+
 /**
  * formatRemediationSteps(text, color)
  * Splits numbered-step remediation text ("1. Do X. 2. Do Y.") into a
@@ -5262,6 +5369,42 @@ function formatStructuredPoc(pocText) {
  * @param {string} color  - CSS color for step number badges (e.g. '#3b82f6')
  * @returns {string}      - HTML string safe to inject into innerHTML
  */
+// A sentence ends at . ! or ? followed by a space and a capital, a digit or an
+// opening quote/bracket. Not inside "10.x", "2.4.49" or a URL (no space), not
+// before a lower-case word ("e.g. a proxy"), and not after a common
+// abbreviation ("e.g. A", "etc. The").
+function splitSentences(text) {
+    return String(text || "")
+        .replace(/(?<!\b(?:e\.g|i\.e|etc|vs|approx|incl|Mr|Mrs|Dr|No|Fig|Ref))([.!?])\s+(?=[A-Z0-9"'(\[])/g, "$1\u0000")
+        .split("\u0000")
+        .map(s => s.trim())
+        .filter(Boolean);
+}
+
+// The badge beside a CVE that is in CISA's Known Exploited Vulnerabilities
+// catalog (the findings API sends the entries as `known_exploited`). The
+// severity beside it is still the scanner's.
+function kevBadgeHtml(k) {
+    if (!k || !k.cve) return "";
+    const since = escapeHtml(k.date_added || "?");
+    const tip = escapeHtml(`In CISA's Known Exploited Vulnerabilities catalog since ${k.date_added || "?"}; `
+        + `known ransomware use: ${k.ransomware_use || "Unknown"}. ${k.name || ""}`);
+    return `<span style="font-size:0.7rem; padding:2px 7px; border-radius:4px; background:#b91c1c; color:#fff; font-weight:800; margin-right:6px; letter-spacing:0.3px;" title="${tip}">⚠ KNOWN EXPLOITED (CISA KEV, since ${since})</span>`;
+}
+
+// Prose as points, one per sentence; a single sentence stays a paragraph.
+function remediationPoints(text, color) {
+    const c = escapeHtml(color);
+    const sentences = splitSentences(text);
+    if (sentences.length <= 1) {
+        return `<p style="margin:0; font-size:0.86rem; color:${c}; line-height:1.6;">${escapeHtml(String(text || "").trim())}</p>`;
+    }
+    const items = sentences.map(s =>
+        `<li style="margin-bottom:5px; line-height:1.55; font-size:0.86rem; color:${c};">${escapeHtml(s)}</li>`
+    ).join("");
+    return `<ul style="margin:0; padding-left:18px; list-style:disc; color:${c};">${items}</ul>`;
+}
+
 function formatRemediationSteps(text, color) {
     if (!text || typeof text !== "string") return "";
     const safe = text.trim();
@@ -5273,8 +5416,9 @@ function formatRemediationSteps(text, color) {
         || /^\d{1,2}\.\s+/m.test(safe);
 
     if (!hasSteps) {
-        // No numbered structure — render as plain paragraph
-        return `<p style="margin:0; font-size:0.86rem; color:${escapeHtml(color)}; line-height:1.6;">${escapeHtml(safe)}</p>`;
+        // No numbered structure: one point per sentence. A scanner's advice
+        // (Burp's runs to eight sentences) was a single block of text.
+        return remediationPoints(safe, color);
     }
 
     // Split on numbered-step boundaries: "1. ", "2. ", "3. " etc.
@@ -5285,13 +5429,16 @@ function formatRemediationSteps(text, color) {
     let marked = safe
         // "IMMEDIATE ACTIONS:" and similar colons before step 1 — keep as label
         .replace(/([.!?])\s+(\d{1,2})\.\s+/g, `$1 ${delim}$2. `)
+        // "...not from the report: 1. Before transmitting..." -- a step after a
+        // colon, or the first one was folded into the heading above the list.
+        .replace(/:\s+(\d{1,2})\.\s+(?=[A-Z])/g, `: ${delim}$1. `)
         .replace(/^(\d{1,2})\.\s+/, `${delim}$1. `);
 
     const parts = marked.split(delim).map(p => p.trim()).filter(Boolean);
 
     if (parts.length <= 1) {
-        // Splitting produced only 1 chunk — fall back to plain paragraph
-        return `<p style="margin:0; font-size:0.86rem; color:${escapeHtml(color)}; line-height:1.6;">${escapeHtml(safe)}</p>`;
+        // Splitting produced only 1 chunk — fall back to one point per sentence
+        return remediationPoints(safe, color);
     }
 
     // First chunk may be a preamble (e.g. "RSA is broken by...IMMEDIATE ACTIONS:")
@@ -6251,11 +6398,13 @@ function renderFindingsList() {
         // Informational rows are only ever in the list for a VAPT session, so
         // excluding them from the gap filters changes nothing anywhere else.
         if (valLower === "informational") {
-            list = list.filter(f => isFindingInformational(f));
+            list = list.filter(f => isFindingInformational(f) && !isFindingClosed(f));
+        } else if (valLower === "closed") {
+            list = list.filter(f => isFindingClosed(f));
         } else if (valLower.includes("compliant") && !valLower.includes("non")) {
             list = list.filter(f => isFindingCompliant(f));
         } else if (valLower.includes("non") || valLower.includes("gap")) {
-            list = list.filter(f => !isFindingCompliant(f) && !isFindingInformational(f));
+            list = list.filter(f => !isFindingCompliant(f) && !isFindingInformational(f) && !isFindingClosed(f));
         } else if (valLower.includes("accepted")) {
             list = list.filter(f => (f.status || "").toLowerCase() === "accepted");
         } else if (valLower.includes("rejected")) {
@@ -6269,7 +6418,7 @@ function renderFindingsList() {
             // "Informational", and "Open" lives in display_status. Confirmed
             // against the database: of 1,922 findings, not one has that status,
             // so the option returned an empty list every time it was chosen.
-            list = list.filter(f => !isFindingCompliant(f) && !isFindingInformational(f) && !f.human_verified);
+            list = list.filter(f => !isFindingCompliant(f) && !isFindingInformational(f) && !isFindingClosed(f) && !f.human_verified);
         } else {
             list = list.filter(f => (f.status || "").toLowerCase().includes(valLower));
         }
@@ -6282,7 +6431,7 @@ function renderFindingsList() {
         // findings the box beside it had already counted.
         const wanted = severityBand(activeSeverityFilter);
         list = wanted
-            ? list.filter(f => severityBand(f.severity) === wanted)
+            ? list.filter(f => severityBand(f.severity) === wanted && !isFindingClosed(f))
             : list.filter(f => (f.severity || "").toLowerCase()
                                  .includes(activeSeverityFilter.toLowerCase()));
     }
@@ -6503,6 +6652,8 @@ function renderFindingsList() {
         // was badged NON_COMPLIANT in red.
         const mainBadgeHtml = isFp
             ? `<span class="badge" style="background:#8b5cf6; color:#ffffff; font-weight:800; padding:4px 10px; border-radius:4px; font-size:0.78rem;">OUT_OF_SCOPE</span>`
+            : (isVaptFinding(f) && isFindingClosed(f))
+            ? `<span class="badge" style="background:#0f766e; color:#ffffff; font-weight:800; padding:4px 10px; border-radius:4px; font-size:0.78rem;" title="Recorded as closed / remediated in the pentest report">CLOSED</span>`
             : (isVaptFinding(f) && isFindingInformational(f))
             ? `<span class="badge" style="background:#64748b; color:#ffffff; font-weight:800; padding:4px 10px; border-radius:4px; font-size:0.78rem;">INFORMATIONAL</span>`
             : (isComp
@@ -6575,12 +6726,16 @@ function renderFindingsList() {
             // every other field on this card, it wasn't actually escaped, so a future
             // parser change or a manual edit path could turn this into a real
             // attribute-breakout XSS in both the href and the link text.
+            // CVEs in CISA's Known Exploited Vulnerabilities catalog (from the API).
+            const _kevByCve = {};
+            (Array.isArray(f.known_exploited) ? f.known_exploited : []).forEach(k => { if (k && k.cve) _kevByCve[String(k.cve).toUpperCase()] = k; });
             const cveBadges = _cves.length
                 ? _cves.map(cve => `<a href="https://nvd.nist.gov/vuln/detail/${encodeURIComponent(cve)}" target="_blank"
                     style="font-size:0.72rem; padding:2px 7px; border-radius:4px;
                            background:rgba(239,68,68,0.12); color:#f87171;
                            border:1px solid rgba(239,68,68,0.3); font-weight:700;
-                           text-decoration:none; margin-right:4px;" title="View on NVD">${escapeHtml(cve)} ↗</a>`).join("")
+                           text-decoration:none; margin-right:4px;" title="View on NVD">${escapeHtml(cve)} ↗</a>`
+                    + kevBadgeHtml(_kevByCve[String(cve).toUpperCase()])).join("")
                 : `<span style="font-size:0.74rem; padding:2px 8px; border-radius:4px; background:rgba(148,163,184,0.12); color:var(--text-muted); border:1px solid rgba(148,163,184,0.25); font-weight:600;">No CVE — application-specific finding</span>`;
 
             let vectorHint = "";
@@ -6765,7 +6920,7 @@ function renderFindingsList() {
                     ${_cleanPoc ? `
                     <div class="finding-detail-row" style="margin-bottom: 12px;">
                         <label style="font-weight:700; font-size:0.78rem; color:#10b981; text-transform:uppercase; letter-spacing:0.5px; display:block; margin-bottom:4px;">📋 Proof of Concept (Scanner Plugin Output)</label>
-                        <pre class="finding-snippet" style="margin:0; font-family:'Consolas','Fira Code',monospace; font-size:0.78rem; color:#064e3b; background:rgba(16,185,129,0.08); padding:10px 12px; border-radius:8px; border:1px solid rgba(16,185,129,0.25); line-height:1.45; max-height:240px; overflow-y:auto; white-space:pre-wrap; word-break:break-word; font-weight:600;">${escapeHtml(_cleanPoc)}</pre>
+                        ${isVaptOnlySession() ? pocHtml(_cleanPoc) : `<pre class="finding-snippet" style="margin:0; font-family:'Consolas','Fira Code',monospace; font-size:0.78rem; color:#064e3b; background:rgba(16,185,129,0.08); padding:10px 12px; border-radius:8px; border:1px solid rgba(16,185,129,0.25); line-height:1.45; max-height:240px; overflow-y:auto; white-space:pre-wrap; word-break:break-word; font-weight:600;">${escapeHtml(_cleanPoc)}</pre>`}
                     </div>` : ""}
 
                     <div class="finding-detail-row" style="margin-bottom: 12px;">
@@ -6790,7 +6945,7 @@ function renderFindingsList() {
                             <span>📁 Scan File: <i style="color:var(--text-muted); font-weight:400; font-style:italic;">${safeDoc}</i></span>
                         </div>
                         <div class="btn-card-group" style="display:flex; gap:8px;">
-                            <button class="btn-secondary" style="color:#10b981; font-weight:700; border-color:rgba(16,185,129,0.4); padding:4px 12px; border-radius:5px; cursor:pointer;" onclick="updateFindingWorkflowStatus(${f.id}, 'Accepted')">✓ Accept</button>
+                            ${acceptActionHtml(f)}
                             <button class="btn-secondary" style="color:#3b82f6; font-weight:700; border-color:rgba(59,130,246,0.4); padding:4px 12px; border-radius:5px; cursor:pointer;" onclick='openEditFindingModal(${findingJsonStr})'>✏️ Modify</button>
                             <button class="btn-danger" style="font-weight:700; padding:4px 12px; border-radius:5px; cursor:pointer;" onclick="rejectSingleDocCard(${f.id}, '${safeDocForClick}', '${safeCtrlId}')">✕ Reject</button>
                         </div>
@@ -6865,7 +7020,7 @@ function renderFindingsList() {
 
                     <div class="finding-detail-row" style="margin-bottom: 12px;">
                         <label style="font-weight:700; font-size:0.78rem; color:#94a3b8; text-transform:uppercase; letter-spacing:0.5px; display:block; margin-bottom:4px;">LEAD AUDITOR RECOMMENDATIONS</label>
-                        <p style="margin:0; font-size:0.86rem; color:#2563eb; line-height:1.5;">${escapeHtml(getCleanRecommendation(f))}</p>
+                        <div style="margin:0;">${formatRemediationSteps(getCleanRecommendation(f), '#2563eb')}</div>
                     </div>
 
                     <div class="finding-actions" style="display:flex; justify-content:space-between; align-items:center; margin-top:14px; padding-top:10px; border-top:1px solid rgba(148,163,184,0.15);">
@@ -6873,7 +7028,7 @@ function renderFindingsList() {
                             <span>📁 ${isQaFinding ? "Answered from" : "Evidence Source Location"}: <i style="color:var(--text-muted); font-weight:400; font-style:italic;">${safeDoc}</i></span>
                         </div>
                         <div class="btn-card-group" style="display:flex; gap:8px;">
-                            <button class="btn-secondary" style="color:#10b981; font-weight:700; border-color:rgba(16,185,129,0.4); padding:4px 12px; border-radius:5px; cursor:pointer;" onclick="updateFindingWorkflowStatus(${f.id}, 'Accepted')">✓ Accept</button>
+                            ${acceptActionHtml(f)}
                             <button class="btn-secondary" style="color:#3b82f6; font-weight:700; border-color:rgba(59,130,246,0.4); padding:4px 12px; border-radius:5px; cursor:pointer;" onclick='openEditFindingModal(${findingJsonStr})'>✏️ Modify</button>
                             <button class="btn-danger" style="font-weight:700; padding:4px 12px; border-radius:5px; cursor:pointer;" onclick="rejectSingleDocCard(${f.id}, '${safeDocForClick}', '${safeCtrlId}')">✕ Reject</button>
                         </div>
@@ -6931,6 +7086,36 @@ async function rejectSingleDocCard(findingId, docName, controlId) {
     await updateFindingWorkflowStatus(findingId, "Rejected");
 }
 
+// The status a finding had before the auditor acted on it, rebuilt from what
+// the action left untouched. Accept and Reject both keep the verdict, so the
+// finding goes back to the status that verdict is written as -- and a
+// scanner's informational finding, which the audit files as "Informational",
+// goes back to that rather than to "Non-Compliant".
+function statusBeforeReview(f) {
+    // A pentest report's closed finding (VAPT) goes back to Closed.
+    if (/Status in report:\s*Closed/i.test(String((f && (f.evidence_snippet || f.evidence)) || ""))) return "Closed";
+    const verdict = String((f && f.final_result) || "").trim().toUpperCase();
+    if (verdict === "COMPLIANT") return "Compliant";
+    if (String((f && f.severity) || "").toUpperCase().includes("INFO")) return "Informational";
+    return "Non-Compliant";
+}
+
+// Accept on a card that has not been accepted; once it has, what it is and a
+// way back. Accept was one-way: the button stayed as it was and nothing on the
+// card said the finding had been accepted, or offered to take it back.
+function acceptActionHtml(f) {
+    if (String((f && f.status) || "").trim().toLowerCase() === "accepted") {
+        return `<span style="color:#10b981; font-weight:700; font-size:0.8rem; align-self:center;">✓ Accepted</span>`
+            + `<button class="btn-secondary" style="color:#64748b; font-weight:700; border-color:rgba(100,116,139,0.4); padding:4px 12px; border-radius:5px; cursor:pointer;" onclick="undoAcceptFinding(${f.id})">↺ Undo Accept</button>`;
+    }
+    return `<button class="btn-secondary" style="color:#10b981; font-weight:700; border-color:rgba(16,185,129,0.4); padding:4px 12px; border-radius:5px; cursor:pointer;" onclick="updateFindingWorkflowStatus(${f.id}, 'Accepted')">✓ Accept</button>`;
+}
+
+async function undoAcceptFinding(findingId) {
+    const _f = findingsList.find(x => x.id === findingId) || {};
+    await updateFindingWorkflowStatus(findingId, statusBeforeReview(_f));
+}
+
 async function restoreFindingCard(findingId) {
     // Restore returns the finding to the verdict the audit reached, which
     // survives a rejection because _derive_final_result() leaves final_result
@@ -6938,8 +7123,7 @@ async function restoreFindingCard(findingId) {
     // "COMPLIANT": undoing an accidental reject silently marked a real
     // non-compliance as passing and wiped its severity to N/A.
     const _f = findingsList.find(x => x.id === findingId) || {};
-    const _verdict = String(_f.final_result || "").trim().toUpperCase();
-    const restoredStatus = _verdict === "COMPLIANT" ? "Compliant" : "Non-Compliant";
+    const restoredStatus = statusBeforeReview(_f);
     try {
         const response = await authFetch(`${API_BASE}/audit/findings/${findingId}`, {
             method: "PUT",

@@ -3,6 +3,8 @@ import html
 import re
 from datetime import datetime, timedelta
 
+from src.core.parsers.finding_schema import full_poc
+
 def _get_all_parsed_findings_from_registry():
     """Returns empty list when no session findings exist — prevents cross-session evidence leakage."""
     return []
@@ -220,6 +222,75 @@ def _vapt_score(f):
     except (TypeError, ValueError):
         v = None
     return v if (v is not None and v > 0) else None
+
+
+def _vapt_is_closed(f):
+    """A VAPT finding the pentest report records as closed / remediated.
+
+    Its status is "Closed"; an Accept confirms that, so an accepted finding
+    whose proof block says "Status in report: Closed" is still closed. Any
+    other status -- an auditor reopening it -- is taken as open.
+    """
+    st = str(f.get("status") or "").strip().lower()
+    if st == "closed":
+        return True
+    if st in ("accepted", "confirmed"):
+        ev = str(f.get("evidence_snippet") or f.get("evidence") or "")
+        return bool(re.search(r"Status in report:\s*Closed", ev, re.I))
+    return False
+
+
+# The labels the parsers put over each part of a proof of concept:
+# "[HTTP Request 1]", "[HTTP Response 1]", "[Issue detail]", "[Request 2]".
+_POC_LABEL_RE = re.compile(r"^[ \t]*\[((?:HTTP[ \t]+)?(?:Request|Response)(?:[ \t]+Snippet)?(?:[ \t]+\d+)?"
+                           r"|Issue detail)\][ \t]*$", re.I | re.M)
+
+
+def _poc_sections(text):
+    """A proof of concept as (label, body) parts, in order: whatever precedes
+    the first label (the scanner, host and plugin lines) with label "", then
+    each labelled request, response or issue detail. Text with no labels is
+    one part, as it was."""
+    text = str(text or "").replace("\r\n", "\n").strip()
+    marks = list(_POC_LABEL_RE.finditer(text))
+    if not marks:
+        return [("", text)] if text else []
+    parts = []
+    head = text[:marks[0].start()].strip()
+    # The worker's block ends "Plugin Output:"; the labelled parts are that output.
+    head = re.sub(r"\n?Plugin Output:\s*$", "", head).strip()
+    if head:
+        parts.append(("", head))
+    for k, m in enumerate(marks):
+        end = marks[k + 1].start() if k + 1 < len(marks) else len(text)
+        body = text[m.end():end].strip()
+        if body:
+            parts.append((" ".join(m.group(1).split()), body))
+    return parts
+
+
+def _vapt_overview_sentence(open_cnt, info_cnt, closed_cnt):
+    """The VAPT findings overview: open vulnerabilities, then the rest.
+
+    Informational results and closed findings are not vulnerabilities in
+    scope, so they are named apart rather than added to the count.
+    """
+    rest = []
+    if info_cnt:
+        rest.append(f"{info_cnt} further informational observation(s)")
+    if closed_cnt:
+        rest.append(f"{closed_cnt} finding(s) the report records as closed")
+    return (f"Based on the assessment, {open_cnt} open vulnerabilities have been found in the target scope "
+            f"which are categorized as follows" + (", with " + " and ".join(rest) if rest else "") + ":")
+
+
+def _known_exploited_line(cves):
+    """CISA KEV status of these CVEs, for a report line, or ""."""
+    try:
+        from src.core.parsers.control_mapper import known_exploited_line
+        return known_exploited_line(cves)
+    except Exception:
+        return ""
 
 
 def _vapt_refs(f, extra_text=""):
@@ -803,17 +874,24 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
         # BUG-FIX: Never fall back to the in-memory registry (stale from previous scan).
         active_findings = []
 
-    critical_cnt = sum(1 for f in active_findings if f.get("severity") == "CRITICAL")
-    high_cnt     = sum(1 for f in active_findings if f.get("severity") == "HIGH")
-    medium_cnt   = sum(1 for f in active_findings if f.get("severity") == "MEDIUM")
-    low_cnt      = sum(1 for f in active_findings if f.get("severity") == "LOW")
-    info_cnt     = sum(1 for f in active_findings if f.get("severity") == "INFO")
+    # Closed findings (recorded as remediated in a pentest report) are counted
+    # under Closed only -- not as open vulnerabilities of their severity, and
+    # not as informational results.
+    _open_f      = [f for f in active_findings if not _vapt_is_closed(f)]
+    closed_cnt   = len(active_findings) - len(_open_f)
+    critical_cnt = sum(1 for f in _open_f if f.get("severity") == "CRITICAL")
+    high_cnt     = sum(1 for f in _open_f if f.get("severity") == "HIGH")
+    medium_cnt   = sum(1 for f in _open_f if f.get("severity") == "MEDIUM")
+    low_cnt      = sum(1 for f in _open_f if f.get("severity") == "LOW")
+    info_cnt     = sum(1 for f in _open_f if f.get("severity") == "INFO")
 
     total_cnt = len(active_findings) if active_findings else 2
 
     pdf.set_font("Helvetica", "", 8.5)
     pdf.set_text_color(*BODY_TEXT)
-    pdf.cell(0, 4.5, clean_text(f"2.3.1 Findings Overview: Based on assessment, {total_cnt} vulnerabilities have been found in scope:"), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    open_cnt = critical_cnt + high_cnt + medium_cnt + low_cnt
+    pdf.multi_cell(0, 4.5, clean_text("2.3.1 Findings Overview: " + _vapt_overview_sentence(open_cnt, info_cnt, closed_cnt)),
+                   new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     pdf.ln(2.5)
 
     pdf.set_font("Helvetica", "B", 9.5)
@@ -827,14 +905,16 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
     hdr_low  = FontFace(emphasis="B", color=(255, 255, 255), fill_color=(0, 176, 80))
     hdr_info = FontFace(emphasis="B", color=(255, 255, 255), fill_color=(0, 112, 192))
     hdr_tot  = FontFace(emphasis="B", color=(255, 255, 255), fill_color=(127, 127, 127))
+    hdr_closed = FontFace(emphasis="B", color=(255, 255, 255), fill_color=(71, 85, 105))
 
-    with pdf.table(col_widths=(30, 30, 30, 30, 30, 30), text_align="C") as table:
+    with pdf.table(col_widths=(26, 26, 26, 26, 30, 26, 30), text_align="C") as table:
         h = table.row()
         h.cell("Critical", style=hdr_crit)
         h.cell("High", style=hdr_high)
         h.cell("Medium", style=hdr_med)
         h.cell("Low", style=hdr_low)
-        h.cell("Info", style=hdr_info)
+        h.cell("Informational", style=hdr_info)
+        h.cell("Closed", style=hdr_closed)
         h.cell("Total Findings", style=hdr_tot)
 
         r = table.row()
@@ -843,6 +923,7 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
         r.cell(str(medium_cnt), style=body_style)
         r.cell(str(low_cnt), style=body_style)
         r.cell(str(info_cnt), style=body_style)
+        r.cell(str(closed_cnt), style=body_style)
         r.cell(str(total_cnt), style=lbl_style)
 
     pdf.ln(4)
@@ -853,14 +934,15 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
 
     # Native High-Precision Horizontal Bar Chart (Guaranteed rendering in all environments)
     start_chart_y = pdf.get_y()
-    max_val = max([critical_cnt, high_cnt, medium_cnt, low_cnt, info_cnt, 1])
+    max_val = max([critical_cnt, high_cnt, medium_cnt, low_cnt, info_cnt, closed_cnt, 1])
     max_bar_w = 115.0
     categories_data = [
         ("Critical", critical_cnt, (192, 0, 0)),
         ("High",     high_cnt,     (255, 0, 0)),
         ("Medium",   medium_cnt,   (255, 192, 0)),
         ("Low",      low_cnt,      (0, 176, 80)),
-        ("Info",     info_cnt,     (0, 112, 192))
+        ("Info",     info_cnt,     (0, 112, 192)),
+        ("Closed",   closed_cnt,   (71, 85, 105)),
     ]
     for c_idx, (c_label, c_val, c_col) in enumerate(categories_data):
         row_y = start_chart_y + (c_idx * 8.5)
@@ -883,7 +965,7 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
             pdf.set_text_color(*BODY_TEXT)
             pdf.cell(15, 6, "0")
 
-    pdf.set_y(start_chart_y + 48)
+    pdf.set_y(start_chart_y + len(categories_data) * 8.5 + 5.5)   # below the last bar, however many
 
     # ── PAGE 8: VULNERABILITIES SUMMARY TABLE ──────────────────────────────
     pdf.add_page()
@@ -1008,6 +1090,8 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
         target = html.unescape(str(f.get("target") or "Not recorded"))
         conf_val = str(f.get("confidence") or "").strip()
         status_str = f"Detected ({conf_val.capitalize()})" if conf_val and conf_val.lower() in ("certain", "firm", "tentative") else "Detected"
+        if _vapt_is_closed(f):
+            status_str = "Closed (recorded as remediated in the report)"
 
         score_val = _vapt_score(f)
         sev_val = _vapt_severity(f)
@@ -1075,6 +1159,11 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
             r = table.row()
             r.cell("CVE References", style=lbl_style)
             r.cell(clean_text(", ".join(_cves) if _cves else "None assigned"), style=body_style)
+            _kev_line = f.get("known_exploited") or _known_exploited_line(_cves)
+            if _kev_line:
+                r = table.row()
+                r.cell("Known Exploited", style=lbl_style)
+                r.cell(clean_text(_kev_line), style=FontFace(emphasis="B", color=(185, 28, 28)))
             if _cwes:
                 r = table.row()
                 r.cell("CWE", style=lbl_style)
@@ -1203,14 +1292,21 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
                 out.pop()
             return "\n".join(out) if out else "Console / Log Audit Verification"
 
-        clean_poc = format_http_evidence(_cut_words(poc_text, 2500))
-
-        pdf.set_font("Courier", "", 7.5)
-        pdf.set_fill_color(248, 250, 252)
-        pdf.set_draw_color(203, 213, 225)
-        pdf.set_text_color(30, 41, 59)
-        pdf.multi_cell(0, 4.2, clean_text(clean_poc), border=1, fill=True, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-        pdf.ln(3)
+        # The whole proof, one box per part, each request / response / issue
+        # detail under its own label. It was one box cut at 2500 characters.
+        for _label, _body in (_poc_sections(full_poc(poc_text)) or [("", "")]):
+            if _label:
+                pdf.set_font("Helvetica", "B", 8)
+                pdf.set_text_color(4, 120, 87)
+                pdf.cell(0, 4.5, clean_text(_label), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            pdf.set_font("Courier", "", 7.5)
+            pdf.set_fill_color(248, 250, 252)
+            pdf.set_draw_color(203, 213, 225)
+            pdf.set_text_color(30, 41, 59)
+            pdf.multi_cell(0, 4.2, clean_text(format_http_evidence(_body)), border=1, fill=True,
+                           new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            pdf.ln(1.5)
+        pdf.ln(1.5)
 
         # Recommendation Section
         pdf.set_font("Helvetica", "B", 9)
@@ -2832,33 +2928,36 @@ def _export_vapt_docx(session_title, findings, resolved_list, status, comments="
     else:
         active_findings = [f for f in findings if not _excluded_from_report(f)]
 
-    critical_cnt = sum(1 for f in active_findings if str(f.get("severity", "")).strip().upper() == "CRITICAL")
-    high_cnt = sum(1 for f in active_findings if str(f.get("severity", "")).strip().upper() == "HIGH")
-    medium_cnt = sum(1 for f in active_findings if str(f.get("severity", "")).strip().upper() == "MEDIUM")
-    low_cnt = sum(1 for f in active_findings if str(f.get("severity", "")).strip().upper() == "LOW")
-    info_cnt = sum(1 for f in active_findings if str(f.get("severity", "")).strip().upper() == "INFO")
-    total_cnt = critical_cnt + high_cnt + medium_cnt + low_cnt
+    # Closed findings are counted under Closed only (see _vapt_is_closed).
+    _open_f = [f for f in active_findings if not _vapt_is_closed(f)]
+    closed_cnt = len(active_findings) - len(_open_f)
+    critical_cnt = sum(1 for f in _open_f if str(f.get("severity", "")).strip().upper() == "CRITICAL")
+    high_cnt = sum(1 for f in _open_f if str(f.get("severity", "")).strip().upper() == "HIGH")
+    medium_cnt = sum(1 for f in _open_f if str(f.get("severity", "")).strip().upper() == "MEDIUM")
+    low_cnt = sum(1 for f in _open_f if str(f.get("severity", "")).strip().upper() == "LOW")
+    info_cnt = sum(1 for f in _open_f if str(f.get("severity", "")).strip().upper() == "INFO")
+    total_cnt = critical_cnt + high_cnt + medium_cnt + low_cnt       # open vulnerabilities
+    all_cnt = len(active_findings)
 
-    doc.add_paragraph(f"Based on the assessment, {total_cnt} vulnerabilities have been found in the target scope "
-                      f"which are categorized as follows"
-                      + (f", with {info_cnt} further informational observation(s) listed in the findings:" if info_cnt else ":"))
+    doc.add_paragraph(_vapt_overview_sentence(total_cnt, info_cnt, closed_cnt))
     
     p = doc.add_paragraph()
     p.add_run("2.3.2 Tabular Summary").bold = True
     
-    tbl_sum = doc.add_table(rows=2, cols=5)
+    tbl_sum = doc.add_table(rows=2, cols=7)
     tbl_sum.style = 'Table Grid'
-    sum_hdrs = ["Critical", "High", "Medium", "Low", "Total Findings"]
+    sum_hdrs = ["Critical", "High", "Medium", "Low", "Informational", "Closed", "Total Findings"]
     for col_idx, text in enumerate(sum_hdrs):
         cell = tbl_sum.rows[0].cells[col_idx]
         _set_cell_bg(cell, "0F172A")
         cell.paragraphs[0].add_run(text).font.color.rgb = _rgb(255, 255, 255)
         cell.paragraphs[0].runs[0].bold = True
-        
-    counts = [str(critical_cnt), str(high_cnt), str(medium_cnt), str(low_cnt), str(total_cnt)]
+
+    counts = [str(critical_cnt), str(high_cnt), str(medium_cnt), str(low_cnt), str(info_cnt),
+              str(closed_cnt), str(all_cnt)]
     for col_idx, val in enumerate(counts):
         cell = tbl_sum.rows[1].cells[col_idx]
-        if col_idx == 4:
+        if col_idx == 6:
             _set_cell_bg(cell, "F1F5F9")
             cell.paragraphs[0].add_run(val).bold = True
         else:
@@ -2941,7 +3040,7 @@ def _export_vapt_docx(session_title, findings, resolved_list, status, comments="
         # VAPT reports: redact email/phone (incidental PII) but keep IPs -- the
         # vulnerable host's IP address is the report's actual content, not PII.
         desc_val = html.unescape(redact_pii(str(f.get("description") or f.get("gap_description") or f.get("finding") or "-"), redact_ip=False))
-        poc_val = html.unescape(redact_pii(_cut_words(str(f.get("evidence_snippet") or f.get("evidence") or f.get("evidence_quote") or f.get("poc") or "Console / Log Audit Verification"), 2500), redact_ip=False))
+        poc_val = html.unescape(redact_pii(full_poc(str(f.get("evidence_snippet") or f.get("evidence") or f.get("evidence_quote") or f.get("poc") or "Console / Log Audit Verification")), redact_ip=False))
         remed_val = html.unescape(redact_pii(_vapt_remediation(f), redact_ip=False))
 
         # ── Resolve uploaded screenshots/images for VAPT POC embedding ───────
@@ -2992,6 +3091,9 @@ def _export_vapt_docx(session_title, findings, resolved_list, status, comments="
         _conf = str(f.get("confidence") or "").strip()
         if _conf:
             pm.add_run(f"   |   Confidence: {_conf.capitalize()}")
+        if _vapt_is_closed(f):
+            _r_closed = pm.add_run("   |   Status: Closed (recorded as remediated in the report)")
+            _r_closed.bold = True
         r_m3 = pm.add_run(f"   |   Location / Target: {target_val}")
         pm.add_run(f"   |   Tool: {_vapt_scanner(f)}")
         if f.get("category"):
@@ -3001,6 +3103,15 @@ def _export_vapt_docx(session_title, findings, resolved_list, status, comments="
         if _cwes:
             pm.add_run(f"   |   CWE: {', '.join(_cwes)}")
         pm.add_run(f"   |   OWASP: {_vapt_owasp(f, vuln_title, desc_val)}")
+        _kev_line = f.get("known_exploited") or _known_exploited_line(_cves)
+        if _kev_line:
+            pm_kev = doc.add_paragraph()
+            pm_kev.paragraph_format.space_before = Pt(2)
+            r_k1 = pm_kev.add_run("Known exploited: ")
+            r_k1.bold = True
+            r_k2 = pm_kev.add_run(_kev_line)
+            r_k2.bold = True
+            r_k2.font.color.rgb = RGBColor(0xB9, 0x1C, 0x1C)
 
         # CIA & PII Meta line
         cia_val = f.get("cia_impact") or ""
@@ -3037,10 +3148,19 @@ def _export_vapt_docx(session_title, findings, resolved_list, status, comments="
         c_poc = tbl_poc.rows[0].cells[0]
         _set_cell_bg(c_poc, "F8FAFC")
         _set_cell_borders(c_poc)
-        p_code = c_poc.paragraphs[0]
-        r_code = p_code.add_run(poc_val)
-        r_code.font.name = "Consolas"
-        r_code.font.size = Pt(8.5)
+        # Each request / response / issue detail under its own label.
+        for _k, (_label, _body) in enumerate(_poc_sections(poc_val) or [("", poc_val)]):
+            if _label:
+                p_lab = c_poc.paragraphs[0] if (_k == 0) else c_poc.add_paragraph()
+                p_lab.paragraph_format.space_before = Pt(4 if _k else 0)
+                r_lab = p_lab.add_run(_label)
+                r_lab.bold = True
+                r_lab.font.size = Pt(8.5)
+                r_lab.font.color.rgb = _rgb(4, 120, 87)
+            p_code = c_poc.paragraphs[0] if (_k == 0 and not _label) else c_poc.add_paragraph()
+            r_code = p_code.add_run(_body)
+            r_code.font.name = "Consolas"
+            r_code.font.size = Pt(8.5)
 
         # Recommendation
         p_rec_hdr = doc.add_paragraph()
@@ -3453,6 +3573,14 @@ def _excluded_from_report(f):
     return normalise_status((f or {}).get("status")) in WORKFLOW_ONLY_STATUSES
 
 
+def _finding_is_compliant(f):
+    """The control passed -- by the finding's verdict, not the word "Accepted".
+    See finding_status.is_compliant_verdict."""
+    from src.core.finding_status import is_compliant_verdict
+    f = f or {}
+    return is_compliant_verdict(f.get("display_status") or f.get("status"), f.get("final_result"))
+
+
 # Branding that ships inside the image.
 #
 # data/assets is a Docker volume (app_data:/app/data in docker-compose.customer.yml)
@@ -3514,6 +3642,11 @@ def _control_group_label(f):
         f.get("requirement_question") or f.get("audit_check")
         or f.get("control_check") or f.get("scenario") or ""
     ).strip()
+    # The export endpoints fill a missing question with this placeholder; read
+    # as a question it was printed as the control point of every row of a
+    # control-based audit, in place of the control's name.
+    if question.lower() == "requirement question not provided":
+        question = ""
     if question:
         for _sep in ("–", "—"):
             if _sep in question:
@@ -3550,6 +3683,11 @@ def _control_point_label(f):
         f.get("requirement_question") or f.get("audit_check")
         or f.get("control_check") or f.get("scenario") or ""
     ).strip()
+    # The export endpoints fill a missing question with this placeholder; read
+    # as a question it was printed as the control point of every row of a
+    # control-based audit, in place of the control's name.
+    if question.lower() == "requirement question not provided":
+        question = ""
     if question:
         # A row whose control prefix is empty arrives as "- Whether NTP enabled?",
         # and .strip() above has already removed the space that would have made
@@ -4324,13 +4462,12 @@ def _export_iso_template_docx(session_title, findings, resolved_list, status, co
     ]
     accepted_findings = [
         f for f in (findings or [])
-        if str(f.get("display_status", f.get("status", ""))).lower() in ("accepted", "compliant")
+        if not _excluded_from_report(f) and _finding_is_compliant(f)
     ]
 
     def _risk_level(f):
         sev = str(f.get("severity", f.get("risk", "Low"))).upper()
-        status_str = str(f.get("display_status", f.get("status", ""))).lower()
-        if status_str in ("accepted", "compliant"):
+        if _finding_is_compliant(f):
             return "Accepted"
         if "CRITICAL" in sev or "P1" in sev or "HIGH" in sev or "P2" in sev:
             return "High"
@@ -4398,6 +4535,15 @@ def _export_iso_template_docx(session_title, findings, resolved_list, status, co
         # Clone the template row format from the header row (row 0)
         hdr_tr = t6.rows[0]._tr
         new_tr = copy.deepcopy(hdr_tr)
+        # ...but not its "repeat as header row" flag. Copied onto every finding,
+        # it made the whole table one header: Word would not flow a finding
+        # across a page (one finding per page, the column headings shown only
+        # once) and LibreOffice, which renders the ISO PDF, ran long findings
+        # off the bottom of the page over the ones below.
+        _trPr = new_tr.find(qn("w:trPr"))
+        if _trPr is not None:
+            for _flag in _trPr.findall(qn("w:tblHeader")) + _trPr.findall(qn("w:cantSplit")):
+                _trPr.remove(_flag)
         t6._tbl.append(new_tr)
 
         # Get the newly appended row
@@ -4510,8 +4656,7 @@ def _export_iso_template_docx(session_title, findings, resolved_list, status, co
                 or ""
             ).strip()
 
-            display_s  = str(f.get("display_status") or f.get("status") or "Open")
-            _is_compliant_row = display_s.lower() in ("accepted", "compliant")
+            _is_compliant_row = _finding_is_compliant(f)
 
             # ── Observations ────────────────────────────────────────────────────
             # PII redacted before writing to exported document (this table previously
@@ -4520,14 +4665,17 @@ def _export_iso_template_docx(session_title, findings, resolved_list, status, co
             # PDF exporter -- without it a finding whose text lives only in
             # description exported with an empty Observations cell here and a full
             # one there.
-            obs = redact_pii(
+            # Whole, now that a finding's row flows across pages. A hard cut at
+            # 800 characters ended observations mid-word ("...enabled without an
+            # own") with nothing to say the rest was gone; 4000 is a safety net
+            # for a runaway value, cut at a word and marked.
+            obs = redact_pii(_cut_words(
                 _strip_reasoning_narrative(
                     str(f.get("gap_description") or f.get("reasoning")
                         or f.get("observation") or f.get("description")
                         or f.get("finding") or ""),
                     f.get("final_result") or f.get("status") or "",
-                )[:800]
-            )
+                ), 4000))
             # A readable sentence instead of the raw enum dump
             # ("Policy: NOT_FOUND, NON_COMPLIANT | Evidence: FOUND, COMPLIANT"), which
             # reads as internal field values rather than an auditor's observation.
@@ -4587,7 +4735,7 @@ def _export_iso_template_docx(session_title, findings, resolved_list, status, co
                 control_pt=ctrl_pt,
                 policy_ref=policy_ref,
                 observation=obs,
-                risk="Acceptable" if display_s.lower() in ("accepted", "compliant") else risk_lbl,
+                risk="Acceptable" if _is_compliant_row else risk_lbl,
                 impact=impact,
                 suggestion=suggestion,
                 evidence=evidence,
@@ -5017,10 +5165,13 @@ def export_docx_report(session_title, findings, resolved_list, status, comments=
     sev_counts = {'High': 0, 'Medium': 0, 'Low': 0, 'Accepted': 0}
     for f in findings:
         st_norm = f.get("status", "Non-Compliant")
-        if st_norm == "Compliant":
-            sev_counts['Accepted'] += 1
-        elif st_norm == "False Positive":
+        # Counted exactly as the observations table below lists them: thrown-out
+        # findings not at all, and a finding as passed only by its verdict -- an
+        # ACCEPTED non-compliance is a confirmed non-compliance.
+        if st_norm == "False Positive" or _excluded_from_report(f):
             pass
+        elif _finding_is_compliant(f):
+            sev_counts['Accepted'] += 1
         else:
             # str(): a finding whose severity is None (or a non-string) made the
             # membership test below raise and took the ENTIRE export down -- the
@@ -5091,9 +5242,8 @@ def export_docx_report(session_title, findings, resolved_list, status, comments=
             _set_cell_borders(cell)
             
         # Get severity/risk mapping based on final_result / status
-        st_val = str(f.get("final_result") or f.get("status") or "Non-Compliant").strip().upper()
         sev_score = f.get("severity_score", 0.0) or 0.0
-        if st_val == "COMPLIANT":
+        if _finding_is_compliant(f):
             mapped_risk = "Accepted"
             risk_text = "Acceptable"
         else:
@@ -5115,7 +5265,7 @@ def export_docx_report(session_title, findings, resolved_list, status, comments=
             else:
                 mapped_risk = "Low"
                 risk_label = "Low"
-            risk_text = f"{risk_label} ({sev_score:.1f})"
+            risk_text = f"{risk_label} ({sev_score:.1f})" if sev_score else risk_label
 
         # Shading by risk
         bg_color = {"High": "FEE2E2", "Medium": "FEFCE8", "Low": "EFF6FF", "Accepted": "F0FDF4"}.get(mapped_risk, "FFFFFF")
@@ -5270,6 +5420,25 @@ def _docx_bytes_to_pdf(docx_bytes, timeout=180):
 
 
 def export_pdf_report(session_title, findings, resolved_list, status, comments="", audit_type=None, custom_logo=None, metadata=None):
+    """The PDF report; see _export_pdf_report.
+
+    The ISO fallback layout's observations table cannot break a row across
+    pages, and fpdf refuses a row taller than a page by failing the whole
+    export ("row ... is too high"). Each cell is capped to fit, but a finding
+    full of line breaks can still exceed a page, so the report is retried with
+    tighter caps rather than lost.
+    """
+    for _scale in (1.0, 0.6, 0.35):
+        try:
+            return _export_pdf_report(session_title, findings, resolved_list, status, comments,
+                                      audit_type=audit_type, custom_logo=custom_logo,
+                                      metadata=metadata, _cell_scale=_scale)
+        except ValueError as _e:
+            if "too high" not in str(_e) or _scale == 0.35:
+                raise
+
+
+def _export_pdf_report(session_title, findings, resolved_list, status, comments="", audit_type=None, custom_logo=None, metadata=None, _cell_scale=1.0):
     """
     audit_type: explicit "vapt" / "iso" from the caller (derived from AuditReport.framework,
     the authoritative field set when the audit session was created). When omitted, falls back
@@ -5360,14 +5529,14 @@ def export_pdf_report(session_title, findings, resolved_list, status, comments="
         val = val.encode("latin-1", "replace").decode("latin-1")
         return val
 
-    def truncate_cell_text(text, max_chars=800):
+    def truncate_cell_text(text, max_chars=2000):
+        # A table row here cannot break across pages, so each cell is capped to
+        # what its column holds on one page (the callers pass the cap). The caps
+        # were 400-700 characters, cut mid-word: ordinary findings lost their
+        # last third to "... [Truncated for PDF]".
         if not text:
             return "-"
-
-        text = str(text)
-        if len(text) > max_chars:
-            return text[:max_chars] + "... [Truncated for PDF]"
-        return text
+        return _cut_words(str(text), max(40, int(max_chars * _cell_scale)))
 
     class AuditPDF(FPDF):
         """Running header and footer, matching the firm's delivered reports:
@@ -5751,10 +5920,13 @@ def export_pdf_report(session_title, findings, resolved_list, status, comments="
     sev_counts = {'High': 0, 'Medium': 0, 'Low': 0, 'Accepted': 0}
     for f in findings:
         st_norm = f.get("status", "Non-Compliant")
-        if st_norm == "Compliant":
-            sev_counts['Accepted'] += 1
-        elif st_norm == "False Positive":
+        # Counted exactly as the observations table below lists them: thrown-out
+        # findings not at all, and a finding as passed only by its verdict -- an
+        # ACCEPTED non-compliance is a confirmed non-compliance.
+        if st_norm == "False Positive" or _excluded_from_report(f):
             pass
+        elif _finding_is_compliant(f):
+            sev_counts['Accepted'] += 1
         else:
             # str(): a finding whose severity is None (or a non-string) made the
             # membership test below raise and took the ENTIRE export down -- the
@@ -5811,8 +5983,7 @@ def export_pdf_report(session_title, findings, resolved_list, status, comments="
             r = table.row()
             
             # Map risk: final_result is the single source of truth
-            st_val = str(f.get("final_result") or f.get("status") or "").strip().upper()
-            is_comp = (st_val == "COMPLIANT")
+            is_comp = _finding_is_compliant(f)
 
             sev_score = f.get("severity_score", 0.0) or 0.0
             if is_comp:
@@ -5835,7 +6006,7 @@ def export_pdf_report(session_title, findings, resolved_list, status, comments="
                 else:
                     mapped_risk = "Low"
                     risk_label = "Low"
-                risk_text = f"{risk_label} ({sev_score:.1f})"
+                risk_text = f"{risk_label} ({sev_score:.1f})" if sev_score else risk_label
                     
             # Color coding
             bg_color = {
@@ -5898,16 +6069,16 @@ def export_pdf_report(session_title, findings, resolved_list, status, comments="
                     obs_text = "-"
             # Truncate first, then mark up -- highlighting before the cut could slice
             # a "**" pair in half and leave a stray marker in the cell.
-            r.cell(highlight_markdown(clean_text(truncate_cell_text(obs_text, 700))), style=cell_style)
+            r.cell(highlight_markdown(clean_text(truncate_cell_text(obs_text, 1500))), style=cell_style)
 
             r.cell(clean_text(risk_text), style=risk_style)
 
             imp_text = redact_pii(_strip_reasoning_narrative(
                 str(f.get("business_impact") or "NIL"), _status_for_row))
-            r.cell(highlight_markdown(clean_text(truncate_cell_text(imp_text, 400))), style=cell_style)
+            r.cell(highlight_markdown(clean_text(truncate_cell_text(imp_text, 600))), style=cell_style)
 
             sug_text = redact_pii(f.get("recommendation") or "NIL")
-            r.cell(clean_text(truncate_cell_text(sug_text, 500)), style=cell_style)
+            r.cell(clean_text(truncate_cell_text(sug_text, 900)), style=cell_style)
 
             # Evidence identifies WHERE the artifact lives, not a prose retelling of it.
             ev_text = redact_pii(str(

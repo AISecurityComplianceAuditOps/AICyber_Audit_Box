@@ -553,3 +553,117 @@ def test_ocr_lines_are_joined_on_newlines():
         "through it lose every line break")
     assert src.count('"' + chr(92) + 'n".join(res)') >= 9, (
         "expected every OCR call site to join on newlines")
+
+
+# ── an accepted NON-COMPLIANCE stays a non-compliance in the report ──────────
+# Accept confirms the verdict the audit reached. The ISO report (the template
+# DOCX, and the PDF rendered from it) read the word "Accepted" as a pass: a
+# confirmed non-compliance was counted under "Acceptable", given risk
+# "Acceptable" and Impact / Suggestion "NIL" -- the opposite of what the
+# auditor confirmed.
+
+@pytest.mark.parametrize("status,final_result,expected", [
+    ("Accepted", "COMPLIANT", True),
+    ("Accepted", "NON_COMPLIANT", False),
+    ("Accepted", None, False),                 # nothing to confirm: fail closed
+    ("Compliant", "NON_COMPLIANT", True),      # the auditor's explicit verdict wins
+    ("Non-Compliant", "COMPLIANT", False),
+    ("Open", "COMPLIANT", True),
+    ("Open", "NON_COMPLIANT", False),
+])
+def test_report_compliance_is_the_verdict_not_the_word_accepted(status, final_result, expected):
+    from src.core.finding_status import is_compliant_verdict
+    assert is_compliant_verdict(status, final_result) is expected
+
+
+def _template_report(findings):
+    import io as _io
+    import src.core.report_exporter as rx
+    data = rx._export_iso_template_docx("accept regression", findings, [], "COMPLETED", metadata=_PDF_META)
+    if not data:
+        pytest.skip("VAPT/Sample report.docx (the ISO template, gitignored) is not present")
+    from docx import Document
+    return Document(_io.BytesIO(data))
+
+
+def _finding(control, status, final_result, severity):
+    f = dict(_PDF_FINDING)
+    f.update({"control_id": control, "control_name": control, "control": control,
+              "status": status, "final_result": final_result, "severity": severity,
+              "description": control + " observation", "gap_description": control + " observation"})
+    return f
+
+
+def test_the_iso_report_keeps_an_accepted_non_compliance_as_a_non_compliance():
+    doc = _template_report([
+        _finding("5.1 Policies", "Accepted", "NON_COMPLIANT", "P2 High"),      # confirmed gap
+        _finding("8.17 Clock", "Accepted", "COMPLIANT", "N/A"),               # confirmed pass
+        _finding("5.15 Access", "Non-Compliant", "NON_COMPLIANT", "P3 Medium"),
+        _finding("8.15 Logging", "Compliant", "COMPLIANT", "N/A"),
+    ])
+    summary = {r.cells[1].text.strip(): r.cells[2].text.strip() for r in doc.tables[5].rows[2:6]}
+    assert summary == {"HIGH": "1", "MEDIUM": "1", "LOW": "0", "Acceptable": "2"}, summary
+
+    risk = {}
+    for row in doc.tables[6].rows[1:]:
+        cells = [c.text.strip() for c in row.cells]
+        for ctrl in ("5.1 Policies", "8.17 Clock", "5.15 Access", "8.15 Logging"):
+            if any(ctrl in c for c in cells[:2]):
+                risk[ctrl] = cells[4]
+    assert risk == {"5.1 Policies": "High", "8.17 Clock": "Acceptable",
+                    "5.15 Access": "Medium", "8.15 Logging": "Acceptable"}, risk
+
+
+def test_a_control_based_finding_shows_its_control_not_the_question_placeholder():
+    """The export endpoints send "Requirement question not provided" when a
+    finding has no question; the report printed it as every row's control
+    point. A real question is still the control point."""
+    from src.core.report_exporter import _control_point_label
+    base = {"control_id": "5.15", "control_name": "5.15 Access control"}
+    assert _control_point_label(dict(base, requirement_question="Requirement question not provided")) \
+        == "5.15 Access control"
+    assert _control_point_label(dict(base, requirement_question=
+                                     "5.15 Access control - Is access reviewed quarterly?")) \
+        == "Is access reviewed quarterly?"
+
+
+# ── the ISO report's layout: findings flow across pages, whole ──────────────
+
+def _long_finding(n, obs):
+    return {"control_id": f"5.{n}", "control_name": f"5.{n} Control {n}", "control": f"5.{n} Control {n}",
+            "status": "Non-Compliant", "final_result": "NON_COMPLIANT", "severity": "P2 High",
+            "description": obs, "gap_description": obs, "business_impact": "Impact.",
+            "recommendation": "Fix it.", "source_files": "a.pdf"}
+
+
+def test_only_the_header_row_of_the_observations_table_repeats():
+    """Every finding row was a copy of the header row, "repeat as header row"
+    flag included: Word put one finding per page, and LibreOffice (the ISO PDF)
+    ran long findings off the bottom of the page over the next ones."""
+    from docx.oxml.ns import qn
+    doc = _template_report([_long_finding(1, "x " * 50), _long_finding(2, "y " * 50)])
+    rows = doc.tables[6].rows
+    flagged = [i for i, r in enumerate(rows) if r._tr.find(qn("w:trPr")) is not None
+               and r._tr.find(qn("w:trPr")).find(qn("w:tblHeader")) is not None]
+    assert flagged == [0], flagged
+
+
+def test_a_long_observation_reaches_the_word_report_whole():
+    """It was cut at 800 characters, mid-word, with nothing to say so."""
+    obs = "START " + ("The quarterly access review was not performed and leaver accounts remain. " * 25) + "END-OF-OBSERVATION"
+    doc = _template_report([_long_finding(1, obs)])
+    cells = " ".join(c.text for r in doc.tables[6].rows for c in r.cells)
+    assert "END-OF-OBSERVATION" in cells
+
+
+def test_the_pdf_survives_a_finding_taller_than_a_page_and_prints_no_invented_score():
+    """fpdf cannot split a row; one taller than a page failed the whole export."""
+    import src.core.report_exporter as rx
+    many_lines = "\n".join("- line %d of the observation" % i for i in range(150))
+    out = rx.export_pdf_report("tall finding", [_long_finding(1, many_lines)], [], "COMPLETED",
+                               metadata={"framework": "ISO 27001"})
+    data = out.getvalue() if hasattr(out, "getvalue") else out
+    from pypdf import PdfReader
+    text = " ".join((p.extract_text() or "") for p in PdfReader(io.BytesIO(data)).pages)
+    assert "line 0 of the observation" in text
+    assert "(0.0)" not in text, "a score the finding does not have was printed"

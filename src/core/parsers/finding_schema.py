@@ -2,6 +2,25 @@
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+# A proof of concept is kept as the scanner wrote it. It was cut at 500, 700,
+# 800, 1200 or 1500 characters by the parsers, again at 1200 by the worker
+# and at 2500 by the reports, so a Burp issue detail ended "You shoul" and a
+# response lost the line the issue was about. Only a raw HTTP body from an XML
+# export (a whole page) can run past this; it is cut at a line and says so.
+POC_MAX_CHARS = 20000
+
+
+def full_poc(text, limit=POC_MAX_CHARS):
+    """The proof of concept whole, or, past `limit`, cut at a line break with
+    the number of characters left out stated."""
+    text = str(text or "").strip()
+    if len(text) <= limit:
+        return text
+    cut = text.rfind("\n", 0, limit)
+    if cut < limit * 0.6:
+        cut = limit
+    return text[:cut].rstrip() + f"\n[... {len(text) - cut} more characters in the source file]"
+
 def _calculate_cvss_score(vector_str: str) -> Optional[float]:
     """
     Standards-based CVSS v2 & v3 vector calculation using the `cvss` library.
@@ -81,6 +100,7 @@ class Finding:
     cia_impact: str = ""                  # C:HIGH | I:LOW | A:NONE
     is_pii_exposed: bool = False          # PII / sensitive data exposure flag
     remediation_actionable: str = ""      # Developer-actionable mitigation steps
+    report_status: str = ""               # "Closed" when a pentest report records the finding as fixed
     # ── PQC (Post-Quantum Cryptography Readiness) Enhancement Fields ──
     # Optional, defaulted so no other parser/caller breaks. Populated only by
     # pqc_parser.py for the CBOM/QBOM inventory row (flows through to_dict()

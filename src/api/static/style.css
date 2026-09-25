@@ -2840,4 +2840,21 @@ body[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
     }
 }
 
+
+/* VAPT sessions: Critical, High, Medium, Low, Informational, Closed, Total */
+.kpi-row-vapt {
+    grid-template-columns: repeat(7, 1fr);
+}
+
+.info-box .kpi-number {
+    color: #64748b;
+}
+
+.closed-box .kpi-number {
+    color: #0f766e;
+}
+
+.total-box .kpi-number {
+    color: var(--text-main);
+}
 

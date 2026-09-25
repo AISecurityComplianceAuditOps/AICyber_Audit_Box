@@ -126,16 +126,6 @@ def _expand_scan_containers(files_data, _depth=0):
     return out
 
 
-def _cut_words(text, limit):
-    """Shorten proof text at a word boundary with a visible marker. A hard
-    slice cut words in half in a delivered report ("You shoul")."""
-    text = str(text or "")
-    if len(text) <= limit:
-        return text
-    cut = text.rfind(" ", 0, limit)
-    return text[:cut if cut > limit * 0.6 else limit].rstrip() + " [...]"
-
-
 def _detect_physical_cores():
     """Physical core count, or None when it can't be determined.
 
@@ -2592,7 +2582,7 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
         # OCR-fallback finding construction below needs the parsers' plain dataclass
         # (title/evidence/control_id/etc.), not the ORM model, which has none of
         # those columns and raises "invalid keyword argument" if constructed with them.
-        from src.core.parsers.finding_schema import Finding as ParsedFinding
+        from src.core.parsers.finding_schema import Finding as ParsedFinding, full_poc
 
         # Pre-seed dedup keys from whatever this session already saved in a PREVIOUS
         # run -- without this, re-running a scan on the same session (e.g. after
@@ -2737,6 +2727,24 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
             info_findings = info if isinstance(info, list) else []
             combined_tool_findings = actionable + info_findings
 
+            # An HTML report whose pages are pictures (a PDF put through
+            # pdf2htmlEX): no text for any parser, so the scan found nothing in
+            # a report listing four HIGH findings. Its images are read by OCR,
+            # as the same report's PDF already is.
+            if not combined_tool_findings and fname_lower.endswith((".html", ".htm")):
+                try:
+                    from src.core.parsers.doc_parsers import ocr_html_images
+                    _ocr_html = ocr_html_images(ftext)
+                    if _ocr_html.strip():
+                        _a3, _i3 = parse_tool_file("ocr_" + fname + ".txt", _ocr_html,
+                                                   framework=_dispatch_framework)
+                        combined_tool_findings = _a3 + (_i3 if isinstance(_i3, list) else [])
+                        if combined_tool_findings:
+                            print(f"[VAPT] '{fname}' is a picture of a report; "
+                                  f"{len(combined_tool_findings)} finding(s) read by OCR.", flush=True)
+                except Exception as _html_ocr_err:
+                    print(f"[VAPT] OCR of the images in '{fname}' skipped: {_html_ocr_err}", flush=True)
+
             # ── Fallback for Image Screenshots in Fast Technical Mode ────────
             # When an image screenshot (PNG, JPG, WEBP, BMP, TIFF) is uploaded in fast
             # technical mode, parse_tool_file() skips XML/HTML tool parsing (returning []).
@@ -2808,7 +2816,21 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
                             control_id="VAPT-3",
                         ))
 
-            for f in combined_tool_findings:
+            # Of this file's findings that share a key, the most severe is kept,
+            # not merely the first. Nessus's informational "Patch Report" lists
+            # the CVEs of the patches it found missing, so it shares a key with
+            # the HIGH finding for one of them; which survived depended on
+            # which the export happened to list first.
+            _sev_rank = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1}
+            _keep_index = {}
+            for _i, _f in enumerate(combined_tool_findings):
+                if hasattr(_f, "dedup_key"):
+                    _k = _f.dedup_key()
+                    _r = _sev_rank.get(str(getattr(_f, "severity", "") or "").upper(), 0)
+                    if _k not in _keep_index or _r > _keep_index[_k][1]:
+                        _keep_index[_k] = (_i, _r)
+
+            for _f_index, f in enumerate(combined_tool_findings):
                 # Skip exact-duplicate findings (same CVE, or same tool+plugin_id, or
                 # same tool+normalized title — see Finding.dedup_key()) before they're
                 # ever written to the report. Checks both this run's findings-so-far
@@ -2818,6 +2840,8 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
                 _dedup_key_val = None
                 if hasattr(f, "dedup_key"):
                     _dedup_key_val = f.dedup_key()
+                    if _keep_index.get(_dedup_key_val, (_f_index,))[0] != _f_index:
+                        continue
                     if _dedup_key_val in _seen_dedup_keys:
                         continue
                     _seen_dedup_keys.add(_dedup_key_val)
@@ -2832,7 +2856,12 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
                 f_dict["dedup_key"] = _dedup_key_val
                 f_dict["control_id"] = c_id
                 f_dict["control"] = f_dict.get("control") or c_id
-                f_dict["status"] = "Non-Compliant" if f_dict.get("severity") != "INFO" else "Informational"
+                # A pentest report's closed row is "Closed", whatever its severity:
+                # it is fixed, not an open gap, and not an informational result.
+                if str(f_dict.get("report_status") or "").lower() == "closed":
+                    f_dict["status"] = "Closed"
+                else:
+                    f_dict["status"] = "Non-Compliant" if f_dict.get("severity") != "INFO" else "Informational"
                 f_dict["display_status"] = "Open"
                 f_dict["source_files"] = fname   # Scan FILE name, not host IP
                 # ── Build structured evidence snippet (Proof of Concept block) ──
@@ -2855,9 +2884,11 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
                     poc_lines.append(f"CVE(s):      {_cve_str}")
                 poc_lines.append(f"Scanner:     {_tool}")
                 if _plugin_out and "Not available in scan report" not in _plugin_out:
-                    poc_lines.append(f"Plugin Output:\n{_cut_words(_plugin_out, 1200)}")
+                    # Whole: the proof is what the auditor checks the
+                    # finding against (see finding_schema.full_poc).
+                    poc_lines.append(f"Plugin Output:\n{full_poc(_plugin_out)}")
                 elif _desc_text:
-                    poc_lines.append(f"Plugin Output:\n{_cut_words(_desc_text, 1200)}")
+                    poc_lines.append(f"Plugin Output:\n{full_poc(_desc_text)}")
                 else:
                     poc_lines.append(f"Plugin Output:\nTarget endpoint verified: {_target}")
                 poc_block = "\n".join(poc_lines)

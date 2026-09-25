@@ -103,6 +103,14 @@ def _poc_line(block, label):
     return m.group(1).strip() if m else ""
 
 
+def _known_exploited_line(refs):
+    try:
+        from src.core.parsers.control_mapper import known_exploited_line
+        return known_exploited_line(refs)
+    except Exception:
+        return ""
+
+
 def _vapt_scanner_fields(f):
     """What the scanner itself reported about a VAPT finding, for the report.
 
@@ -130,6 +138,8 @@ def _vapt_scanner_fields(f):
         "confidence": getattr(f, "confidence", None) or "",
         "cvss_vector": getattr(f, "cvss_vector", None) or "",
         "cve_list": refs,
+        # "CVE-... is in CISA's Known Exploited Vulnerabilities catalog (...)"
+        "known_exploited": _known_exploited_line(refs),
         # None = the scanner assigned no score; the exporters say so rather
         # than print a number nobody assessed.
         "severity_score": score if score > 0 else None,
@@ -2372,6 +2382,16 @@ def api_get_findings(request: Request, session_id: str, saved_only: bool = False
                         {"cve_list": _sf["cve_list"], "category": f.category or ""},
                         f.control_name or "", f.description or "")
                     result[-1]["confidence"] = _sf["confidence"]
+                    # CVEs known to be exploited in the wild (CISA KEV), looked
+                    # up from the saved CVEs so earlier scans are marked too.
+                    from src.core.parsers.control_mapper import known_exploited
+                    result[-1]["known_exploited"] = known_exploited(_sf["cve_list"])
+                    # The finding's own CVEs. The card fished them out of the
+                    # proof text with a regex, which also caught a CVE merely
+                    # mentioned in a description.
+                    _own_cves = [c for c in _sf["cve_list"] if str(c).upper().startswith("CVE-")]
+                    if _own_cves:
+                        result[-1]["cve_list"] = _own_cves
                 except Exception as _ow_err:
                     print(f"[FINDINGS API] OWASP category not derived: {_ow_err}", flush=True)
         return {
@@ -3574,6 +3594,9 @@ def api_export_docx(
                     "finding": f.description or f.gap_detected or "",
                     "description": f.description or f.gap_detected or "",
                     "status": f.status or "Non-Compliant",
+                    # The verdict. "Accepted" in status only confirms it; without
+                    # this the report read every accepted finding as a pass.
+                    "final_result": f.final_result,
                     "severity": f.severity or "Medium",
                     "severity_score": sev_score,
                     "business_impact": f.reasoning or "Compliance verification pending.",
@@ -3635,9 +3658,10 @@ def api_export_docx(
                     findings_mapped[-1].update(_vapt_scanner_fields(f))
                     if "INFO" in str(f.severity or "").upper():
                         findings_mapped[-1]["severity"] = "INFO"
-                if f.status == "Compliant":
+                from src.core.finding_status import is_compliant_verdict
+                if is_compliant_verdict(f.status, f.final_result):
                     resolved_list.append(f.control_id)
-                    
+
             fw_name = (report.framework or "Audit_Report").replace(" ", "_").replace("/", "_")
             is_vapt = _session_is_technical(
                 report.framework,
@@ -4047,6 +4071,7 @@ def api_export_pdf(
                     "clause": "ISO 27001 Annex A",
                     "description": _desc_str,
                     "status": "Compliant" if is_comp else (f.status or "Non-Compliant"),
+                    "final_result": f.final_result,
                     "policy_present": pol_pres,
                     "evidence_present": ev_pres,
                     "severity": "N/A" if is_comp else c_sev,

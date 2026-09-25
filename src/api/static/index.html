@@ -7,7 +7,7 @@
     <title>AICyberAuditBox - Local Compliance Intelligence</title>
     <link rel="icon"
         href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🛡️</text></svg>">
-    <link rel="stylesheet" href="/static/style.css?v=20260726_v360000">
+    <link rel="stylesheet" href="/static/style.css?v=20260925_v360001">
     <!-- Webfonts are served from this box: the product runs air-gapped, so
          nothing may be fetched from a CDN at page load. -->
     <link rel="stylesheet" href="/static/fonts/fonts.css">
@@ -768,7 +768,39 @@
                 <!-- ── TAB: AUDIT RECORDS (DETAILED FINDINGS REVIEW) ── -->
                 <section id="tab-audit-records" class="tab-panel">
                     <!-- Summary KPI Counters Row -->
-                    <div class="modern-kpi-summary-row">
+                    <!-- VAPT sessions: Critical, High, Medium, Low, Informational, Closed, Total
+                         (shown instead of the row below by syncStatusFilterForSession). -->
+                    <div class="modern-kpi-summary-row kpi-row-vapt" id="kpi-row-vapt" style="display:none;">
+                        <div class="kpi-box p1-box" onclick="toggleSeverityFilter('P1 Critical')">
+                            <span class="kpi-label">Critical</span>
+                            <span class="kpi-number" id="count-vapt-critical">0</span>
+                        </div>
+                        <div class="kpi-box p2-box" onclick="toggleSeverityFilter('P2 High')">
+                            <span class="kpi-label">High</span>
+                            <span class="kpi-number" id="count-vapt-high">0</span>
+                        </div>
+                        <div class="kpi-box p3-box" onclick="toggleSeverityFilter('P3 Medium')">
+                            <span class="kpi-label">Medium</span>
+                            <span class="kpi-number" id="count-vapt-medium">0</span>
+                        </div>
+                        <div class="kpi-box p4-box" onclick="toggleSeverityFilter('P4 Low')">
+                            <span class="kpi-label">Low</span>
+                            <span class="kpi-number" id="count-vapt-low">0</span>
+                        </div>
+                        <div class="kpi-box info-box" onclick="toggleVaptStatusFilter('Informational')">
+                            <span class="kpi-label">Informational</span>
+                            <span class="kpi-number" id="count-vapt-info">0</span>
+                        </div>
+                        <div class="kpi-box closed-box" onclick="toggleVaptStatusFilter('Closed')">
+                            <span class="kpi-label">Closed</span>
+                            <span class="kpi-number" id="count-vapt-closed">0</span>
+                        </div>
+                        <div class="kpi-box total-box" onclick="toggleVaptStatusFilter('All')">
+                            <span class="kpi-label">Total</span>
+                            <span class="kpi-number" id="count-vapt-total">0</span>
+                        </div>
+                    </div>
+                    <div class="modern-kpi-summary-row" id="kpi-row-standard">
                         <div class="kpi-box compliant-box" onclick="toggleComplianceFilter('Compliant')">
                             <span class="kpi-label">Compliant</span>
                             <span class="kpi-number" id="count-compliant">0</span>
@@ -2089,7 +2121,7 @@
     <script src="/static/js/config.js?v=20260807_v410055"></script>
     <script src="/static/js/sidebar.js?v=20260807_v410055"></script>
     <script src="/static/js/admin.js?v=20260807_v410055"></script>
-    <script src="/static/app.js?v=20260826_v410056"></script>
+    <script src="/static/app.js?v=20260925_v410059"></script>
 </body>
 
 </html>

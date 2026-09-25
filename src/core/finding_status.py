@@ -79,6 +79,24 @@ def derive_final_result(status, current_final_result=None):
     return "NON_COMPLIANT"
 
 
+def is_compliant_verdict(status, final_result):
+    """Whether a finding's control passed, for a report.
+
+    An explicit verdict in the status wins (the auditor chose Compliant or
+    Non-Compliant in the Modify dialog); otherwise the recorded final_result
+    decides. The word "Accepted" is not a verdict: the ISO report counted every
+    accepted finding as "Acceptable", so an auditor confirming a real
+    non-compliance with Accept published it in the report as a pass, with
+    Impact and Suggestion "NIL". No verdict at all fails closed.
+    """
+    st = normalise_status(status)
+    if st in ACCEPTING_STATUSES:
+        return True
+    if st in FAILING_STATUSES:
+        return False
+    return normalise_status(final_result) == "COMPLIANT"
+
+
 def is_recognised_status(status):
     """True when the string is one the UI can actually produce.
 

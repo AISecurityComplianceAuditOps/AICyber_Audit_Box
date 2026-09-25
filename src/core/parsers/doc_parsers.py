@@ -175,6 +175,63 @@ def extract_docx_table_rows(docx_bytes):
     return rows
 
 
+def ocr_html_images(html_text):
+    """The text of an HTML report whose pages are pictures, read by OCR.
+
+    FOR THE VAPT PATH ONLY. A PDF converted with pdf2htmlEX can come out as
+    one image per page and no text at all: a real report's four HIGH findings
+    arrived as a 238 KB .html with nothing for any parser to read, and the scan
+    reported zero findings. Returns "" for an HTML with real text, so a scanner
+    export or an ordinary page is never OCR'd.
+
+    Each image is cropped to what is drawn on it first. A page render puts the
+    findings table in the middle of a white A4 sheet, and the table rebuild
+    (_grid_rows) measures cell gaps relative to the image: on the whole page
+    the gaps were too small, the cells came back scattered, and the table read
+    as three findings named "Vertical Privilege", "Cryptographic" and
+    "Reference". Cropped, it reads as the four rows the report has.
+    """
+    import base64
+    import io as _io
+    try:
+        from bs4 import BeautifulSoup
+        from PIL import Image, ImageOps
+    except Exception:
+        return ""
+    html_text = html_text or ""
+    if "data:image" not in html_text:
+        return ""
+    try:
+        soup = BeautifulSoup(html_text, "html.parser")
+        for tag in soup(["style", "script"]):
+            tag.decompose()
+        if len(soup.get_text(" ", strip=True).split()) >= 40:
+            return ""                      # it has text: not a picture of a report
+    except Exception:
+        return ""
+    texts = []
+    images = re.findall(r'src=["\']data:image/(?:png|jpe?g|gif|bmp|webp);base64,([A-Za-z0-9+/=\s]+)["\']',
+                        html_text, re.I)
+    for n, b64 in enumerate(images, 1):
+        try:
+            img = Image.open(_io.BytesIO(base64.b64decode(b64))).convert("RGB")
+        except Exception:
+            continue
+        if min(img.size) < 200:
+            continue                       # an icon or a logo, not a page
+        bbox = ImageOps.invert(img.convert("L")).point(lambda v: 255 if v > 30 else 0).getbbox()
+        if bbox:
+            img = img.crop(bbox)
+        buf = _io.BytesIO()
+        img.save(buf, "PNG")
+        buf.seek(0)
+        buf.name = f"html_page_{n}.png"
+        text = extract_text(buf) or ""
+        if text.strip() and not text.startswith("[Error"):
+            texts.append(text)
+    return "\n\n".join(texts)
+
+
 def _split_line_into_cells(line, y0, y1):
     """One doctr line as the table cells it actually spans.
 

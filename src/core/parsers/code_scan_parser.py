@@ -20,7 +20,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from .base_parser import BaseParser, is_image_file
-from .finding_schema import Finding
+from .finding_schema import Finding, full_poc
 
 _SEV_WORDS = {
     "critical": "CRITICAL", "high": "HIGH", "medium": "MEDIUM", "moderate": "MEDIUM",
@@ -310,7 +310,7 @@ class CodeScanParser(BaseParser):
                 description=str(r.get("issue_text") or ""),
                 remediation=f"Fix the code at {target}: {r.get('issue_text')}" + (
                     f" See {r.get('more_info')}." if r.get("more_info") else ""),
-                evidence=str(r.get("code") or "")[:800],
+                evidence=full_poc(r.get("code")),
                 plugin_id=str(r.get("test_id") or ""),
                 source_tool="Bandit",
             ))
@@ -375,8 +375,8 @@ class CodeScanParser(BaseParser):
                     description=desc,
                     remediation=str(fix) if fix else "Remediate as the scanner's finding describes.",
                     category="Vulnerable Components" if (cves and "depend" in (category + tool).lower()) else "",
-                    evidence="\n".join(f"{k}: {v}" for k, v in d.items()
-                                       if isinstance(v, (str, int, float)) and str(v).strip())[:1200],
+                    evidence=full_poc("\n".join(f"{k}: {v}" for k, v in d.items()
+                                                if isinstance(v, (str, int, float)) and str(v).strip())),
                     plugin_id=str(rule or ""),
                     source_tool=tool,
                 ))

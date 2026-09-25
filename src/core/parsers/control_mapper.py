@@ -756,6 +756,187 @@ _CWE_REMEDIATION = {
     "CWE-918": _REMEDIATION_TEMPLATES["ssrf"],
 }
 
+# ── MITRE CWE mitigations, for a finding whose source gave no remediation ─────
+# src/core/knowledge/cwe_mitigations.json is built from MITRE's CWE list by
+# scripts/build_cwe_mitigations.py (see there for the CWE Terms of Use notice
+# it carries). A pentest report's findings table often has no remediation
+# column at all, and the report then printed a template written here; MITRE's
+# own mitigations for the finding's weakness are the better general guidance,
+# and are labelled as such -- never as the tester's advice.
+
+# A finding with no CWE of its own: its title, mapped conservatively. Only
+# names that denote one weakness unambiguously; anything else keeps the
+# existing fallback.
+_TITLE_TO_CWE = (
+    (r"\bsql\s*injection\b|\bsqli\b", "CWE-89"),
+    (r"cross[- ]site scripting|\bxss\b", "CWE-79"),
+    (r"cross[- ]site request forgery|\bcsrf\b", "CWE-352"),
+    (r"server[- ]side request forgery|\bssrf\b|external service interaction", "CWE-918"),
+    (r"xml external entit|\bxxe\b", "CWE-611"),
+    (r"open redirect", "CWE-601"),
+    (r"clickjacking|frameable response", "CWE-1021"),
+    (r"os command injection|\bcommand injection\b", "CWE-78"),
+    (r"template injection", "CWE-1336"),
+    (r"path traversal|directory traversal|file path manipulation", "CWE-22"),
+    (r"unrestricted file upload", "CWE-434"),
+    (r"insecure direct object reference|\bidor\b", "CWE-639"),
+    (r"privilege escalation", "CWE-269"),
+    (r"broken authentication|authentication bypass", "CWE-287"),
+    (r"default credential|default password", "CWE-1392"),
+    (r"session fixation", "CWE-384"),
+    (r"strict[- ]transport[- ]security|\bhsts\b", "CWE-523"),
+    (r"without (?:the )?['\"]?secure['\"]? flag|secure flag (?:is )?not (?:set|configured)", "CWE-614"),
+    (r"without (?:the )?['\"]?httponly['\"]? flag|httponly flag (?:is )?not (?:set|configured)", "CWE-1004"),
+    # Transmission only: "Processes reveal plaintext passwords" is not CWE-319.
+    (r"clear\s*text (?:data )?transmission|cleartext submission|unencrypted (?:connection|communication|channel)"
+     r"|transmitted (?:in|over) (?:clear|plain)\s*text", "CWE-319"),
+    (r"missing encryption", "CWE-311"),
+    (r"insecure deserialization|unsafe deserialization", "CWE-502"),
+    (r"prototype pollution", "CWE-1321"),
+    (r"vulnerable (?:javascript )?(?:dependency|component|library)", "CWE-1395"),
+)
+
+# Phases whose mitigations are a fix, in the order they are preferred. "Testing"
+# describes how to find the weakness, not how to remove it.
+_FIX_PHASES = ("Implementation", "Operation", "System Configuration", "Patching and Maintenance",
+               "Installation", "Architecture and Design", "Build and Compilation", "Integration")
+
+_CWE_KB = None
+
+
+def _cwe_kb() -> dict:
+    global _CWE_KB
+    if _CWE_KB is None:
+        import json
+        import os
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "knowledge",
+                            "cwe_mitigations.json")
+        try:
+            with open(path, encoding="utf-8") as fh:
+                _CWE_KB = json.load(fh).get("cwe", {})
+        except Exception:
+            _CWE_KB = {}              # no knowledge file: the existing fallback applies
+    return _CWE_KB
+
+
+def _first_sentences(text: str, limit: int = 400) -> str:
+    """MITRE's text without its "[REF-1482]" citations, cut at a sentence end."""
+    text = str(text or "")
+    # "According to [REF-1247], ..." -- the citation is the whole subject.
+    text = re.sub(r"\bAccording to\s+(?:\[REF-\d+\][\s,and]*)+", "", text)
+    text = re.sub(r"\s*\[REF-\d+\]", "", text)
+    text = re.sub(r"\(\s*(?:see\s*)?\)", "", text)            # "(see [REF-1])" emptied
+    text = re.sub(r"\s+([,.;:])", r"\1", text)
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    ends = [m.end() for m in re.finditer(r"[.!?](?=\s)", text) if m.end() <= limit]
+    return text[:ends[-1]] if ends else text
+
+
+def _pick_mitigations(mitigations, n: int = 3):
+    """The first `n` of MITRE's mitigations that are fixes, in MITRE's order --
+    MITRE lists the primary mitigation first (for SQL injection: a vetted
+    framework, then structured queries). Skipped: testing and documentation
+    advice, hardware-only advice, and requirements/policy items when enough
+    actionable ones remain."""
+    usable = [m for m in mitigations
+              if not (set(m.get("phase") or []) <= {"Testing", "Documentation"})]
+    software = [m for m in usable if "hardware" not in m.get("text", "").lower()]
+    usable = software or usable
+    actionable = [m for m in usable if set(m.get("phase") or []) & set(_FIX_PHASES)]
+    if len(actionable) >= n:
+        usable = actionable
+    return [_first_sentences(m["text"]) for m in usable[:n] if m.get("text")]
+
+
+# Weakness classes too broad for their mitigations to guide a fix: CWE-20's
+# first is "consider using language-theoretic security techniques".
+_GENERIC_CWES = {"CWE-20", "CWE-200", "CWE-693", "CWE-16"}
+
+
+def mitre_cwe_guidance(finding: Finding) -> str:
+    """MITRE's mitigations for the finding's weakness, labelled as general
+    guidance, or "" when its weakness cannot be told.
+
+    Not for a finding with a CVE: that is a flaw in someone else's product,
+    fixed by the vendor's patch, not by redesigning the code (WinRAR's
+    directory traversal, CVE-2025-6218, is not the customer's path handling).
+    """
+    kb = _cwe_kb()
+    if not kb:
+        return ""
+    if any(str(c).upper().startswith("CVE-") for c in (finding.cve_list or [])):
+        return ""
+
+    def usable(c):
+        e = kb.get(c)
+        return bool(e) and c not in _GENERIC_CWES and e.get("abstraction") != "Pillar"
+
+    cwe = next((str(c).upper() for c in (finding.cve_list or [])
+                if str(c).upper().startswith("CWE-") and usable(str(c).upper())), None)
+    if cwe is None:
+        title = (finding.title or "").lower()
+        cwe = next((c for pattern, c in _TITLE_TO_CWE if re.search(pattern, title) and usable(c)), None)
+    if cwe is None:
+        return ""
+    entry = kb[cwe]
+    steps = _pick_mitigations(entry.get("mitigations") or [])
+    if not steps:
+        return ""
+    text = (f"General guidance from MITRE {cwe} ({entry.get('name', '')}), not from the report: "
+            + " ".join(f"{i}. {s}" for i, s in enumerate(steps, 1)))
+    sheet = entry.get("owasp_cheat_sheet")
+    if sheet:
+        text += f" See also: {sheet['title']} ({sheet['url']})."
+    return text
+
+
+# ── CISA Known Exploited Vulnerabilities ─────────────────────────────────────
+# src/core/knowledge/cisa_kev.json, built by scripts/build_cisa_kev.py (CC0).
+# A finding whose CVE is in the catalog is marked as exploited in the wild; its
+# severity is never changed -- that is the scanner's.
+
+_KEV = None
+
+
+def _kev() -> dict:
+    global _KEV
+    if _KEV is None:
+        import json
+        import os
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "knowledge", "cisa_kev.json")
+        try:
+            with open(path, encoding="utf-8") as fh:
+                _KEV = json.load(fh).get("cves", {})
+        except Exception:
+            _KEV = {}
+    return _KEV
+
+
+def known_exploited(refs) -> list:
+    """The CISA KEV entries for a finding's CVEs, in the order given:
+    [{"cve", "date_added", "ransomware_use", "name", "required_action"}]."""
+    kev, out, seen = _kev(), [], set()
+    for ref in refs or []:
+        cve = str(ref).strip().upper()
+        if cve in kev and cve not in seen:
+            seen.add(cve)
+            e = kev[cve]
+            out.append({"cve": cve, "date_added": e.get("date_added", ""),
+                        "ransomware_use": e.get("ransomware_use", "Unknown"),
+                        "name": e.get("name", ""), "required_action": e.get("required_action", "")})
+    return out
+
+
+def known_exploited_line(refs) -> str:
+    """One line for a report: "CVE-2025-6218 is in CISA's Known Exploited
+    Vulnerabilities catalog (listed 2025-12-09; known ransomware use: Unknown)"."""
+    return "; ".join(f"{k['cve']} is in CISA's Known Exploited Vulnerabilities catalog "
+                     f"(listed {k['date_added']}; known ransomware use: {k['ransomware_use']})"
+                     for k in known_exploited(refs))
+
+
 def get_actionable_remediation(finding: Finding) -> str:
     """
     Returns developer-actionable remediation guidance based on finding title/description.
@@ -797,6 +978,30 @@ def get_actionable_remediation(finding: Finding) -> str:
     # finding titled "TLS cookie without secure flag set" matched the "tls"
     # template and was told to change TLS protocol versions, for a missing
     # cookie attribute (CWE-614).
+    # The source gave no remediation.
+    if not _is_pqc and not (finding.remediation or "").strip():
+        # A CVE: the vendor's patch. The keyword templates below gave a
+        # third-party product's CVE advice for the customer's own code --
+        # "sanitize file path inputs" for WinRAR's CVE-2025-6218.
+        _cve = next((c for c in (finding.cve_list or []) if str(c).upper().startswith("CVE-")), None)
+        if _cve:
+            _patch = (f"Apply the vendor-supplied patch addressing {_cve} for the affected component. "
+                      "Verify the fix by re-running the scan against the affected target after remediation.")
+            _kev_hit = known_exploited(finding.cve_list)
+            if _kev_hit:
+                k = _kev_hit[0]
+                # CISA's own words, labelled; its due dates bind US federal
+                # agencies and are not repeated here.
+                return (f"Known to be exploited in the wild: {k['cve']} is in CISA's Known Exploited "
+                        f"Vulnerabilities catalog (listed {k['date_added']}; known ransomware use: "
+                        f"{k['ransomware_use']}). CISA's required action: {k['required_action']} " + _patch)
+            return _patch
+        # Otherwise MITRE's guidance for the weakness, where it is known,
+        # ahead of the templates written here.
+        _mitre = mitre_cwe_guidance(finding)
+        if _mitre:
+            return _mitre
+
     if not _is_pqc:
         for cwe in (str(c).upper() for c in (finding.cve_list or [])):
             if cwe in _CWE_REMEDIATION:

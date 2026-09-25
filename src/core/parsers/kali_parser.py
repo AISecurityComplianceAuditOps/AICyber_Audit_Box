@@ -46,7 +46,7 @@ from typing import Any, List, Optional, Tuple
 from urllib.parse import urlsplit
 
 from .base_parser import BaseParser, is_image_file
-from .finding_schema import Finding
+from .finding_schema import Finding, full_poc
 
 
 # ── Signatures: banner/structure unique to each tool ────────────────────────
@@ -301,7 +301,7 @@ def _sqli_finding(param: str, method: str, detail: str, techniques: List[str], t
             "Replace dynamic SQL with parameterised queries or prepared statements, validate "
             "and canonicalise input server-side, and grant the database account least privilege."
         ),
-        evidence=evidence[:800],
+        evidence=full_poc(evidence),
         source_tool="sqlmap",
     )
 
@@ -511,7 +511,7 @@ def _wp_users(users: List[str], target: str) -> Finding:
                      f"half of every login pair: {', '.join(users[:10])}."),
         remediation=("Block author-archive and REST API user enumeration (/?author=N, "
                      "/wp-json/wp/v2/users) and enforce strong passwords with lockout."),
-        evidence="User(s) Identified: " + ", ".join(users[:10]), source_tool="WPScan")
+        evidence="User(s) Identified: " + ", ".join(users), source_tool="WPScan")
 
 
 class KaliParser(BaseParser):
@@ -906,7 +906,7 @@ class KaliParser(BaseParser):
                 target=target,
                 description=f"{len(users)} account name(s) were enumerated over SMB: {', '.join(users[:10])}.",
                 remediation="Disable anonymous SAM enumeration (RestrictAnonymousSAM=1 / 'restrict anonymous = 2').",
-                evidence="; ".join(f"user:[{u}]" for u in users[:10]), source_tool="enum4linux"))
+                evidence="; ".join(f"user:[{u}]" for u in users), source_tool="enum4linux"))
         minlen = re.search(r'Minimum password length:\s*(\d+)', content)
         if minlen and int(minlen.group(1)) < 8:
             out.append(Finding(

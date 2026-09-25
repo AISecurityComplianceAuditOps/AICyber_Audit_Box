@@ -252,7 +252,8 @@ def test_a_findings_csv_is_read_column_by_column():
     sqli = a[0]
     assert (sqli.title, sqli.severity, sqli.target, sqli.remediation) == (
         "SQL Injection in login form", "CRITICAL", "https://portal.test/login", "Use parameterised queries.")
-    assert [f.title for f in i] == ["Missing HSTS header"]                  # closed: informational
+    hsts = next(f for f in a + (i or []) if f.title == "Missing HSTS header")
+    assert (hsts.report_status, hsts.severity) == ("Closed", "LOW")        # closed: kept, marked Closed
 
 
 # ── the model runs only when the auditor ticks AI recommendations ───────────
@@ -373,3 +374,74 @@ def test_a_compliance_export_is_not_read_as_vulnerabilities():
             "UC0,Audit,P3 Medium,Clock Synchronization (8.17),NTP not documented.,Document NTP.,Non-Compliant\n")
     a, i = parse_tool_file("export.csv", text, framework="vapt")
     assert not a and not (i or [])
+
+
+# ── an HTML report whose pages are pictures ─────────────────────────────────
+# A PDF put through pdf2htmlEX came out as one image per page and no text; the
+# scan of a report listing four HIGH findings found nothing. OCR is stubbed
+# here: what is tested is that the page is found, cropped and read, and that
+# an HTML with text is never OCR'd.
+
+def _png_b64(size, box=None):
+    import base64
+    from PIL import Image, ImageDraw
+    img = Image.new("RGB", size, "white")
+    if box:
+        ImageDraw.Draw(img).rectangle(box, fill="black")
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+_OCR_TABLE = ("VAPT Report\nSr. No. | Vulnerabilities | Severity | CVE/CWE\n"
+              "1. | Broken Authentication | High | CWE-287\n")
+
+
+@pytest.fixture
+def fake_ocr(monkeypatch):
+    from src.core.parsers import doc_parsers
+    sizes = []
+
+    def fake_extract_text(f):
+        from PIL import Image
+        sizes.append(Image.open(f).size)
+        return _OCR_TABLE
+    monkeypatch.setattr(doc_parsers, "extract_text", fake_extract_text)
+    return sizes
+
+
+def _picture_report_html():
+    return ('<!DOCTYPE html><!-- Created by pdf2htmlEX --><html><body>'
+            f'<img src="data:image/png;base64,{_png_b64((1191, 1684), (148, 147, 1047, 527))}"/>'
+            f'<img src="data:image/png;base64,{_png_b64((64, 64), (4, 4, 60, 60))}"/>'
+            '</body></html>')
+
+
+def test_a_picture_of_a_report_is_cropped_to_its_content_and_read(fake_ocr):
+    from src.core.parsers.doc_parsers import ocr_html_images
+    assert "Broken Authentication" in ocr_html_images(_picture_report_html())
+    assert fake_ocr == [(900, 381)]          # the page, cropped; the 64 px icon skipped
+
+
+def test_an_html_with_text_is_never_ocrd(fake_ocr):
+    from src.core.parsers.doc_parsers import ocr_html_images
+    words = " ".join(["word"] * 60)
+    html = f'<html><body><p>{words}</p><img src="data:image/png;base64,{_png_b64((800, 600), (10, 10, 700, 500))}"/></body></html>'
+    assert ocr_html_images(html) == ""
+    assert fake_ocr == []
+
+
+def test_the_worker_reads_a_picture_only_html_report(run, fake_ocr):
+    found = run([("VAPT_report.html", _picture_report_html().encode())])
+    assert [(t, s) for t, s, _tg in found] == [("Broken Authentication", "HIGH")], found
+
+
+def test_of_two_findings_sharing_a_key_the_more_severe_is_kept(run):
+    """Same host, port and CVE: the first-listed MEDIUM used to win over the HIGH."""
+    csv_text = ("Plugin ID,CVE,CVSS v2.0 Base Score,Risk,Host,Protocol,Port,Name,Synopsis,Description,"
+                "Solution,See Also,Plugin Output,CVSS v3.0 Base Score\n"
+                "100001,CVE-2025-8088,5.0,Medium,10.0.0.5,tcp,445,WinRAR advisory (listing),s,d,Update WinRAR.,,out,5.5\n"
+                "100002,CVE-2025-8088,8.8,High,10.0.0.5,tcp,445,RARLAB WinRAR < 7.13 Directory Traversal,s,d,"
+                "Update WinRAR.,,out,8.8\n")
+    found = run([("nessus_export.csv", csv_text.encode())])
+    assert [(n, s) for n, s, _t in found] == [("RARLAB WinRAR < 7.13 Directory Traversal", "HIGH")], found

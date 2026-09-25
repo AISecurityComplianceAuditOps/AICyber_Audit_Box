@@ -573,12 +573,20 @@ def test_word_tables_are_read_row_by_row_with_every_row_kept():
         ("RHEL 7 : kernel (RHSA-2021:3801)", "HIGH"), ("RHEL 7 : kernel (RHSA-2021:3801)", "HIGH"),
         ("RHEL 7 : kernel (RHSA-2021:3801)", "MEDIUM"),
         ("SSL Medium Strength Cipher Suites Supported (SWEET32)", "INFO"),
-        ("BIG-IP AFM vulnerability", "INFO"), ("BIG-IP AFM vulnerability", "MEDIUM"),
+        ("BIG-IP AFM vulnerability", "MEDIUM"), ("BIG-IP AFM vulnerability", "MEDIUM"),
         ("Clear Text Data Transmission", "MEDIUM"), ("Clear text data transmission", "MEDIUM"),
         ("Mitigation of Pen Test findings of WOC in AWS", "HIGH"),
-        ("No Reauthentication before changing password", "INFO"),
+        ("No Reauthentication before changing password", "HIGH"),
         ("User session tokens not expired after logout", "MEDIUM"),
     ]), got
+
+
+def test_closed_rows_keep_their_severity_and_are_marked_closed():
+    """ "Fixed in 16.1" and a risk register's "Done" are closed, not informational."""
+    a, i = _word_findings()
+    closed = sorted((f.title, f.severity) for f in a + i if f.report_status == "Closed")
+    assert closed == [("BIG-IP AFM vulnerability", "MEDIUM"),
+                      ("No Reauthentication before changing password", "HIGH")], closed
 
 
 def test_rows_sharing_a_name_keep_their_own_cves():
@@ -665,3 +673,11 @@ def test_a_nessus_by_host_export_gives_each_finding_its_host():
     title = "MS10-031: Vulnerability in Microsoft Visual Basic for Applications"
     assert got == [("46313", title, "10.0.0.5", "CRITICAL", 9.8),
                    ("46313", title, "10.0.0.6", "CRITICAL", 9.8)], got
+
+
+def test_a_subsystem_column_is_the_findings_target_so_two_rows_stay_two():
+    a, i = _word_findings()
+    rows = sorted((f.target, f.severity) for f in a + i if f.title.lower() == "clear text data transmission")
+    assert rows == [("Backend F5", "MEDIUM"), ("IDAP", "MEDIUM")], rows
+    keys = {f.dedup_key() for f in a + i if f.title.lower() == "clear text data transmission"}
+    assert len(keys) == 2, keys

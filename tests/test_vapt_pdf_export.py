@@ -102,7 +102,7 @@ def _formatter():
     """format_http_evidence, lifted out of the exporter it is nested in."""
     src = io.open(rx.__file__, encoding="utf-8").read()
     start = src.index("        def format_http_evidence(txt):")
-    end = src.index("        clean_poc = format_http_evidence", start)
+    end = src.index("        # The whole proof, one box per part", start)
     body = "\n".join(l[8:] if l.startswith("        ") else l
                      for l in src[start:end].splitlines())
     ns = {"re": re}
