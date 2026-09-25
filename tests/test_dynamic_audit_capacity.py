@@ -133,14 +133,19 @@ def test_cores_per_audit_is_a_parameter_not_a_constant():
     assert DEFAULT_CORES_PER_AUDIT == 2, "the measured default changed; was that intended?"
 
 
-def test_an_explicit_limit_wins_and_says_that_it_did(monkeypatch):
+@pytest.mark.parametrize("cores", [2, 16])
+def test_an_explicit_limit_wins_and_says_that_it_did(monkeypatch, cores):
+    """The machine is pinned here, not read: at 2 physical cores the advice is
+    the floor sentence ("below what one audit needs"), not "supports N", and a
+    4-vCPU CI runner is that machine. Both must still describe the hardware."""
     monkeypatch.setenv("MAX_CONCURRENT_AUDITS", "30")
     import src.core.bg_state as bg
     importlib.reload(bg)
+    monkeypatch.setattr(bg, "_physical_cores", lambda: cores)
     limit, advice = bg.current_audit_limit()
     assert limit == 30, "an operator's explicit number was overridden"
     assert "pinned to 30" in advice
-    assert "supports" in advice, "the machine's own figure is hidden from the operator"
+    assert f"{cores} physical core(s)" in advice, "the machine's own figure is hidden from the operator"
     monkeypatch.delenv("MAX_CONCURRENT_AUDITS")
     importlib.reload(bg)
 
