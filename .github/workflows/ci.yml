@@ -40,8 +40,19 @@ jobs:
         with:
           python-version: "3.11"
 
+      # python-doctr requires opencv-python, the desktop build, unpinned; it
+      # installs over the pinned opencv-python-headless (both are the `cv2`
+      # package) and needs X11 / GL system libraries (libxcb.so.1) that a bare
+      # machine lacks. `import cv2` then fails, the OCR pre-processing falls
+      # back to the raw image, and test_ocr_preprocessing fails. The app image
+      # installs those libraries; here, keep the headless build alone. Its
+      # version is read from requirements.txt, so the pin stays in one place.
       - name: Install dependencies
-        run: pip install -r requirements.txt pytest
+        run: |
+          pip install -r requirements.txt pytest
+          pip uninstall -y opencv-python
+          pip install --force-reinstall --no-deps $(grep -E '^opencv-python-headless==' requirements.txt)
+          python -c "import cv2; print('cv2', cv2.__version__)"
 
       # tests/ mixes pytest files with runnable scripts that sys.exit at import.
       # tests/conftest.py excludes the scripts; without it `pytest` dies during

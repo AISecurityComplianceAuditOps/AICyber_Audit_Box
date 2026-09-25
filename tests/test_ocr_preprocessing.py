@@ -36,6 +36,14 @@ def _img(w, h, value):
     return np.full((h, w, 3), value, dtype=np.uint8)
 
 
+def test_opencv_imports():
+    """Every check below goes through OpenCV, and the pre-processing hands back
+    the raw image when it cannot import -- so without this, a missing system
+    library (libxcb.so.1 on a bare Linux) reads as "not enlarged", "not
+    inverted" rather than as the import error it is."""
+    import cv2  # noqa: F401
+
+
 def test_a_small_screenshot_is_enlarged():
     out = _preprocess_image_for_ocr(_img(940, 381, 30))
     assert out.shape[1] > 940, "a 940px screenshot was fed to OCR unchanged"
