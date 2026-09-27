@@ -106,6 +106,19 @@ if errorlevel 1 (
     goto :fail
 )
 echo.
+REM  The check above uses SQLite, which ignores column types, on an empty
+REM  database. A customer runs Postgres on a database an earlier version
+REM  created: 1.2.3 passed here and saved 0 findings there. So also run the
+REM  new image on the customer's database image -- fresh, and upgrading a
+REM  database built by earlier versions -- and prove a scan is saved.
+echo ---^> Checking the new image on Postgres: fresh, and upgrading an earlier database
+python scripts\upgrade_e2e_check.py --image aicyberauditbox-app:!VERSION! --new-version !VERSION!
+if errorlevel 1 (
+    echo.
+    echo   [X] The new image failed on Postgres. Nothing has been packaged.
+    goto :fail
+)
+echo.
 echo ---^> Packaging
 python build_customer_bundle.py --version !VERSION! --skip-build
 if errorlevel 1 goto :buildfail
