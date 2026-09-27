@@ -224,6 +224,39 @@ def _vapt_score(f):
     return v if (v is not None and v > 0) else None
 
 
+_VAPT_SEVERITY_RANK = {"CRITICAL": 5, "HIGH": 4, "MEDIUM": 3, "LOW": 2, "INFO": 1, "INFORMATIONAL": 1}
+
+
+def _vapt_overall(findings):
+    """(score, severity) for the summary table's OVERALL row: the worst
+    severity among the OPEN findings ("-" when there are none), and the
+    highest CVSS a scanner reported for the findings OF that severity (None
+    when none did -- Burp / PortSwigger assigns no CVSS).
+
+    Both used to be made up, and the two reports disagreed. The PDF printed
+    8.5 whenever a finding was HIGH (10.0 CRITICAL, 5.5 MEDIUM, 2.5 otherwise)
+    under a CVSS column of "-"; the Word report, taking the highest score,
+    printed "0.0 LOW" for the same 35 PortSwigger findings, 12 of them HIGH.
+
+    The score comes from the worst findings only. Taken from all of them, a
+    HIGH with no score beside Qualys's MEDIUM Sweet32 at CVSS 7.5 read
+    "7.5 HIGH" -- a scanner's MEDIUM shown as HIGH, which a client review
+    rejected before.
+    """
+    def _sev(f):
+        s = str(_vapt_plain_severity(f.get("severity")) or "").strip().upper()
+        s = s.split()[-1] if s else ""
+        return "INFO" if s == "INFORMATIONAL" else s
+
+    ranked = [(_VAPT_SEVERITY_RANK.get(_sev(f), 0), f) for f in findings or []]
+    top = max((r for r, _ in ranked), default=0)
+    if not top:
+        return None, "-"
+    worst = [f for r, f in ranked if r == top]
+    scores = [s for s in (_vapt_score(f) for f in worst) if s is not None]
+    return (max(scores) if scores else None), _sev(worst[0])
+
+
 def _vapt_is_closed(f):
     """A VAPT finding recorded as closed / remediated, by the pentest report
     or by the auditor in the Modify dialog.
@@ -1050,21 +1083,13 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
             r.cell(score_str, style=body_style)
             r.cell(sev_str, style=body_style)
 
-        # Dynamic Overall Score calculation based on active finding severities
-        overall_score_val = 10.0 if critical_cnt > 0 else (8.5 if high_cnt > 0 else (5.5 if medium_cnt > 0 else 2.5))
-        if critical_cnt > 0:
-            overall_sev = "CRITICAL"
-        elif high_cnt > 0:
-            overall_sev = "HIGH"
-        elif medium_cnt > 0:
-            overall_sev = "MEDIUM"
-        else:
-            overall_sev = "LOW"
+        # The highest score a scanner reported, and the worst open severity.
+        overall_score_val, overall_sev = _vapt_overall(_open_f)
 
         r_over = table.row()
         r_over.cell("", style=lbl_style)
         r_over.cell("OVERALL SCORE", style=lbl_style)
-        r_over.cell(f"{overall_score_val:.1f}", style=lbl_style)
+        r_over.cell(f"{overall_score_val:.1f}" if overall_score_val is not None else "-", style=lbl_style)
         r_over.cell(overall_sev, style=lbl_style)
 
     pdf.ln(5)
@@ -3027,12 +3052,8 @@ def _export_vapt_docx(session_title, findings, resolved_list, status, comments="
         cell.paragraphs[0].add_run(text).font.color.rgb = _rgb(255, 255, 255)
         cell.paragraphs[0].runs[0].bold = True
         
-    max_score = 0.0
     for idx, f in enumerate(active_findings, 1):
         _sc = _vapt_score(f)
-        score = _sc or 0.0
-        if score > max_score:
-            max_score = score
         sev = str(f.get("severity", "Low")).split()[-1].upper()
 
         row_cells = tbl_vulns.rows[idx].cells
@@ -3041,20 +3062,15 @@ def _export_vapt_docx(session_title, findings, resolved_list, status, comments="
         row_cells[2].paragraphs[0].add_run(f"{_sc:.1f}" if _sc is not None else "-")
         row_cells[3].paragraphs[0].add_run(sev)
         
-    overall_sev = "LOW"
-    if max_score >= 9.0:
-        overall_sev = "CRITICAL"
-    elif max_score >= 7.0:
-        overall_sev = "HIGH"
-    elif max_score >= 4.0:
-        overall_sev = "MEDIUM"
-        
+    # The same row as the PDF's: highest reported score, worst open severity.
+    max_score, overall_sev = _vapt_overall(_open_f)
+
     over_cells = tbl_vulns.rows[len(active_findings) + 1].cells
     for cell in over_cells:
         _set_cell_bg(cell, "F1F5F9")
     over_cells[0].paragraphs[0].add_run("OVERALL").bold = True
     over_cells[1].paragraphs[0].add_run("OVERALL SCORE").bold = True
-    over_cells[2].paragraphs[0].add_run(f"{max_score:.1f}").bold = True
+    over_cells[2].paragraphs[0].add_run(f"{max_score:.1f}" if max_score is not None else "-").bold = True
     over_cells[3].paragraphs[0].add_run(overall_sev).bold = True
     
     doc.add_paragraph()
