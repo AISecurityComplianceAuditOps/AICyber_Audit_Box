@@ -3066,6 +3066,7 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
             _vapt_progress(94, f"Saving {len(all_findings)} finding(s)...")
 
         # Update database with VAPT findings
+        _save_error = None
         try:
             with force_master():
                 db_write = SessionLocal()
@@ -3186,9 +3187,21 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
                     db_write.commit()
                 db_write.close()
         except Exception as e:
-            print(f"[PIPELINE-VAPT] Failed to write findings: {e}", flush=True)
+            # The database's own reason, on the one line a log search finds.
+            # SQLAlchemy's first line is often only "(raised as a result of
+            # Query-invoked autoflush ...)" with the cause on the next.
+            _reason = str(getattr(e, "orig", None) or e).strip().splitlines()
+            _reason = (_reason[0] if _reason else type(e).__name__)[:300]
+            print(f"[PIPELINE-VAPT] Failed to write findings: {_reason} | {e}", flush=True)
+            _save_error = (f"The scan read {len(all_findings)} finding(s) but could not "
+                           f"save them: {_reason}")
 
-        _vapt_progress(100, f"Scan complete -- {len(all_findings)} finding(s).")
+        # A save that failed is a failed scan. It used to report "Scan complete
+        # -- N finding(s)" here and show none, with the cause only in the log.
+        if _save_error:
+            _vapt_progress(100, "Scan finished, but its findings could not be saved.")
+        else:
+            _vapt_progress(100, f"Scan complete -- {len(all_findings)} finding(s).")
 
         with _bg_lock:
             _bg_results[bg_key] = {
@@ -3196,7 +3209,7 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
                 "resolved_list": list(resolved_ctrls),
                 "resolved_count": len(resolved_ctrls),
                 "resolved_controls": resolved_ctrls,
-                "error": None,
+                "error": _save_error,
                 "completed": True
             }
         with _bg_lock:

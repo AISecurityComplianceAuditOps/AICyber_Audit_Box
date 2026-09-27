@@ -89,7 +89,10 @@ class Finding(Base):
     evidence_quote        = Column(Text, nullable=True)
     evidence_location     = Column(Text, nullable=True)
     gap_description       = Column(Text, nullable=True)
-    confidence            = Column(Integer, nullable=True)
+    # `confidence` is declared once, with the scanner fields below. It was also
+    # declared here as Integer; Python kept the later String(20), but databases
+    # created before that one existed still hold an INTEGER column, which
+    # _string_column_retype_sql() converts at startup.
     hallucination_check   = Column(String(50), nullable=True)
     document_type_match   = Column(Boolean, nullable=True)
     post_process_override = Column(String(10), nullable=True)
@@ -772,6 +775,29 @@ def replicate_changes():
     
     _replication_queue.put(True)
 
+def _string_column_retype_sql(table_name, col_name, model_type, db_type):
+    """The ALTER for a column the model declares as text but the database
+    holds as a number or boolean, or None when there is nothing to change.
+
+    Adding a missing column and widening a VARCHAR were handled; a type change
+    was not. findings.confidence was INTEGER in databases created before it
+    became String(20) (Burp's Certain / Firm / Tentative), so on those every
+    VAPT save failed -- "column confidence is of type integer but expression is
+    of type character varying" -- and each scan completed with 0 findings.
+    Number / boolean to text is lossless (USING col::text); nothing else is
+    converted.
+    """
+    from sqlalchemy import types as _t
+    if not isinstance(model_type, _t.String):
+        return None
+    if not isinstance(db_type, (_t.Integer, _t.Numeric, _t.Boolean)):
+        return None
+    length = getattr(model_type, "length", None)
+    new_type = "TEXT" if isinstance(model_type, _t.Text) or not length else f"VARCHAR({length})"
+    return (f'ALTER TABLE "{table_name}" ALTER COLUMN "{col_name}" '
+            f'TYPE {new_type} USING "{col_name}"::text')
+
+
 def reconcile_schemas(engine):
     """
     Checks if existing tables match the required SQLAlchemy models.
@@ -861,8 +887,13 @@ def reconcile_schemas(engine):
                                 if db_col_info is None:
                                     continue
                                 db_type = db_col_info.get("type")
+                                # Case 0: Model says text but DB has a number / boolean → convert
+                                retype_sql = _string_column_retype_sql(table_name, col_name, model_type, db_type)
+                                if retype_sql:
+                                    print(f"[SCHEMA RETYPE] {retype_sql}")
+                                    conn.execute(text(retype_sql))
                                 # Case 1: Model says Text but DB has VARCHAR → widen to TEXT
-                                if isinstance(model_type, Text) and hasattr(db_type, 'length') and db_type.length is not None:
+                                elif isinstance(model_type, Text) and hasattr(db_type, 'length') and db_type.length is not None:
                                     alter_sql = f'ALTER TABLE "{table_name}" ALTER COLUMN "{col_name}" TYPE TEXT'
                                     print(f"[SCHEMA WIDEN] {alter_sql}")
                                     conn.execute(text(alter_sql))

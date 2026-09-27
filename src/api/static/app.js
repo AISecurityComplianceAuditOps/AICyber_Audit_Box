@@ -3798,6 +3798,19 @@ async function pollAuditProgress() {
             if (stopBtn) stopBtn.style.display = "none";
             if (progressStatus) progressStatus.innerText = `Scan failed`;
             alert("❌ Analysis failed. Verify Ollama or local llama-server is running.");
+        } else if (data.status === "failed") {
+            // The scan ended with an error -- e.g. its findings could not be
+            // saved. This fell through to the reset below, so the page went
+            // quiet and the auditor saw an empty list with no reason.
+            clearInterval(progressInterval);
+            progressInterval = null;
+            if (typeof _setRunLockedInputs === "function") _setRunLockedInputs(false);
+            if (activeSessionId !== targetSessionId) return;
+            btn.disabled = false;
+            btn.innerText = "▶ Run Audit Scan"; if (typeof hidePipelineProgress === "function") hidePipelineProgress();
+            if (stopBtn) stopBtn.style.display = "none";
+            if (progressStatus) progressStatus.innerText = `Scan failed`;
+            showToastBanner(`❌ ${data.error || "The scan failed."}`, "error");
         } else {
             // If scan is idle, stopped, or not running, reset state cleanly
             clearInterval(progressInterval);
