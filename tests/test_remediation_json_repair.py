@@ -130,3 +130,45 @@ def test_a_path_whose_backslash_is_a_valid_escape_is_still_mangled():
     findings' text over one character.
     """
     assert _first(_payload("C:" + B + "temp")) == "C:\temp"
+
+
+# ── a quote inside the text, and a reply cut off ──────────────────────────────
+#
+# Still seen at a customer after the backslash repair, in AI mode:
+#     [REMEDIATION LLM] Batch of 4 finding(s) not enriched, keeping parser
+#     text: JSONDecodeError: Expecting ',' delimiter: line 5 column 248
+# The model quotes what to set -- 'Set the "Secure" flag' -- and one bare quote
+# ends the JSON string. The reply is now read by its known shape instead.
+
+def test_a_quote_inside_the_text_no_longer_loses_the_batch():
+    raw = ('{"remediations":{'
+           '"0":{"remediation":"Set the "Secure" and "HttpOnly" flags on the session cookie.",'
+           '"actionable":"In web.xml set <secure>true</secure> and name it "JSESSIONID"."},'
+           '"1":{"remediation":"Apply output encoding.","actionable":"Use the framework encoder."}}}')
+    out = _extract_json_object(raw)["remediations"]
+    assert out["0"]["remediation"] == 'Set the "Secure" and "HttpOnly" flags on the session cookie.'
+    assert out["0"]["actionable"] == 'In web.xml set <secure>true</secure> and name it "JSESSIONID".'
+    assert out["1"]["remediation"] == "Apply output encoding."
+
+
+def test_a_raw_line_break_and_a_quote_together():
+    raw = ('```json\n{"remediations": {"0": {"remediation": "Disable TLS 1.0.\nThen restart the "nginx" service.",'
+           ' "actionable": "Set ssl_protocols TLSv1.2 TLSv1.3;"}}}\n```')
+    out = _extract_json_object(raw)["remediations"]["0"]
+    assert out["remediation"] == 'Disable TLS 1.0.\nThen restart the "nginx" service.'
+    assert out["actionable"] == "Set ssl_protocols TLSv1.2 TLSv1.3;"
+
+
+def test_a_reply_cut_off_keeps_the_entries_it_finished():
+    """The unfinished entry is left out -- its finding is asked again alone."""
+    raw = ('{"remediations": {"0": {"remediation": "Rotate the "admin" password.", "actionable": "Run passwd."},'
+           ' "1": {"remediation": "Patch OpenSSH to 9.8", "actionable": "apt-get install --only-up')
+    out = _extract_json_object(raw)["remediations"]
+    assert out["0"]["remediation"] == 'Rotate the "admin" password.'
+    assert "actionable" not in out.get("1", {})
+
+
+def test_fields_in_the_other_order():
+    raw = '{"remediations": {"0": {"actionable": "Set "HttpOnly".", "remediation": "Protect the "sid" cookie."}}}'
+    out = _extract_json_object(raw)["remediations"]["0"]
+    assert out == {"actionable": 'Set "HttpOnly".', "remediation": 'Protect the "sid" cookie.'}

@@ -258,10 +258,15 @@ def test_batches_do_not_exceed_the_configured_size():
     calls = []
 
     def _fake_query(prompt, model, **kw):
-        # Count findings in the prompt by counting bracketed indices.
+        # Count findings in the prompt by counting bracketed indices, and
+        # answer each one (a finding left unanswered is asked again alone).
+        import json as _json
         import re
-        calls.append(len(re.findall(r"^\[\d+\]", prompt, re.MULTILINE)))
-        return '{"remediations": {}}'
+        n = len(re.findall(r"^\[\d+\]", prompt, re.MULTILINE))
+        calls.append(n)
+        return _json.dumps({"remediations": {str(i): {"remediation": "Apply the vendor patch now.",
+                                                      "actionable": "Upgrade the package today."}
+                                             for i in range(n)}})
 
     findings = [_finding(title=f"Finding {i}") for i in range(20)]
     with mock.patch("src.core.llm_client.query_llm", side_effect=_fake_query):
@@ -423,3 +428,78 @@ def test_one_finding_on_many_hosts_is_asked_once_and_names_no_host():
     assert "do NOT name a specific host" in body
     assert len({f["remediation"] for f in findings}) == 1
     assert all("_group_size" not in f for f in findings)
+
+
+# ── asked again, one at a time, when the answer was unusable ─────────────────
+
+def _answer(n, text="Disable Telnet on port 23 and use SSH instead."):
+    import json as _json
+    return _json.dumps({"remediations": {str(i): {"remediation": text, "actionable": "systemctl disable telnet.socket"}
+                                         for i in range(n)}})
+
+
+def _count(prompt):
+    import re
+    return len(re.findall(r"^\[\d+\]", prompt, re.MULTILINE))
+
+
+def test_an_unreadable_batch_reply_is_asked_again_one_finding_at_a_time():
+    calls = []
+
+    def _fake(prompt, model, **kw):
+        n = _count(prompt)
+        calls.append(n)
+        return "Sure! {remediations: [broken" if n > 1 else _answer(1)
+
+    findings = [_finding(title=f"Telnet {i}", target=f"10.0.0.{i}") for i in range(4)]
+    with mock.patch("src.core.llm_client.query_llm", side_effect=_fake):
+        enrich_remediations(findings, model="x", timeout=5)
+    assert calls == [4, 1, 1, 1, 1]
+    assert all(f["remediation"] != GENERIC for f in findings)
+    assert enrich_remediations.last_failed_batches == 0
+
+
+def test_only_the_findings_the_reply_left_out_are_asked_again():
+    calls = []
+
+    def _fake(prompt, model, **kw):
+        n = _count(prompt)
+        calls.append(n)
+        if n == 1:
+            return _answer(1)
+        import json as _json
+        return _json.dumps({"remediations": {"0": {"remediation": "Disable Telnet on port 23 now.",
+                                                   "actionable": "systemctl disable telnet"}}})
+
+    findings = [_finding(title=f"Telnet {i}", target=f"10.0.0.{i}") for i in range(3)]
+    with mock.patch("src.core.llm_client.query_llm", side_effect=_fake):
+        enrich_remediations(findings, model="x", timeout=5)
+    assert calls == [3, 1, 1]
+    assert all(f["remediation"] != GENERIC for f in findings)
+
+
+def test_a_call_that_failed_is_not_asked_again():
+    """A timeout or an unreachable server: asking again only multiplies the wait."""
+    calls = []
+
+    def _fake(prompt, model, **kw):
+        calls.append(_count(prompt))
+        raise TimeoutError("llama-server did not answer")
+
+    findings = [_finding(title=f"Telnet {i}", target=f"10.0.0.{i}") for i in range(4)]
+    with mock.patch("src.core.llm_client.query_llm", side_effect=_fake):
+        enrich_remediations(findings, model="x", timeout=5)
+    assert calls == [4]
+    assert all(f["remediation"] == GENERIC for f in findings)
+    assert enrich_remediations.last_failed_batches == 1
+
+
+def test_a_finding_that_still_gets_nothing_is_counted_as_failed():
+    def _fake(prompt, model, **kw):
+        return "no JSON here at all"
+
+    findings = [_finding(title=f"Telnet {i}", target=f"10.0.0.{i}") for i in range(2)]
+    with mock.patch("src.core.llm_client.query_llm", side_effect=_fake):
+        enrich_remediations(findings, model="x", timeout=5)
+    assert all(f["remediation"] == GENERIC for f in findings)
+    assert enrich_remediations.last_failed_batches == 1

@@ -173,7 +173,73 @@ def _extract_json_object(raw: str):
         #
         # Tried only after a normal parse has failed, so well-formed output is
         # never touched.
-        return json.loads(_INVALID_ESCAPE_RE.sub(r'\\\\', text))
+        try:
+            return json.loads(_INVALID_ESCAPE_RE.sub(r'\\\\', text))
+        except json.JSONDecodeError:
+            # Still not JSON: read it by the shape the prompt asks for.
+            return _salvage_remediations(text)
+
+
+# The reply's own shape, for reading it when it is not valid JSON:
+#   {"remediations": {"0": {"remediation": "...", "actionable": "..."}, ...}}
+_BLOCK_START_RE = re.compile(r'"(\d+)"\s*:\s*\{')
+_FIELD_START_RE = {k: re.compile(r'"%s"\s*:\s*"' % k) for k in ("remediation", "actionable")}
+_NEXT_FIELD_RE = re.compile(r'"\s*,\s*"(?:remediation|actionable)"\s*:')
+_ENTRY_END_RE = re.compile(r'"\s*\}')
+
+
+def _decode_loose_string(body):
+    """A JSON string body written loosely -- a bare quote, a stray backslash, a
+    raw line break -- read as JSON would read it. The text as written when even
+    that fails."""
+    s = _INVALID_ESCAPE_RE.sub(r'\\\\', body)
+    s = re.sub(r'(?<!\\)"', r'\\"', s)
+    s = s.replace("\r", "\\r").replace("\n", "\\n").replace("\t", "\\t")
+    s = re.sub(r"[\x00-\x1f]", " ", s)
+    try:
+        return json.loads('"' + s + '"')
+    except ValueError:
+        return body
+
+
+def _salvage_remediations(text):
+    """Each finding's two fields, found by the reply's known shape.
+
+    The backslash repair above left one common failure: a quote inside the
+    text. Asked for remediation, the model writes 'Set the "Secure" and
+    "HttpOnly" flags' -- one unescaped quote ends the JSON string, and the
+    whole reply was discarded: at a customer, "JSONDecodeError: Expecting ','
+    delimiter", four findings back to the generic text. A reply cut off
+    mid-finding was lost the same way.
+
+    A field's text runs to the quote that is followed by the other field's key
+    or by the closing brace, so quotes inside it are kept. Entries the reply
+    finished are returned; one it did not is left out, and its finding is
+    asked again on its own (see _enrich_batch).
+    """
+    starts = list(_BLOCK_START_RE.finditer(text))
+    out = {}
+    for i, m in enumerate(starts):
+        block = text[m.end():starts[i + 1].start() if i + 1 < len(starts) else len(text)]
+        entry = {}
+        for key, rx in _FIELD_START_RE.items():
+            f = rx.search(block)
+            if not f:
+                continue
+            nxt = _NEXT_FIELD_RE.search(block, f.end())
+            if nxt:
+                end = nxt.start()
+            else:
+                closes = list(_ENTRY_END_RE.finditer(block, f.end()))
+                if not closes:
+                    continue            # cut off before this field ended
+                end = closes[-1].start()
+            entry[key] = _decode_loose_string(block[f.end():end])
+        if entry:
+            out[m.group(1)] = entry
+    if not out:
+        raise ValueError("reply is not JSON and has no readable finding entries")
+    return {"remediations": out}
 
 
 def _enrich_budget() -> int:
@@ -201,8 +267,29 @@ def _enrich_budget() -> int:
 
 def _enrich_batch(batch: List[Dict], model: str, session_id=None, timeout=None) -> bool:
     """Mutates `.remediation` on the findings in `batch` in place. Never raises
-    -- a batch that fails for any reason is left with its original text, and
-    the caller moves on to the next batch rather than aborting the run."""
+    -- a finding the model gives no usable text keeps its original text, and
+    the caller moves on rather than aborting the run. True when every finding
+    in the batch got the model's text.
+
+    When the model ANSWERED but some findings got nothing usable from it (a
+    reply that could not be read, or an entry missing or cut off), those are
+    asked again one at a time: a one-finding reply is short, and one bad
+    answer then costs one finding, not four. Not when the call itself failed
+    -- a timeout or an unreachable server -- where asking again only multiplies
+    the wait.
+    """
+    missing, answered = _ask_batch(batch, model, session_id=session_id, timeout=timeout)
+    if missing and answered and len(batch) > 1:
+        print(f"[REMEDIATION LLM] Asking again for {len(missing)} finding(s), "
+              f"one at a time.", flush=True)
+        missing = [f for f in missing
+                   if _ask_batch([f], model, session_id=session_id, timeout=timeout)[0]]
+    return not missing
+
+
+def _ask_batch(batch: List[Dict], model: str, session_id=None, timeout=None):
+    """One call for `batch`. Returns (the findings that got no remediation
+    text, whether the model answered at all)."""
     from src.core.llm_client import query_llm
 
     findings_block = "\n".join(_format_finding_block(i, f, f.get("_group_size", 1))
@@ -230,6 +317,11 @@ def _enrich_batch(batch: List[Dict], model: str, session_id=None, timeout=None) 
             # _extract_json_object's tolerant fence-stripping is sufficient.
             stop=["<end_of_turn>", "<eos>", "<|im_end|>", "</s>"],
         )
+    except Exception as e:
+        print(f"[REMEDIATION LLM] Batch of {len(batch)} finding(s) not enriched, "
+              f"keeping parser text: {type(e).__name__}: {e}", flush=True)
+        return list(batch), False
+    try:
         data = _extract_json_object(raw)
         remediations = data.get("remediations")
         if not isinstance(remediations, dict):
@@ -237,8 +329,9 @@ def _enrich_batch(batch: List[Dict], model: str, session_id=None, timeout=None) 
     except Exception as e:
         print(f"[REMEDIATION LLM] Batch of {len(batch)} finding(s) not enriched, "
               f"keeping parser text: {type(e).__name__}: {e}", flush=True)
-        return False
+        return list(batch), True
 
+    missing = []
     for i, f in enumerate(batch):
         entry = remediations.get(str(i))
         # Tolerate a bare string too (some models flatten the nested object
@@ -257,10 +350,12 @@ def _enrich_batch(batch: List[Dict], model: str, session_id=None, timeout=None) 
         # way, so there is nothing to lose by trying.
         if len(rem_text) >= 15:
             f["remediation"] = rem_text
+        else:
+            missing.append(f)
         if len(act_text) >= 15:
             f["remediation_actionable"] = act_text
 
-    return True
+    return missing, True
 
 
 def _vuln_type_key(f: Dict) -> str:
