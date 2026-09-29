@@ -732,10 +732,26 @@ def get_num_ctx(model_name: str) -> int:
         print(f"[LLM CTX] get_num_ctx fell back to 4096 for {model_name!r}: {e}", flush=True)
         return 4096
 
+def _context_summary_timeout():
+    try:
+        return max(15, int(os.environ.get("CONTEXT_SUMMARY_TIMEOUT_SEC", "120")))
+    except (TypeError, ValueError):
+        return 120
+
+
 def _generate_context_summary(context, llm_model):
     """Generates a brief document scope summary using the configured LLM backend.
     Routes through query_llm() so it correctly uses llama.cpp or Ollama.
-    Hard timeout of 15s — skips gracefully if LLM is unresponsive."""
+
+    Optional, and bounded: it skips gracefully when the model does not answer in
+    time (CONTEXT_SUMMARY_TIMEOUT_SEC, default 120s). This said "hard timeout of
+    15s" while the call passed 1800s -- and it runs before the first control,
+    with progress at 0% -- so a model server that stalled held a whole audit at
+    0% for 30 minutes with nothing in the log (measured on a 16-core customer
+    VM, 2026-09-28). The answer is under 150 words from at most 8000 characters:
+    about a minute at the 5.6 tokens/s that VM generates, so 120s is headroom,
+    not a cut.
+    """
     import re
     files = re.split(r'--- FILE: (.*?) ---', context)
     sample_text = ""
@@ -771,10 +787,7 @@ Output:"""
             model=llm_model,
             num_ctx=get_num_ctx(llm_model),
             temperature=0.0,
-            timeout=1800   # 1800s (30 mins) timeout for 3-pass LLM reasoning, OCR, and multi-user queueing
-
-
-
+            timeout=_context_summary_timeout(),
         )
         return summary if summary.strip() else "Document scope summary unavailable."
     except Exception as e:
@@ -1289,7 +1302,18 @@ Return format: ["topic1", "topic2", ...]"""
     print(f"\n[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
     log_dev_latency(msg)
 
-    # Generate context summary
+    # Generate context summary. It is the first model call, before any control,
+    # so say so: the page otherwise sat at 0% with no word of what was running.
+    if bg_key:
+        try:
+            with _bg_lock:
+                _bg_store["progress"][bg_key] = {
+                    **(_bg_store["progress"].get(bg_key) or {}),
+                    "text": "Reading the documents' scope (first AI step)...",
+                    "percent": 0,
+                }
+        except Exception:
+            pass
     summary_text = _generate_context_summary(context, llm_model)
 
     # ── Universal Pre-Ingest for Top 6 RAG Vector Retrieval across ALL Scoping Modes (Manual, AI Auto-Scoping, Excel) ──
