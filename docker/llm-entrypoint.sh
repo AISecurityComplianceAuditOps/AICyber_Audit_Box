@@ -151,6 +151,21 @@ echo "[LLM ENTRYPOINT] Serving ${MODEL_LABEL} from ${MODEL_PATH}."
 FIXED_OVERHEAD_GB="${RESOURCE_GUARD_FIXED_OVERHEAD_GB:-$DEFAULT_OVERHEAD_GB}"
 SAFETY_MARGIN="${RESOURCE_GUARD_SAFETY_MARGIN:-0.85}"
 
+# Memory the REST of the stack needs on the same machine: the application
+# (OCR and search models loaded), ShaktiDB (2GB shared_buffers), the embedding
+# server, Redis and the OS. This container sees the host's whole RAM, and the
+# slot count used to be sized as if it owned all of it: on a 32GB VM, 7 slots
+# = 12.5GB weights + 13.4GB KV = ~26GB, leaving ~5GB for everything else. Linux
+# then evicted the mapped model weights, and after a long idle the next request
+# re-read 12.7GB from a network disk -- measured on a 16-core GCP VM: 30
+# minutes on the first request with ~3% CPU and not one token generated, the
+# audit held at 0%. run_all.bat, the Windows launcher, has always kept room
+# (it sizes from FREE memory and subtracts 2.5GB); this did not. It reduces
+# the slot count only -- a machine that could start before still starts, with
+# at least one slot. Set LLM_STACK_RESERVE_GB=0 for a server that runs this
+# model and nothing else.
+STACK_RESERVE_GB="${LLM_STACK_RESERVE_GB:-8}"
+
 # Sizing rule: give each slot a context that can actually hold a real audit
 # prompt FIRST, then fit as many slots as RAM allows -- never the reverse.
 #
@@ -230,13 +245,35 @@ else
     KV_QUANT_ON="no"
 fi
 
+# Load the weights into memory instead of mapping them from disk. Mapped
+# weights are page cache: under memory pressure Linux drops them, and the next
+# request waits while they are read back -- from a slow network disk, tens of
+# minutes (see STACK_RESERVE_GB above). Loaded, they stay; the RAM used is the
+# same the sizing already counts (FIXED_OVERHEAD_GB). Set LLM_MMAP=1 to map.
+#
+# The flag depends on the engine. llama.cpp replaced --no-mmap with
+# --load-mode (build 10991, the one in the shipped aicyberauditbox-llm:1.1,
+# lists only "--load-mode MODE ... none: no special loading mode"), so asking
+# only for --no-mmap left the weights mapped there without a word. Newer
+# engines get --load-mode none; older ones --no-mmap. Not "mlock": Docker's
+# default memlock limit is far below 13GB, so it would fail to lock.
+if [ "${LLM_MMAP:-0}" != "1" ] && supports_flag "--load-mode"; then
+    EXTRA_ARGS="$EXTRA_ARGS --load-mode none"
+    WEIGHTS_IN_RAM="yes"
+elif [ "${LLM_MMAP:-0}" != "1" ] && supports_flag "--no-mmap"; then
+    EXTRA_ARGS="$EXTRA_ARGS --no-mmap"
+    WEIGHTS_IN_RAM="yes"
+else
+    WEIGHTS_IN_RAM="no"
+fi
+
 TOTAL_GB=$(detect_total_mem_gb)
 GB_PER_SLOT=$(awk -v c="$MIN_CTX_PER_REQUEST" -v k="$KV_GB_PER_1K_FP16" -v s="$KV_BYTES_SCALE" '
     BEGIN { printf "%.4f", (c / 1024) * k * s }
 ')
-SLOTS=$(awk -v t="$TOTAL_GB" -v o="$FIXED_OVERHEAD_GB" -v g="$GB_PER_SLOT" -v m="$SAFETY_MARGIN" -v max="$MAX_SLOTS" '
+SLOTS=$(awk -v t="$TOTAL_GB" -v o="$FIXED_OVERHEAD_GB" -v g="$GB_PER_SLOT" -v m="$SAFETY_MARGIN" -v max="$MAX_SLOTS" -v r="$STACK_RESERVE_GB" '
     BEGIN {
-        usable = (t * m) - o
+        usable = (t * m) - o - r
         if (g <= 0) g = 1
         slots = int(usable / g)
         if (slots < 1)    slots = 1
@@ -276,15 +313,20 @@ if [ -n "$LLM_SLOTS_OVERRIDE" ]; then
 else
     # Name the binding constraint, so an operator can see at a glance whether
     # adding RAM or adding cores would raise concurrency on this machine.
-    RAM_ONLY_SLOTS=$(awk -v t="$TOTAL_GB" -v o="$FIXED_OVERHEAD_GB" -v g="$GB_PER_SLOT" -v m="$SAFETY_MARGIN" '
-        BEGIN { u=(t*m)-o; if (g<=0) g=1; s=int(u/g); if (s<1) s=1; print s }')
+    RAM_ONLY_SLOTS=$(awk -v t="$TOTAL_GB" -v o="$FIXED_OVERHEAD_GB" -v g="$GB_PER_SLOT" -v m="$SAFETY_MARGIN" -v r="$STACK_RESERVE_GB" '
+        BEGIN { u=(t*m)-o-r; if (g<=0) g=1; s=int(u/g); if (s<1) s=1; print s }')
     if [ "$RAM_ONLY_SLOTS" -gt "$MAX_SLOTS" ] 2>/dev/null; then
         BOUND="CPU (${MAX_SLOTS} core(s); RAM alone would allow ${RAM_ONLY_SLOTS})"
     else
         BOUND="RAM (${TOTAL_GB}GB; ${MAX_SLOTS} core(s) available)"
     fi
-    echo "[LLM ENTRYPOINT] Detected ${TOTAL_GB}GB and ${MAX_SLOTS} core(s), ~${GB_PER_SLOT}GB per ${MIN_CTX_PER_REQUEST}-token slot -> $SLOTS slot(s), bounded by $BOUND."
+    echo "[LLM ENTRYPOINT] Detected ${TOTAL_GB}GB and ${MAX_SLOTS} core(s), ~${GB_PER_SLOT}GB per ${MIN_CTX_PER_REQUEST}-token slot, ${STACK_RESERVE_GB}GB kept for the app, database and system -> $SLOTS slot(s), bounded by $BOUND."
+    if awk -v t="$TOTAL_GB" -v o="$FIXED_OVERHEAD_GB" -v g="$GB_PER_SLOT" -v m="$SAFETY_MARGIN" -v r="$STACK_RESERVE_GB" \
+        'BEGIN { exit !(((t * m) - o - r) < g) }'; then
+        echo "[LLM ENTRYPOINT] WARNING: ${TOTAL_GB}GB is less than this model plus the rest of the stack need; running 1 slot. Add memory for more." >&2
+    fi
 fi
+echo "[LLM ENTRYPOINT] Model weights held in memory: ${WEIGHTS_IN_RAM}."
 
 # Total pool = slots x per-request floor. With --kv-unified this is one shared
 # buffer any sequence can draw from, so an idle slot's tokens are reusable by a

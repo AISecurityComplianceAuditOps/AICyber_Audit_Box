@@ -92,6 +92,10 @@ services:
       # Uncomment to override the auto-sized slot count instead of letting
       # the container detect it from its own available RAM:
       # - LLM_SLOTS_OVERRIDE=2
+      # Memory kept for the rest of this stack (app, ShaktiDB, embedding
+      # server, OS) before slots are sized: 8GB unless set. 0 only on a
+      # server that runs this model and nothing else. (llm image 1.2+)
+      # - LLM_STACK_RESERVE_GB=8
     restart: always
 
   llm-embed:

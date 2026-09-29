@@ -32,9 +32,16 @@ _KV_EIGHT_BIT_FACTOR = 0.5
 # for the OS and whatever else the operator is running.
 _TOTAL_RAM_BUDGET_FRACTION = 0.85
 
-# On top of the model itself: the OS, FastAPI, Redis and the embedding server.
-# llm_client.py's auto-start uses the same figure for the same reason.
-_FIXED_OVERHEAD_GB = 2.5
+# On top of the model itself: everything else on the machine -- the app (OCR
+# and search models loaded), ShaktiDB, Redis, the embedding server and the OS.
+# The same figure as the model container's LLM_STACK_RESERVE_GB
+# (docker/llm-entrypoint.sh), so what this plans is what the server runs. It
+# was 2.5, carried from run_all.bat -- which also sizes from FREE memory, so
+# the processes already running are counted there; a container sizing from
+# TOTAL memory is not so covered. At 2.5 a 32GB server planned 6 slots, the
+# container took 7, and Linux evicted the model weights (measured: a 30-minute
+# stall on a GCP VM). At 8: 3 slots on 32GB, 44 on 124GB.
+_FIXED_OVERHEAD_GB = 8.0
 
 # Used only when the model file cannot be measured. It is deliberately the size
 # of the SMALLEST shipped model rather than an average: guessing low costs a
