@@ -1,0 +1,110 @@
+# Customer deployment compose file -- images pulled from Artifact Registry.
+#
+# Same stack as docker-compose.customer.yml (the offline / docker-load one);
+# only three things differ:
+#
+#   1. images are the full registry names, not local names. The versions come
+#      from .env (APP_VERSION, LLM_VERSION, DB_VERSION), so an update is one
+#      line changed there and `sh setup_registry.sh`.
+#   2. the database port (15234) is published on 127.0.0.1 only. The app
+#      shares the database container's network, so it does not need the host
+#      port at all; nothing else on the customer's network should reach it.
+#   3. Redis is not published at all -- the app reaches it over the compose
+#      network (redis://redis:6379), and it has no password.
+#
+# Why 2 and 3 matter: Docker writes its own firewall rules, which Ubuntu's ufw
+# does not filter, so "allow only port 8000" in ufw does NOT close a port that
+# compose publishes. Publish only what must be reached: 8000.
+#
+# Log in first (read-only JSON key, username _json_key), then:
+#   docker compose -f docker-compose.registry.yml pull
+#   docker compose -f docker-compose.registry.yml up -d
+# setup_registry.sh does all of it.
+
+services:
+  shakthidb:
+    image: ${AICB_REGISTRY:-asia-south1-docker.pkg.dev/dhiware-technologies/aicyberauditbox-cmek}/shakthidb:${DB_VERSION:-1.1}
+    container_name: shakthidb_service
+    environment:
+      # From .env. The :? form stops `docker compose up` with this message
+      # when it is missing, before anything starts.
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env - see .env.example}
+      - POSTGRES_DB=shakthidb
+    ports:
+      # This server only (psql for an administrator); see the header.
+      - "127.0.0.1:15234:15234"
+      # 8000 is the APP's port, exposed here because the app container uses
+      # network_mode: "service:shakthidb" below and cannot publish its own.
+      - "8000:8000"
+    command: postgres -p 15234 -c shared_buffers=2GB -c work_mem=64MB -c max_connections=200
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -p 15234 -U postgres" ]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: always
+
+  redis:
+    image: redis:7-alpine
+    container_name: vaptiso_redis
+    # No ports: reached only by the app, over the compose network.
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru --save ""
+    restart: always
+
+  llm:
+    image: ${AICB_REGISTRY:-asia-south1-docker.pkg.dev/dhiware-technologies/aicyberauditbox-cmek}/llm:${LLM_VERSION:-1.2}
+    container_name: aicyberauditbox_llm
+    environment:
+      - LLM_MODE=completion
+      # Gemma 4 12B, the only model this image ships (see
+      # docker-compose.customer.yml for the RAM budget: ~12.5GB + 1.92GB per slot).
+      - LLM_MODEL=12b
+      - MIN_CTX_PER_REQUEST=32768
+      # Threads and slots size themselves from this machine's cores and RAM,
+      # keeping LLM_STACK_RESERVE_GB (default 8) for the app, database and OS,
+      # and the weights are held in memory (llm image 1.2 and later).
+    restart: always
+
+  llm-embed:
+    image: ${AICB_REGISTRY:-asia-south1-docker.pkg.dev/dhiware-technologies/aicyberauditbox-cmek}/llm-embed:${LLM_VERSION:-1.2}
+    container_name: aicyberauditbox_llm_embed
+    environment:
+      - LLM_MODE=embedding
+    restart: always
+
+  app:
+    image: ${AICB_REGISTRY:-asia-south1-docker.pkg.dev/dhiware-technologies/aicyberauditbox-cmek}/app:${APP_VERSION:-1.2.4}
+    container_name: aicyberauditbox_app
+    network_mode: "service:shakthidb"
+    depends_on:
+      shakthidb:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      llm:
+        condition: service_started
+      llm-embed:
+        condition: service_started
+    environment:
+      - LLM_BACKEND=llama.cpp
+      - LLM_HOSTS=llm:11434
+      - EMBEDDING_HOST=http://llm-embed:11435
+      # Must equal the llm service's MIN_CTX_PER_REQUEST.
+      - LLM_NUM_CTX=32768
+      - REDIS_URL=redis://redis:6379/0
+      # Must use ShaktiDB -- never fall back to a container-local SQLite file.
+      - REQUIRE_POSTGRES=1
+      # The same password the database was created with.
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env - see .env.example}
+      # Audit limits size themselves from this machine (cores and model
+      # slots). No SENTRY_DSN: nothing here reports to an outside server.
+    volumes:
+      - app_data:/app/data
+    restart: always
+
+volumes:
+  pgdata:
+  app_data:
