@@ -31,6 +31,7 @@ With no earlier image on this machine the upgrade cannot be checked, and that
 fails the check: load the image customers run now (docker load -i ...), or set
 UPGRADE_FROM=none to package without it, knowingly.
 """
+import json
 import os
 import re
 import secrets
@@ -106,6 +107,15 @@ NESSUS = ("<?xml version=\"1.0\" ?><NessusClientData_v2><Report name=\"upgrade\"
 TRACKER = ("Vulnerability,Severity,Host,Description,Recommendation,Status,CVE\n"
            "SQL Injection in login form,Critical,https://portal.test/login,Injectable.,Use parameterised queries.,Open,\n"
            "Missing HSTS header,Low,https://portal.test/,HSTS not set.,Add the HSTS header.,Closed,\n")
+RETEST_NESSUS = ("<?xml version=\"1.0\" ?><NessusClientData_v2><Report name=\"retest\"><ReportHost name=\"10.0.0.5\">"
+                 "<HostProperties><tag name=\"host-ip\">10.0.0.5</tag></HostProperties>"
+                 "<ReportItem port=\"443\" svc_name=\"www\" protocol=\"tcp\" severity=\"2\" pluginID=\"104743\" "
+                 "pluginName=\"TLS Version 1.0 Protocol Detection\" pluginFamily=\"General\">"
+                 "<risk_factor>Medium</risk_factor><description>TLS 1.0 is enabled.</description>"
+                 "<solution>Disable TLS 1.0.</solution><plugin_output>TLSv1 is enabled</plugin_output>"
+                 "</ReportItem></ReportHost></Report></NessusClientData_v2>")
+RETEST_TRACKER = ("Vulnerability,Severity,Host,Description,Recommendation,Status,CVE\n"
+                  "SQL Injection in login form,Critical,https://portal.test/login,Injectable.,Use parameterised queries.,Open,\n")
 OLD_SESSION = "upgrade-check-earlier-version"
 
 
@@ -186,6 +196,34 @@ def in_container_new(upgraded):
     else:
         failures.append("the sample scan saved %d finding(s) %r, confidence %r; worker error: %s"
                         % (len(got), got, confidences, err))
+
+    # A VAPT retest of that scan: 10.0.0.5 rescanned without SWEET32 (fixed),
+    # the web finding found again (still open), TLS 1.0 new. Saved in Postgres.
+    import inspect
+    if "retest" in inspect.signature(worker._run_fast_technical_vapt_bg).parameters:
+        worker._run_fast_technical_vapt_bg(
+            sid, [{"name": "retest.nessus", "bytes": RETEST_NESSUS.encode(), "text": None},
+                  {"name": "retest.csv", "bytes": RETEST_TRACKER.encode(), "text": None}],
+            selected_sls=[], framework="VAPT", ai_recommendations=False, retest=True,
+            evidence_files=[{"id": 900001, "name": "retest.nessus"}, {"id": 900002, "name": "retest.csv"}])
+        with worker._bg_lock:
+            err = (worker._bg_results.get(sid) or {}).get("error")
+        with _master(D):
+            s = D.SessionLocal()
+            rep = s.query(D.AuditReport).filter(D.AuditReport.session_id == sid).first()
+            rows = {f.control_name: (f.retest_status, f.status)
+                    for f in s.query(D.Finding).filter(D.Finding.report_id == rep.id).all()}
+            rounds = json.loads(rep.vapt_rounds_json or "[]")
+            s.close()
+        want_rt = {"SSL Medium Strength Cipher Suites Supported (SWEET32)": ("fixed", "Closed"),
+                   "SQL Injection in login form": ("still_open", "Non-Compliant"),
+                   "TLS Version 1.0 Protocol Detection": ("new", "Non-Compliant")}
+        got_rt = {k: rows.get(k) for k in want_rt}
+        if got_rt == want_rt and [r.get("round") for r in rounds] == [1, 2] and not err:
+            print("UPG ok a VAPT retest was saved in Postgres (fixed / still open / new; 2 versions)")
+        else:
+            failures.append("the retest saved %r, versions %r; worker error: %s"
+                            % (got_rt, [r.get("round") for r in rounds], err))
 
     from sqlalchemy import inspect
     for label, eng in (("master", D.engine_master), ("slave1", D.engine_slave1), ("slave2", D.engine_slave2)):

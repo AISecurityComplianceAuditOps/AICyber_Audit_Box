@@ -2857,4 +2857,202 @@ body[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
 .total-box .kpi-number {
     color: var(--text-main);
 }
-
+/* ── VAPT retest: scan versions, what changed, each finding's history ──
+   (renderVaptRetestBar / vaptRetestHistoryHtml / refreshVaptRetestChoice) */
+#vapt-retest-bar {
+    border: 1px dashed rgba(37, 99, 235, 0.45);
+    background: rgba(37, 99, 235, 0.06);
+    border-radius: 12px;
+    padding: 12px 14px;
+    margin-bottom: 14px;
+}
+
+#vapt-retest-bar > * + * {
+    margin-top: 12px;
+}
+
+.vapt-retest-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px 16px;
+}
+
+.vapt-retest-label {
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+}
+
+.vapt-version-seg {
+    display: inline-flex;
+    flex-wrap: wrap;
+    border: 1px solid var(--border-color);
+    border-radius: 9px;
+    overflow: hidden;
+}
+
+.vapt-version-btn {
+    font: inherit;
+    font-size: 0.8rem;
+    font-weight: 600;
+    background: transparent;
+    color: var(--text-main);
+    border: 0;
+    padding: 7px 12px;
+    cursor: pointer;
+    display: grid;
+    text-align: left;
+    line-height: 1.25;
+}
+
+.vapt-version-btn + .vapt-version-btn {
+    border-left: 1px solid var(--border-color);
+}
+
+.vapt-version-btn small {
+    font-size: 0.7rem;
+    font-weight: 400;
+    color: var(--text-muted);
+}
+
+.vapt-version-btn[aria-pressed="true"] {
+    background: var(--primary);
+    color: #ffffff;
+}
+
+.vapt-version-btn[aria-pressed="true"] small {
+    color: rgba(255, 255, 255, 0.85);
+}
+
+.vapt-retest-compare {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+.vapt-retest-counts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 10px;
+}
+
+.vapt-retest-count {
+    font: inherit;
+    text-align: left;
+    border: 1px solid transparent;
+    border-radius: 10px;
+    padding: 10px 12px;
+    cursor: pointer;
+    display: grid;
+    gap: 1px;
+}
+
+.vapt-retest-count .n {
+    font-size: 1.5rem;
+    font-weight: 800;
+    line-height: 1.1;
+}
+
+.vapt-retest-count .l {
+    font-size: 0.82rem;
+    font-weight: 700;
+}
+
+.vapt-retest-count .d {
+    font-size: 0.72rem;
+    opacity: 0.85;
+}
+
+.vapt-retest-count[aria-pressed="true"] {
+    border-color: currentColor;
+    box-shadow: inset 0 0 0 1px currentColor;
+}
+
+.vapt-version-btn:focus-visible,
+.vapt-retest-count:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+}
+
+.vapt-retest-note {
+    font-size: 0.82rem;
+    color: var(--text-main);
+}
+
+.vapt-retest-badge {
+    font-weight: 800;
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 0.72rem;
+    white-space: nowrap;
+}
+
+.vapt-retest-history {
+    border: 1px dashed rgba(37, 99, 235, 0.45);
+    background: rgba(37, 99, 235, 0.06);
+    border-radius: 10px;
+    padding: 8px 12px;
+    margin-bottom: 12px;
+    display: grid;
+    gap: 6px;
+}
+
+.vapt-retest-history label {
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #3b82f6;
+}
+
+.vapt-steps {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 8px;
+    font-size: 0.8rem;
+}
+
+.vapt-step {
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 2px 8px;
+}
+
+.vapt-step-arrow {
+    color: var(--text-muted);
+}
+
+.vapt-retest-history p {
+    margin: 0;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+}
+
+.vapt-retest-choice-box {
+    border: 1px dashed rgba(37, 99, 235, 0.5);
+    background: rgba(37, 99, 235, 0.07);
+    border-radius: 10px;
+    padding: 10px 12px;
+    display: grid;
+    gap: 8px;
+    font-size: 0.8rem;
+}
+
+.vapt-retest-choice-box label {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    cursor: pointer;
+}
+
+.vapt-retest-choice-box input {
+    margin-top: 3px;
+    accent-color: var(--primary);
+}
+
+/* An earlier version is shown as it was reported: nothing on it can be changed. */
+.vapt-history-view .finding-actions {
+    display: none !important;
+}

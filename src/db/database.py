@@ -50,6 +50,9 @@ class AuditReport(Base):
     # static boilerplate. Null whenever the auditor did not opt in, and the
     # exporters fall back to their standard wording then.
     report_narrative_json  = Column(Text, nullable=True)
+    # VAPT sessions: one entry per scan version (date, files, hosts, counts),
+    # JSON, written by the worker. See src/core/vapt_retest.py.
+    vapt_rounds_json       = Column(Text, nullable=True)
     assigned_auditor_id     = Column(Integer, nullable=True)
     assigned_auditor_username = Column(String(100), nullable=True, index=True)
 
@@ -204,6 +207,14 @@ class Finding(Base):
     confidence  = Column(String(20), nullable=True)   # Certain | Firm | Tentative
     cvss_vector = Column(String(200), nullable=True)  # only when the scanner provides one
     cve_refs    = Column(Text, nullable=True)         # comma-separated CVE and CWE ids
+
+    # VAPT retest (src/core/vapt_retest.py): where this finding stood after the
+    # session's latest version -- still_open / fixed / new / not_retested /
+    # reopened -- the version it was first found in, and what each version said
+    # about it (JSON). NULL on every row of a session scanned once.
+    retest_status  = Column(String(20), nullable=True)
+    first_round    = Column(Integer, nullable=True)
+    retest_history = Column(Text, nullable=True)
 
     # PQC (Post-Quantum Cryptography Readiness) enrichment fields
     # (src/core/parsers/pqc_parser.py / finding_schema.py::Finding). Nullable/no
