@@ -3052,6 +3052,17 @@ body[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
     accent-color: var(--primary);
 }
 
+/* After a scan, before a retest file: how to start one (refreshVaptRetestChoice). */
+.vapt-retest-hint-warn {
+    color: #b45309;
+}
+
+.vapt-retest-hint #vapt-retest-upload-btn {
+    justify-self: start;
+    padding: 5px 12px;
+    font-size: 0.76rem;
+}
+
 /* An earlier version is shown as it was reported: nothing on it can be changed. */
 .vapt-history-view .finding-actions {
     display: none !important;

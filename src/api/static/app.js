@@ -5263,11 +5263,32 @@ async function refreshVaptRetestChoice() {
         const info = await res.json();
         if (activeSessionId !== sid) return;
         const newFiles = Array.isArray(info.new_files) ? info.new_files : [];
-        if (!info.vapt || !info.has_findings || !newFiles.length) return hide();
+        if (!info.vapt || !info.has_findings) return hide();
         const rounds = Array.isArray(info.rounds) ? info.rounds : [];
         const last = rounds[rounds.length - 1] || {};
         const lastN = Number(last.round) || 1;
         const next = Number(info.next_round) || lastN + 1;
+        if (!newFiles.length) {
+            // Scanned, and nothing new to compare yet. This used to show
+            // nothing at all: an auditor who uploaded the same report again saw
+            // no retest option, pressed Run, and replaced v1 with a fresh full
+            // scan. Say how a retest starts, and what Run does meanwhile. No
+            // next version is set, so Run stays an ordinary run.
+            box.dataset.next = "";
+            const found = rounds.length ? `${Number(last.found) || 0} finding(s)` : "findings";
+            const when = last.date ? `, ${escapeHtml(vaptRetestDate(last.date))}` : "";
+            box.innerHTML = `<div class="vapt-retest-choice-box vapt-retest-hint">`
+                + `<b>v${lastN} scanned: ${found}${when}.</b>`
+                + `<span>To retest, upload the <b>new</b> scan report of the same targets (a different file from v${lastN}'s). `
+                + `It is compared with v${lastN}: still open, fixed, new, not retested.</span>`
+                + `<span class="vapt-retest-hint-warn">Run Audit Scan without a new file scans v${lastN}'s files again from the start and replaces unsaved findings.</span>`
+                + `<button type="button" class="btn-secondary" id="vapt-retest-upload-btn" `
+                + `onclick="document.getElementById('evidence-file-input-panel').click()">Upload retest file</button>`
+                + `</div>`;
+            box.style.display = "block";
+            syncRunButtonForRetest();
+            return;
+        }
         const choice = box.dataset.choice || "retest";
         box.dataset.next = String(next);
         box.innerHTML = `<div class="vapt-retest-choice-box">`
