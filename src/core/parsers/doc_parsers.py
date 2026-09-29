@@ -1,6 +1,7 @@
 import os
 import io
 import re
+import threading
 import time
 import hashlib
 import numpy as np
@@ -204,6 +205,13 @@ def _empty_exchange_heads(text, section=""):
     return out, section
 
 
+# PDFium may be used by one thread at a time. Two scans reading PDFs together
+# -- two auditors, or one scan while another's pages are still being freed --
+# stopped the whole server inside pdfium.dll (Windows: exception 0x80000003;
+# reproduced 3 runs of 3 with four overlapping calls, never with one at a time).
+_PDFIUM_LOCK = threading.Lock()
+
+
 def fill_burp_pdf_exchanges(text, pdf_bytes):
     """A printed Burp report's collapsed request / response boxes, put back
     under their headings.
@@ -223,22 +231,33 @@ def fill_burp_pdf_exchanges(text, pdf_bytes):
         if not wanted or ("Burp" not in text and "burp" not in text.lower()):
             return text
         import pypdfium2
-        doc = pypdfium2.PdfDocument(pdf_bytes)
         boxes, section = {}, ""
-        for pi in range(len(doc)):
-            page = doc[pi]
-            tp = page.get_textpage()
-            t = tp.get_text_range()
-            width = page.get_size()[0]
-            found, section = _empty_exchange_heads(t, section)
-            for sec, label, m, nxt in found:
-                top = min(tp.get_charbox(i)[1] for i in range(m.start(), m.end()) if t[i].strip())
-                bottom = (max(tp.get_charbox(i)[3] for i in range(nxt.start(), nxt.end()) if t[i].strip())
-                          if nxt else 0.0)
-                box = tp.get_text_bounded(left=0, bottom=bottom + 1, right=width, top=top - 1)
-                box = box.replace("\r\n", "\n").replace("\r", "\n").strip()
-                if box and (sec, label) not in boxes:
-                    boxes[(sec, label)] = box
+        # Held for the whole read, and every PDFium object closed inside it:
+        # left to the garbage collector, a page is freed later on whatever
+        # thread collects it -- PDFium in use outside the lock.
+        with _PDFIUM_LOCK:
+            doc = pypdfium2.PdfDocument(pdf_bytes)
+            try:
+                for pi in range(len(doc)):
+                    page = doc[pi]
+                    tp = page.get_textpage()
+                    try:
+                        t = tp.get_text_range()
+                        width = page.get_size()[0]
+                        found, section = _empty_exchange_heads(t, section)
+                        for sec, label, m, nxt in found:
+                            top = min(tp.get_charbox(i)[1] for i in range(m.start(), m.end()) if t[i].strip())
+                            bottom = (max(tp.get_charbox(i)[3] for i in range(nxt.start(), nxt.end()) if t[i].strip())
+                                      if nxt else 0.0)
+                            box = tp.get_text_bounded(left=0, bottom=bottom + 1, right=width, top=top - 1)
+                            box = box.replace("\r\n", "\n").replace("\r", "\n").strip()
+                            if box and (sec, label) not in boxes:
+                                boxes[(sec, label)] = box
+                    finally:
+                        tp.close()
+                        page.close()
+            finally:
+                doc.close()
         if not boxes:
             return text
         pieces, last = [], 0
