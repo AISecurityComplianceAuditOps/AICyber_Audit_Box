@@ -250,10 +250,16 @@ def api_get_framework_controls(request: Request):
         from src.core.bg_worker import _load_custom_use_cases
         customs = _load_custom_use_cases(force=True)
         combined = []
+        # "standard" is which framework a control belongs to. The page used to
+        # guess it from the text, and filed ISO 5.9 / 5.10 ("...Associated
+        # Assets") and VAPT-8 ("Social Engineering") under SOC 2 -- both words
+        # contain "SOC". Sent so it no longer has to guess.
         for uc in USE_CASES:
-            combined.append({"sl": uc["sl"], "use_case": uc["use_case"], "label": uc["label"], "category": uc["category"]})
+            combined.append({"sl": uc["sl"], "use_case": uc["use_case"], "label": uc["label"],
+                             "category": uc["category"], "standard": uc.get("standard", "")})
         for c in customs:
-            combined.append({"sl": c["sl"], "use_case": c["use_case"], "label": c["label"], "category": c["category"]})
+            combined.append({"sl": c["sl"], "use_case": c["use_case"], "label": c["label"],
+                             "category": c["category"], "standard": c.get("standard", "")})
         return {"success": True, "controls": combined}
     except Exception:
         raise HTTPException(status_code=500, detail="Failed to load framework controls.")

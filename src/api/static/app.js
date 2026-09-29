@@ -2780,16 +2780,33 @@ async function loadFrameworkControls() {
         container.innerHTML = "";
         const selectedStd = select ? select.value : "ISO 27001";
 
+        // Which framework a control belongs to is the catalog's own "standard"
+        // field. Guessed from the text, ISO 5.9 and 5.10 ("...Other Associated
+        // Assets") and VAPT-8 ("Social Engineering...") landed under SOC 2 --
+        // "Associated" and "Social" both contain "SOC" -- so ISO listed 91 of its
+        // 93 controls and SOC 2 listed 36 of 33. The text is still read for a
+        // control without a standard (the built-in fallback list), with SOC 2
+        // matched as a word.
+        const _STD_FAMILY = {
+            "ISO27001": "iso", "SOC2": "soc2", "NISTCSF2.0": "nist", "NIST": "nist", "VAPT": "vapt",
+            "DPDP": "dpdp", "GDPR": "dpdp", "BCMS": "bcms", "XBOM": "xbom", "PQC": "pqc"
+        };
         const filtered = controlsToRender.filter(c => {
             const cat = (c.category || "").toUpperCase();
             const useCase = (c.use_case || "").toUpperCase();
-            const isVapt = cat.includes("VAPT") || useCase.includes("VAPT") || useCase.startsWith("VAPT-");
-            const isDpdp = cat.includes("DPDP") || cat.includes("GDPR") || useCase.includes("DPDP") || useCase.includes("GDPR");
-            const isSoc2 = cat.includes("SOC") || useCase.includes("SOC");
-            const isBcms = cat.includes("BCMS") || cat.includes("BUSINESS CONTINUITY") || useCase.includes("BCMS");
-            const isXbom = cat.includes("X-BOM") || cat.includes("SBOM") || useCase.includes("X-BOM") || useCase.includes("XBOM");
-            const isNist = cat.includes("NIST");
-            const isPqc = cat.includes("PQC") || useCase.includes("PQC") || useCase.startsWith("PQC-");
+            let isVapt = cat.includes("VAPT") || useCase.includes("VAPT") || useCase.startsWith("VAPT-");
+            let isDpdp = cat.includes("DPDP") || cat.includes("GDPR") || useCase.includes("DPDP") || useCase.includes("GDPR");
+            let isSoc2 = /\bSOC ?2\b/.test(cat) || /\bSOC ?2\b/.test(useCase);
+            let isBcms = cat.includes("BCMS") || cat.includes("BUSINESS CONTINUITY") || useCase.includes("BCMS");
+            let isXbom = cat.includes("X-BOM") || cat.includes("SBOM") || useCase.includes("X-BOM") || useCase.includes("XBOM");
+            let isNist = cat.includes("NIST");
+            let isPqc = cat.includes("PQC") || useCase.includes("PQC") || useCase.startsWith("PQC-");
+            const family = _STD_FAMILY[String(c.standard || "").toUpperCase().replace(/\s+/g, "")];
+            if (family) {
+                isVapt = family === "vapt"; isDpdp = family === "dpdp"; isSoc2 = family === "soc2";
+                isBcms = family === "bcms"; isXbom = family === "xbom"; isNist = family === "nist";
+                isPqc = family === "pqc";
+            }
             const isIso = !isVapt && !isDpdp && !isSoc2 && !isBcms && !isXbom && !isNist && !isPqc;
 
             if (selectedStd === "All Standards") return true;
