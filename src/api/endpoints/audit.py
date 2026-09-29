@@ -147,6 +147,62 @@ def _vapt_scanner_fields(f):
     }
 
 
+def _vapt_rounds(db, report):
+    """A VAPT session's scan versions, oldest first (src/core/vapt_retest.py).
+
+    A session scanned before versions were recorded, but holding findings,
+    reads as one version reconstructed from them.
+    """
+    from src.core import vapt_retest as _rt
+    rounds = _rt.load_rounds(getattr(report, "vapt_rounds_json", None))
+    if rounds:
+        return rounds
+    rows = db.query(Finding.source_files, Finding.target, Finding.evidence_snippet).filter(
+        Finding.report_id == report.id).all()
+    if not rows:
+        return []
+    return [_rt.legacy_first_round(
+        [{"source_files": r[0], "target": _rt.target_of(r[1], r[2])} for r in rows],
+        getattr(report, "created_at", None))]
+
+
+def _vapt_retest_fields(f):
+    """A saved finding's retest columns, for the exporters."""
+    from src.core.vapt_retest import parse_history
+    return {"retest_status": getattr(f, "retest_status", None) or "",
+            "first_round": getattr(f, "first_round", None) or 1,
+            "retest_history": parse_history(getattr(f, "retest_history", None))}
+
+
+def _vapt_export_version(db, report, findings_mapped, round_no, include_summary):
+    """Set the findings to the version being exported and return (the versions
+    the report's Retest summary lists, the version exported).
+
+    An earlier version (round_no below the latest) is exported as it stood:
+    only what it had found, with the status it gave (vapt_retest.view_as_of_round).
+    """
+    from src.core.vapt_retest import view_as_of_round
+    rounds = _vapt_rounds(db, report)
+    latest = max((int(r["round"]) for r in rounds), default=1)
+    chosen = latest
+    try:
+        wanted = int(round_no) if round_no is not None else latest
+    except (TypeError, ValueError):
+        wanted = latest
+    if 1 <= wanted < latest:
+        chosen = wanted
+        findings_mapped[:] = view_as_of_round(findings_mapped, chosen)
+        rounds = [r for r in rounds if int(r["round"]) <= chosen]
+    return (rounds if include_summary else []), chosen
+
+
+def _vapt_unscanned_files(db, report, ev_files):
+    """The session's evidence files that no earlier version scanned."""
+    from src.core import vapt_retest as _rt
+    ids, names = _rt.scanned_files(_vapt_rounds(db, report))
+    return [ev for ev in ev_files if ev.id not in ids and (ev.filename or "") not in names]
+
+
 def _load_report_narrative(report):
     """The scan's own executive summary / tactical recommendations, or None.
 
@@ -214,6 +270,12 @@ class StartAuditRequest(BaseModel):
     # is the mode to use when speed matters or when "no AI touched this" has to be
     # stated -- the findings themselves are identical either way.
     ai_recommendations: Optional[bool] = True
+    # VAPT scanner sessions only: scan just the files added since the last
+    # version and compare them with the findings the session already holds
+    # (src/core/vapt_retest.py) -- still open, fixed, new, not retested. Off, a
+    # run behaves as it always has: unsaved findings are replaced by a scan of
+    # every file.
+    vapt_retest: Optional[bool] = False
 
 # Longer than the 5000 the other content fields of a finding keep. A VAPT proof
 # of concept is kept whole (up to finding_schema.POC_MAX_CHARS plus the worker's
@@ -1810,6 +1872,22 @@ def api_start_audit(req: StartAuditRequest, request: Request):
 
             report_framework = report.framework or ""
 
+            # ── VAPT retest ─────────────────────────────────────────────────
+            # Only for a VAPT scanner session that already has findings, and
+            # never on a resume (which continues the run it interrupted).
+            _vapt_retest = bool(req.vapt_retest) and not req.is_resume
+            if _vapt_retest:
+                _fw_rt = (report_framework or req.current_framework or "").upper()
+                if ("VAPT" not in _fw_rt or "PQC" in _fw_rt
+                        or req.audit_mode not in ("VAPT validation", "Technical findings only")):
+                    raise HTTPException(status_code=400, detail=(
+                        "A retest compares VAPT scanner results; this session is not a VAPT "
+                        "scanner session."))
+                if db.query(Finding.id).filter(Finding.report_id == report_id).first() is None:
+                    raise HTTPException(status_code=400, detail=(
+                        "There is no earlier scan in this session to compare with. Run the first "
+                        "scan, then upload the retest and run it as a retest."))
+
             # ── Licensed frameworks ──────────────────────────────────────────
             # Enforced HERE, at the API boundary, not only where the UI builds
             # its dropdown: a filtered dropdown is a convenience, this is the
@@ -1854,7 +1932,8 @@ def api_start_audit(req: StartAuditRequest, request: Request):
                 if _conflict:
                     raise HTTPException(status_code=409, detail=_conflict)
 
-            if not req.is_resume:
+            # A retest keeps every finding: they are what it compares with.
+            if not req.is_resume and not _vapt_retest:
                 try:
                     deleted_drafts = db.query(Finding).filter(
                         Finding.report_id == report_id,
@@ -1876,6 +1955,8 @@ def api_start_audit(req: StartAuditRequest, request: Request):
                 except Exception as _clean_err:
                     db.rollback()
                     print(f"[START AUDIT] Stale findings cleanup failed (non-fatal): {_clean_err}", flush=True)
+            elif _vapt_retest:
+                print(f"[START AUDIT] VAPT retest for session {req.session_id} -- keeping every finding to compare with.", flush=True)
             else:
                 print(f"[START AUDIT] Resuming interrupted scan for session {req.session_id} — preserving existing findings.", flush=True)
             # ──────────────────────────────────────────────────────────────────
@@ -1890,7 +1971,16 @@ def api_start_audit(req: StartAuditRequest, request: Request):
                 EvidenceFile.report_id == report_id,
                 (EvidenceFile.is_deleted == False) | (EvidenceFile.is_deleted.is_(None))
             ).all()
+            if _vapt_retest:
+                # Only what the earlier versions did not scan.
+                _new_evs = _vapt_unscanned_files(db, report, ev_files)
+                if not _new_evs:
+                    raise HTTPException(status_code=400, detail=(
+                        "Every file in this session was already scanned. Upload the retest "
+                        "scan file, then run the retest."))
+                ev_files = _new_evs
             ev_file_list = [(ev.file_path, ev.filename) for ev in ev_files]
+            _evidence_meta = [{"id": ev.id, "name": ev.filename} for ev in ev_files]
 
         files_data = []
         file_registry = {}
@@ -1993,6 +2083,8 @@ def api_start_audit(req: StartAuditRequest, request: Request):
                     "framework": report_framework,
                     "ai_recommendations": bool(req.ai_recommendations),
                     "ai_model": req.model_choice,
+                    "retest": _vapt_retest,
+                    "evidence_files": _evidence_meta,
                 },
                 daemon=True
             )
@@ -2471,9 +2563,25 @@ def api_get_findings(request: Request, session_id: str, saved_only: bool = False
                         result[-1]["cve_list"] = _own_cves
                 except Exception as _ow_err:
                     print(f"[FINDINGS API] OWASP category not derived: {_ow_err}", flush=True)
+                # Retest: where the finding stood after the latest version, the
+                # version it was first found in, and what each version said.
+                from src.core.vapt_retest import parse_history as _parse_history
+                result[-1]["retest_status"] = getattr(f, "retest_status", None) or ""
+                result[-1]["first_round"] = getattr(f, "first_round", None) or 1
+                result[-1]["retest_history"] = _parse_history(getattr(f, "retest_history", None))
+        # A VAPT session's scan versions (v1, v2 ...): the Audit Records page
+        # shows the retest comparison when there are two or more.
+        _rounds_payload = []
+        if _vapt_only_api:
+            try:
+                with force_master():
+                    _rounds_payload = _vapt_rounds(db, report)
+            except Exception as _rd_err:
+                print(f"[FINDINGS API] Scan versions not read: {_rd_err}", flush=True)
         return {
             "success": True,
             "findings": result,
+            "vapt_rounds": _rounds_payload,
             "session_title": report.session_title,
             "session_status": report.status,
             # Lets the Audit Records page treat a VAPT session's informational
@@ -2491,6 +2599,43 @@ def api_get_findings(request: Request, session_id: str, saved_only: bool = False
             # entire Audit Records page failing to load over a display hint.
             "scoping_mode": getattr(report, "scoping_mode", None) or ""
         }
+    finally:
+        db.close()
+
+
+@router.get("/vapt/retest-info")
+def api_vapt_retest_info(request: Request, session_id: str):
+    """What a retest of this VAPT session would do, for the Scan Workspace.
+
+    {"vapt": false} for any session that is not a VAPT scanner session -- the
+    page then shows nothing new. Otherwise the versions so far, the number the
+    retest would get, and the attached files no version has scanned yet.
+    """
+    auth_user = _require_auth(request)
+    db = SessionLocal()
+    try:
+        with force_master():
+            report = db.query(AuditReport).filter(AuditReport.session_id == session_id).first()
+            if not report:
+                raise HTTPException(status_code=404, detail="Audit session not found.")
+            _assert_session_access(db, report, auth_user)
+            fw = (report.framework or "").upper()
+            if "VAPT" not in fw or "PQC" in fw:
+                return {"vapt": False}
+            has_findings = db.query(Finding.id).filter(Finding.report_id == report.id).first() is not None
+            rounds = _vapt_rounds(db, report) if has_findings else []
+            ev_files = db.query(EvidenceFile).filter(
+                EvidenceFile.report_id == report.id,
+                (EvidenceFile.is_deleted == False) | (EvidenceFile.is_deleted.is_(None))
+            ).all()
+            new_files = _vapt_unscanned_files(db, report, ev_files) if has_findings else []
+            return {
+                "vapt": True,
+                "has_findings": has_findings,
+                "rounds": [{k: r.get(k) for k in ("round", "date", "files", "found", "counts")} for r in rounds],
+                "next_round": (max(int(r["round"]) for r in rounds) + 1) if rounds else 1,
+                "new_files": [ev.filename for ev in new_files],
+            }
     finally:
         db.close()
 
@@ -3566,7 +3711,11 @@ def api_export_docx(
     brand_order_ref: Optional[str] = None,
     brand_email: Optional[str] = None,
     brand_audit_dates: Optional[str] = None,
-    brand_auditee_reps: Optional[str] = None
+    brand_auditee_reps: Optional[str] = None,
+    # VAPT: the scan version to export (default the latest) and whether the
+    # report carries its Retest summary. Ignored for every other framework.
+    version: Optional[int] = None,
+    retest_summary: bool = True
 ):
     """Exports findings report as DOCX using custom layout templates."""
     auth_user = _require_auth(request)
@@ -3747,6 +3896,7 @@ def api_export_docx(
                 })
                 if _vapt_only_docx:
                     findings_mapped[-1].update(_vapt_scanner_fields(f))
+                    findings_mapped[-1].update(_vapt_retest_fields(f))
                     if "INFO" in str(f.severity or "").upper():
                         findings_mapped[-1]["severity"] = "INFO"
                 from src.core.finding_status import is_compliant_verdict
@@ -3754,6 +3904,10 @@ def api_export_docx(
                     resolved_list.append(f.control_id)
 
             fw_name = (report.framework or "Audit_Report").replace(" ", "_").replace("/", "_")
+            # VAPT: the version exported and the versions its Retest summary lists.
+            _vr_rounds, _vr_version = [], None
+            if _vapt_only_docx:
+                _vr_rounds, _vr_version = _vapt_export_version(db, report, findings_mapped, version, retest_summary)
             is_vapt = _session_is_technical(
                 report.framework,
                 (f.get("control_id") or f.get("control") for f in findings_mapped),
@@ -3781,6 +3935,10 @@ def api_export_docx(
                 # auditor opted into AI recommendations. Absent -> the exporters keep
                 # their standard wording, so this can only ever add specificity.
                 "report_narrative": _load_report_narrative(report),
+                # VAPT retest: the versions for the report's Retest summary (none
+                # for a session scanned once) and the version this report is.
+                "vapt_rounds": _vr_rounds,
+                "vapt_report_round": _vr_version,
             }
 
             # Determine DOCX template type: PQC gets its own template, not VAPT
@@ -4023,7 +4181,11 @@ def api_export_pdf(
     brand_order_ref: Optional[str] = None,
     brand_email: Optional[str] = None,
     brand_audit_dates: Optional[str] = None,
-    brand_auditee_reps: Optional[str] = None
+    brand_auditee_reps: Optional[str] = None,
+    # VAPT: the scan version to export (default the latest) and whether the
+    # report carries its Retest summary. Ignored for every other framework.
+    version: Optional[int] = None,
+    retest_summary: bool = True
 ):
     """Exports findings report as PDF using custom layout templates."""
     auth_user = _require_auth(request)
@@ -4225,11 +4387,16 @@ def api_export_pdf(
                 })
                 if _vapt_only_pdf:
                     findings_mapped[-1].update(_vapt_scanner_fields(f))
+                    findings_mapped[-1].update(_vapt_retest_fields(f))
                     if "INFO" in raw_sev:
                         findings_mapped[-1]["severity"] = "INFO"
                 if is_comp:
                     resolved_list.append(f.control_id)
 
+            # VAPT: the version exported and the versions its Retest summary lists.
+            _vr_rounds, _vr_version = [], None
+            if _vapt_only_pdf:
+                _vr_rounds, _vr_version = _vapt_export_version(db, report, findings_mapped, version, retest_summary)
             is_vapt = _session_is_technical(
                 report.framework,
                 (c for f in db_findings
@@ -4259,6 +4426,10 @@ def api_export_pdf(
                 # auditor opted into AI recommendations. Absent -> the exporters keep
                 # their standard wording, so this can only ever add specificity.
                 "report_narrative": _load_report_narrative(report),
+                # VAPT retest: the versions for the report's Retest summary (none
+                # for a session scanned once) and the version this report is.
+                "vapt_rounds": _vr_rounds,
+                "vapt_report_round": _vr_version,
             }
 
             if is_vapt:

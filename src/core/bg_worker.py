@@ -2562,8 +2562,60 @@ def _run_ollama_bg(bg_key, files_data, selected_sls_copy, ai_model, session_id=N
             _bg_store["progress"].pop(bg_key, None)
             _bg_stop_flags.pop(bg_key, None)  # Clear stop flag on thread exit
 
+def _vapt_retest_plan(bg_key, current):
+    """Compare this retest's findings with the session's saved ones.
+
+    Returns (plan, round_no, earlier_rounds, current_state): the comparison
+    (src/core/vapt_retest.compare), this version's number, the versions before
+    it (version 1 reconstructed for a session scanned before versions were
+    recorded), and every finding as it will stand afterwards -- for the
+    executive summary, which describes the session, not only what is new.
+    """
+    from src.core import vapt_retest as _rt
+    with force_master():
+        _db = SessionLocal()
+        try:
+            _report = _db.query(AuditReport).filter(AuditReport.session_id == bg_key).first()
+            _rows = _db.query(Finding).filter(Finding.report_id == _report.id).all() if _report else []
+            _rounds = _rt.load_rounds(getattr(_report, "vapt_rounds_json", None)) if _report else []
+            _prev = []
+            for _r in _rows:
+                _prev.append({
+                    "id": _r.id, "dedup_key": _r.dedup_key, "title": _r.control_name or "",
+                    "target": _rt.target_of(getattr(_r, "target", None), _r.evidence_snippet),
+                    "cve_list": getattr(_r, "cve_refs", None) or "", "status": _r.status,
+                    "final_result": _r.final_result, "severity": _r.severity,
+                    "first_round": getattr(_r, "first_round", None),
+                    "retest_status": getattr(_r, "retest_status", None),
+                    "history": _rt.parse_history(getattr(_r, "retest_history", None)),
+                    "source_files": _r.source_files or "",
+                    "source_tool": getattr(_r, "source_tool", None) or "",
+                })
+            if not _rounds and _prev:
+                _rounds = [_rt.legacy_first_round(_prev, getattr(_report, "created_at", None))]
+        finally:
+            _db.close()
+    _dates = {int(r["round"]): r.get("date") or "" for r in _rounds}
+    for _p in _prev:
+        _p["first_date"] = _dates.get(int(_p.get("first_round") or 1), "")
+    _round_no = (max(int(r["round"]) for r in _rounds) + 1) if _rounds else 1
+    _plan = _rt.compare(_prev, current, _round_no)
+
+    _state = []
+    for _p in _prev:
+        _ch = _plan["updates"].get(_p["id"])
+        if not _ch:
+            continue                       # rejected / out of scope
+        _state.append({"title": _p["title"], "severity": _p["severity"], "target": _p["target"],
+                       "cve_list": list(_rt.cve_set(_p["cve_list"])), "source_tool": _p["source_tool"],
+                       "status": _ch["status"] or _p["status"]})
+    _state.extend(_plan["new"])
+    return _plan, _round_no, _rounds, _state
+
+
 def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=None,
-                                framework="", ai_recommendations=False, ai_model=None):
+                                framework="", ai_recommendations=False, ai_model=None,
+                                retest=False, evidence_files=None):
     # `framework` decides which parser family parse_tool_file() is allowed to use.
     # It used to be absent entirely, so every call below passed the literal "vapt"
     # -- including calls made for a PQC session, since PQC is a technical-mode scan
@@ -2576,6 +2628,16 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
     all_findings = []
     resolved_ctrls = set()
     _seen_dedup_keys = set()
+    # VAPT sessions record each scan as a version; `retest` compares this one
+    # with the session's saved findings (src/core/vapt_retest.py). PQC keeps
+    # exactly the behaviour it had.
+    _versions = _dispatch_framework == "vapt"
+    _retest = bool(retest) and _versions
+    _retest_plan = _retest_round = None
+    _retest_prev_rounds = []
+    _retest_state = []
+    _scanned_names = [str(fd.get("name") or "") for fd in (files_data or []) if isinstance(fd, dict)]
+    _scanned_ids = [e.get("id") for e in (evidence_files or []) if isinstance(e, dict)]
 
     def _vapt_progress(percent, text, **extra):
         """Publish a progress tick for this scan.
@@ -2612,10 +2674,14 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
         # run -- without this, re-running a scan on the same session (e.g. after
         # uploading more evidence) re-inserted every finding from files that were
         # already scanned before, since in-memory dedup alone only sees the current run.
+        #
+        # Not for a retest: it has to see everything the new files report,
+        # including what the session already holds -- "found again" is its answer.
         try:
             with force_master():
                 _db_seed = SessionLocal()
-                _existing_report = _db_seed.query(AuditReport).filter(AuditReport.session_id == bg_key).first()
+                _existing_report = (None if _retest else
+                                    _db_seed.query(AuditReport).filter(AuditReport.session_id == bg_key).first())
                 if _existing_report:
                     _existing_keys = _db_seed.query(Finding.dedup_key).filter(
                         Finding.report_id == _existing_report.id,
@@ -2936,6 +3002,20 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
         _vapt_progress(48, f"{len(all_findings)} finding(s) parsed and mapped "
                            f"to controls.")
 
+        # A retest: compare the new files' findings with the session's saved
+        # ones. From here on all_findings is only what is NEW -- the rows the
+        # session already holds are updated in place when the scan is saved.
+        if _retest:
+            _retest_plan, _retest_round, _retest_prev_rounds, _retest_state = _vapt_retest_plan(bg_key, all_findings)
+            _c = _retest_plan["counts"]
+            print(f"[VAPT RETEST] v{_retest_round}: {_retest_plan['found']} finding(s) in the new file(s); "
+                  f"still open {_c['still_open']}, fixed {_c['fixed']}, new {_c['new']}, "
+                  f"not retested {_c['not_retested']}, reopened {_c['reopened']}; "
+                  f"hosts scanned: {', '.join(_retest_plan['hosts']) or 'none'}", flush=True)
+            _vapt_progress(50, f"Retest v{_retest_round} compared with v{_retest_round - 1}: "
+                               f"{_c['still_open']} still open, {_c['fixed']} fixed, {_c['new']} new.")
+            all_findings = _retest_plan["new"]
+
         if ai_recommendations and all_findings:
             try:
                 from src.core.parsers.remediation_llm import enrich_remediations
@@ -2984,7 +3064,10 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
         # waited on it for minutes -- up to 15 when an ISO audit held the model
         # (5 queued for a slot, 10 writing). Without the tick the report keeps
         # its standard summary text.
-        if all_findings and ai_recommendations:
+        # A retest's summary describes the session as it now stands -- what is
+        # still open as well as what is new -- not only this version's new rows.
+        _narrative_source = _retest_state if _retest else all_findings
+        if _narrative_source and ai_recommendations:
             _model = _resolve_llm_model(ai_model) if ai_model else "gemma4:e4b"
             _vapt_progress(90, "Writing executive summary and tactical recommendations...")
 
@@ -3003,7 +3086,7 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
                 # its severity would be counted as an open one. (None open: no
                 # narrative, and the report keeps its standard text.)
                 _narrative = generate_report_narrative(
-                    [f for f in all_findings if f.get("status") != "Closed"],
+                    [f for f in _narrative_source if f.get("status") != "Closed"],
                     model=_model, session_id=bg_key
                 )
                 if _narrative:
@@ -3186,6 +3269,12 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
                             finding_kwargs["human_verified"] = True
                         if f.get("is_saved_to_shakthi"):
                             finding_kwargs["is_saved_to_shakthi"] = True
+                        # A retest's new finding: the version it was first found
+                        # in and what that version said (see vapt_retest.compare).
+                        if _retest:
+                            finding_kwargs["retest_status"] = f.get("retest_status")
+                            finding_kwargs["first_round"] = f.get("first_round")
+                            finding_kwargs["retest_history"] = json.dumps(f.get("history") or [])
                         # Strip NUL bytes (0x00) from every text field -- PDFs, HTML, and OCR
                         # text occasionally extract with embedded NUL bytes, which SQLite/
                         # Postgres both reject outright ("string literal cannot contain NUL
@@ -3195,7 +3284,42 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
                             if isinstance(_v, str) and "\x00" in _v:
                                 finding_kwargs[_k] = _v.replace("\x00", "")
                         db_write.add(Finding(**finding_kwargs))
-                    
+
+                    # The session's versions (VAPT only), in the same commit as
+                    # the findings they describe.
+                    if _versions:
+                        from src.core import vapt_retest as _rt
+                        if _retest:
+                            # The saved findings, as this retest found them.
+                            for _fid, _ch in _retest_plan["updates"].items():
+                                _row = db_write.get(Finding, _fid)
+                                if _row is None:
+                                    continue
+                                _row.retest_status = _ch["retest_status"]
+                                _row.retest_history = json.dumps(_ch["history"])
+                                if _ch["status"]:
+                                    _row.status = _ch["status"]
+                                    _row.final_result = _ch["final_result"] or None
+                            report.vapt_rounds_json = json.dumps(_retest_prev_rounds + [_rt.round_entry(
+                                _retest_round, _scanned_names, _scanned_ids, _retest_plan["hosts"],
+                                _retest_plan["found"], counts=_retest_plan["counts"])])
+                        else:
+                            # A scan of the whole session is its first version,
+                            # whatever versions it had before: the findings they
+                            # compared have just been replaced. Rows kept from
+                            # before (saved to Shakthi) carry no stale history.
+                            db_write.query(Finding).filter(
+                                Finding.report_id == report.id,
+                                (Finding.retest_status.isnot(None)) | (Finding.retest_history.isnot(None))
+                                | (Finding.first_round.isnot(None))
+                            ).update({Finding.retest_status: None, Finding.retest_history: None,
+                                      Finding.first_round: None}, synchronize_session=False)
+                            _hosts = set()
+                            for _f in all_findings:
+                                _hosts |= _rt.hosts_of(_f.get("target"))
+                            report.vapt_rounds_json = json.dumps([_rt.round_entry(
+                                1, _scanned_names, _scanned_ids, _hosts, len(all_findings))])
+
                     # Update Compliance Score
                     db_write.query(ComplianceScore).filter(ComplianceScore.report_id == report.id).delete()
                     in_scope = [f for f in all_findings if f.get("status") in ("Compliant", "Partially Compliant", "Non-Compliant")]
@@ -3224,6 +3348,10 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
         # -- N finding(s)" here and show none, with the cause only in the log.
         if _save_error:
             _vapt_progress(100, "Scan finished, but its findings could not be saved.")
+        elif _retest:
+            _c = _retest_plan["counts"]
+            _vapt_progress(100, f"Retest v{_retest_round} complete -- {_c['still_open']} still open, "
+                                f"{_c['fixed']} fixed, {_c['new']} new, {_c['not_retested']} not retested.")
         else:
             _vapt_progress(100, f"Scan complete -- {len(all_findings)} finding(s).")
 
@@ -3236,6 +3364,8 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
                 "error": _save_error,
                 "completed": True
             }
+            if _retest and not _save_error:
+                _bg_results[bg_key]["retest"] = {"round": _retest_round, "counts": _retest_plan["counts"]}
         with _bg_lock:
             _bg_running.discard(bg_key)
     except Exception as e:

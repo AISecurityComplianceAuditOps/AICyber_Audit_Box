@@ -7,7 +7,7 @@
     <title>AICyberAuditBox - Local Compliance Intelligence</title>
     <link rel="icon"
         href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🛡️</text></svg>">
-    <link rel="stylesheet" href="/static/style.css?v=20260925_v360001">
+    <link rel="stylesheet" href="/static/style.css?v=20260928_v360002">
     <!-- Webfonts are served from this box: the product runs air-gapped, so
          nothing may be fetched from a CDN at page load. -->
     <link rel="stylesheet" href="/static/fonts/fonts.css">
@@ -749,6 +749,10 @@
                                 </div>
                             </div>
 
+                            <!-- VAPT retest: shown when a VAPT session that already has findings
+                                 has files no version has scanned (refreshVaptRetestChoice). -->
+                            <div id="vapt-retest-choice" style="display:none; margin-top: 8px;"></div>
+
                             <!-- BOTTOM ACTION ROW: RUN AUDIT SCAN BUTTON -->
                             <div style="margin-top: 8px;">
                                 <button id="run-analysis-btn" class="btn-primary pulse-glowing-btn"
@@ -767,6 +771,9 @@
 
                 <!-- ── TAB: AUDIT RECORDS (DETAILED FINDINGS REVIEW) ── -->
                 <section id="tab-audit-records" class="tab-panel">
+                    <!-- VAPT retest: scan versions and what changed (a session scanned
+                         more than once; rendered by renderVaptRetestBar). -->
+                    <div id="vapt-retest-bar" style="display:none;"></div>
                     <!-- Summary KPI Counters Row -->
                     <!-- VAPT sessions: Critical, High, Medium, Low, Informational, Closed, Total
                          (shown instead of the row below by syncStatusFilterForSession). -->
@@ -888,6 +895,16 @@
                                 <span>EXECUTIVE REPORT ARTIFACTS</span>
                             </div>
                             <div style="display: flex; flex-direction: column; gap: 10px;">
+                                <!-- VAPT retest: which scan version to export (shown when the
+                                     session has more than one; see renderVaptRetestBar). -->
+                                <div id="vapt-export-version" style="display:none; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 10px;">
+                                    <label for="vapt-export-round" style="font-weight: 700; font-size: 0.8rem;">Report version</label>
+                                    <select id="vapt-export-round"></select>
+                                    <label for="vapt-export-summary" style="display: flex; gap: 8px; align-items: flex-start; font-size: 0.8rem;">
+                                        <input type="checkbox" id="vapt-export-summary" checked style="margin-top: 3px;">
+                                        <span>Include the retest summary<br><span style="color: var(--text-muted);">The versions table and each vulnerability's status in each version.</span></span>
+                                    </label>
+                                </div>
                                 <button type="button" class="btn-primary" id="btn-export-pdf"
                                     onclick="exportFindingsPDF()"
                                     style="width: 100%; padding: 12px 14px; background: linear-gradient(135deg, #08519c 0%, #053b73 100%); border-radius: 10px; font-weight: 700; font-size: 0.84rem; display: flex; align-items: center; justify-content: space-between; cursor: pointer; box-shadow: 0 4px 14px rgba(8,81,156,0.35); border: 1px solid rgba(255,255,255,0.15); color: #ffffff;">
@@ -2176,7 +2193,7 @@
     <script src="/static/js/config.js?v=20260807_v410055"></script>
     <script src="/static/js/sidebar.js?v=20260807_v410055"></script>
     <script src="/static/js/admin.js?v=20260807_v410055"></script>
-    <script src="/static/app.js?v=20260926_v410063"></script>
+    <script src="/static/app.js?v=20260928_v410064"></script>
 </body>
 
 </html>
