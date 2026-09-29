@@ -1664,9 +1664,32 @@ def _capacity_refusal_detail(active: int, limit: int, licensed: bool, advice: st
     return detail
 
 
+def _framework_not_ready(framework):
+    """Why a run cannot start on `framework`, or None when it can.
+
+    IEC 62443 is listed in the dropdown before its controls are added
+    (feature/iec-62443). The framework sync below ignores a value it does not
+    know, so a run would carry the session's previous framework -- an audit
+    under a name nobody chose. Refused until the catalog has its controls;
+    every other framework passes untouched.
+    """
+    fw = (framework or "").upper().replace(" ", "").replace("-", "")
+    if not fw.startswith("IEC62443"):
+        return None
+    from src.core.controls_data import USE_CASES
+    if any(str(u.get("standard", "")).upper().replace(" ", "") == "IEC62443" for u in USE_CASES):
+        return None
+    return ("IEC 62443 controls have not been added yet, so this framework cannot be "
+            "audited. Choose another framework.")
+
+
 @router.post("/start")
 def api_start_audit(req: StartAuditRequest, request: Request):
     auth_user = _require_auth(request)
+    # Before any state is touched: a refused run leaves nothing behind.
+    _not_ready = _framework_not_ready(req.current_framework)
+    if _not_ready:
+        raise HTTPException(status_code=400, detail=_not_ready)
     bg_key = req.session_id
     print(f"🚀 [API] /audit/start received for session {req.session_id} with {len(req.selected_sls)} controls (mode: {req.audit_mode})", flush=True)
 

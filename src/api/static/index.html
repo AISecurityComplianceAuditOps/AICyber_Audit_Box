@@ -590,6 +590,11 @@
                                             System (ISMS) (93 controls)</option>
                                         <option value="NIST CSF 2.0">NIST CSF 2.0 — Cybersecurity Framework Core (22
                                             controls)</option>
+                                        <!-- Listed ahead of its controls (feature/iec-62443): until they
+                                             are added, app.js shows that instead of a control list and
+                                             /audit/start refuses the run. -->
+                                        <option value="IEC62443">IEC 62443 – Industrial Communication Networks: Network and
+                                            System Security (121 controls)</option>
                                         <option value="DPDP">DPDP / GDPR — Digital Data Protection &amp; EU GDPR
                                             Compliance (15 controls)</option>
                                         <option value="SOC2">SOC 2 Type II — System &amp; Organization Controls (33
@@ -2073,6 +2078,7 @@
                     <select id="new-session-framework" onchange="_autoFillSessionTitle()"
                         style="width: 100%; padding: 10px 14px; border-radius: 8px; border: 1px solid rgba(148, 163, 184, 0.3); background: rgba(30, 41, 59, 0.8); color: #ffffff; font-size: 0.86rem; outline: none;">
                         <option value="ISO 27001">ISO 27001 — Information Security Management System</option>
+                        <option value="IEC62443">IEC 62443 – Industrial Communication Networks: Network and System Security (121 controls)</option>
                         <option value="VAPT">VAPT — Vulnerability Assessment &amp; Penetration Testing</option>
                         <option value="PQC">PQC — Post-Quantum Cryptography Readiness</option>
                         <option value="DPDP">DPDP — Digital Personal Data Protection</option>
@@ -2176,7 +2182,7 @@
     <script src="/static/js/config.js?v=20260807_v410055"></script>
     <script src="/static/js/sidebar.js?v=20260807_v410055"></script>
     <script src="/static/js/admin.js?v=20260807_v410055"></script>
-    <script src="/static/app.js?v=20260926_v410063"></script>
+    <script src="/static/app.js?v=20260929_v410065"></script>
 </body>
 
 </html>

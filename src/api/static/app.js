@@ -1252,6 +1252,8 @@ function _frameworkFamily(value) {
     // Checked before ISO: "ISO 22301 BCMS" contains both.
     if (v.includes("BCMS") || v.includes("22301")) return "BCMS";
     if (v.includes("XBOM") || v.includes("X-BOM") || v.includes("SBOM")) return "XBOM";
+    // Without it, a session created as IEC 62443 left the sidebar where it was.
+    if (v.includes("IEC62443") || v.includes("IEC 62443")) return "IEC62443";
     if (v.includes("ISO")) return "ISO";
     return "";
 }
@@ -2390,7 +2392,8 @@ function setAnalysisMode(mode) {
     const isGovernance = (
         fwVal.includes("ISO") || fwVal.includes("SOC") ||
         fwVal.includes("DPDP") || fwVal.includes("BCMS") ||
-        fwVal.includes("XBOM") || fwVal.includes("X-BOM")
+        fwVal.includes("XBOM") || fwVal.includes("X-BOM") ||
+        fwVal.includes("IEC62443")          // policy and evidence, like ISO
     );
 
     if (isTechnical && (mode === "Quick" || mode === "Deep")) {
@@ -2448,7 +2451,8 @@ function onFrameworkChangeSuggestMode() {
     const isGovernance = (
         fwVal.includes("ISO") || fwVal.includes("SOC") ||
         fwVal.includes("DPDP") || fwVal.includes("BCMS") ||
-        fwVal.includes("XBOM") || fwVal.includes("X-BOM")
+        fwVal.includes("XBOM") || fwVal.includes("X-BOM") ||
+        fwVal.includes("IEC62443")          // policy and evidence, like ISO
     );
     const isTechnical = fwVal.includes("VAPT") || fwVal.includes("PQC");
 
@@ -2790,9 +2794,13 @@ async function loadFrameworkControls() {
             const isXbom = cat.includes("X-BOM") || cat.includes("SBOM") || useCase.includes("X-BOM") || useCase.includes("XBOM");
             const isNist = cat.includes("NIST");
             const isPqc = cat.includes("PQC") || useCase.includes("PQC") || useCase.startsWith("PQC-");
-            const isIso = !isVapt && !isDpdp && !isSoc2 && !isBcms && !isXbom && !isNist && !isPqc;
+            const isIec = cat.includes("IEC 62443") || useCase.includes("IEC62443") || useCase.includes("IEC 62443");
+            const isIso = !isVapt && !isDpdp && !isSoc2 && !isBcms && !isXbom && !isNist && !isPqc && !isIec;
 
             if (selectedStd === "All Standards") return true;
+            // Without this, a value no branch below names fell through to
+            // `return true` and listed every framework's controls under it.
+            if (selectedStd === "IEC62443") return isIec;
             if (selectedStd === "ISO 27001") return isIso;
             if (selectedStd === "VAPT") return isVapt;
             if (selectedStd === "DPDP") return isDpdp;
@@ -2803,6 +2811,19 @@ async function loadFrameworkControls() {
             if (selectedStd === "PQC") return isPqc;
             return true;
         });
+
+        // IEC 62443 is in the dropdown before its controls are (feature/iec-62443).
+        // With none, say so rather than an empty list; runAudit() and /audit/start
+        // both refuse the run until the count is above zero, and it rises on its own
+        // once the controls are added.
+        if (selectedStd === "IEC62443") {
+            window.iec62443ControlCount = filtered.length;
+            if (filtered.length === 0) {
+                container.innerHTML = "<div id='iec62443-not-ready' style='font-size:11px;color:var(--text-muted);padding:8px;line-height:1.5;'>IEC 62443 controls have not been added yet, so this framework cannot be audited. Choose another framework to run an audit.</div>";
+                updateSelectedScopeCount();
+                return;
+            }
+        }
 
         // Group into Clause Categories matching Streamlit UI
         const clauseMap = {
@@ -3540,6 +3561,19 @@ async function triggerAuditAnalysis() {
             }
         }
     } catch (e) { /* never block a scan on the confirmation itself failing */ }
+
+    // IEC 62443 is listed before its controls exist. Checklist mode needs no
+    // controls, so the guard below would let it through -- and /audit/start
+    // keeps a session's previous framework when it does not know the one sent,
+    // so the run would carry some other framework's name. Refuse it here too.
+    const _fwNow = document.getElementById("framework-select");
+    if (_fwNow && _fwNow.value === "IEC62443" && !(window.iec62443ControlCount > 0)) {
+        alert("⚠️ IEC 62443 controls have not been added yet, so this framework cannot be audited. Choose another framework.");
+        btn.disabled = false;
+        btn.innerText = "▶ Run Audit Scan"; if (typeof hidePipelineProgress === "function") hidePipelineProgress();
+        if (stopBtn) stopBtn.style.display = "none";
+        return;
+    }
 
     // Customize needs questions, not controls -- its own guard.
     if (_isCustomizeRun) {
