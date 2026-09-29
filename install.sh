@@ -46,6 +46,25 @@ for i in aicyberauditbox-app:${VERSION} \
 done
 [ "$MISSING" = "0" ] || { echo "Aborting: the images above did not load."; exit 1; }
 
+# The database password, in .env beside the compose file. Postgres is created
+# with it on the first start and only ever opens with it afterwards, so it is
+# written once and never replaced: a new one would lock the application out of
+# a database that already exists.
+if [ ! -f .env ]; then
+  PROJECT=$(POSTGRES_PASSWORD=unset docker compose -f "$COMPOSE" config 2>/dev/null | sed -n 's/^name: *//p' | head -1)
+  if [ -n "$PROJECT" ] && docker volume inspect "${PROJECT}_pgdata" >/dev/null 2>&1; then
+    echo "ERROR: .env is missing but this installation's database (${PROJECT}_pgdata)"
+    echo "       already exists. Put back the .env it was created with -- a new"
+    echo "       password would lock the application out of it."
+    exit 1
+  fi
+  echo ""
+  echo "--> Creating .env (database password generated here, never sent anywhere)"
+  PW=$(head -c 48 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 24)
+  ( umask 077; printf 'POSTGRES_PASSWORD=%s\n' "$PW" > .env )
+  echo "    ok   .env created -- keep a copy of it with your backups"
+fi
+
 echo ""
 echo "--> Starting the stack"
 docker compose -f "$COMPOSE" up -d

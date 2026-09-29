@@ -56,6 +56,37 @@ if "%MISSING%"=="1" (
   exit /b 1
 )
 
+REM The database password, in .env beside the compose file. Postgres is created
+REM with it on the first start and only ever opens with it afterwards, so it is
+REM written once and never replaced: a new one would lock the application out
+REM of a database that already exists.
+if exist .env goto :envready
+set PROJECT=
+set POSTGRES_PASSWORD=unset
+for /f "tokens=2" %%P in ('docker compose -f %COMPOSE% config 2^>nul ^| findstr /b /c:"name:"') do if not defined PROJECT set PROJECT=%%P
+set POSTGRES_PASSWORD=
+if defined PROJECT (
+  docker volume inspect !PROJECT!_pgdata >nul 2>&1
+  if not errorlevel 1 (
+    echo ERROR: .env is missing but this installation's database ^(!PROJECT!_pgdata^)
+    echo        already exists. Put back the .env it was created with -- a new
+    echo        password would lock the application out of it.
+    exit /b 1
+  )
+)
+echo.
+echo --^> Creating .env ^(database password generated here, never sent anywhere^)
+set PW=
+for /f %%W in ('powershell -NoProfile -Command "$b = New-Object byte[] 18; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); [BitConverter]::ToString($b).Replace('-','')"') do set PW=%%W
+if not defined PW (
+  echo ERROR: could not generate a database password.
+  exit /b 1
+)
+>.env echo POSTGRES_PASSWORD=!PW!
+set PW=
+echo     ok   .env created -- keep a copy of it with your backups
+:envready
+
 echo.
 echo --^> Starting the stack
 docker compose -f %COMPOSE% up -d

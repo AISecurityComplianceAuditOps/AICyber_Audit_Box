@@ -54,10 +54,18 @@ if not "!CHOICE!"=="1" if not "!CHOICE!"=="2" if not "!CHOICE!"=="3" if not "!CH
 )
 
 REM --- Version -------------------------------------------------------------
-for /f "tokens=2 delims=:" %%V in ('findstr /c:"image: aicyberauditbox-app:" docker-compose.customer.yml') do set CURVER=%%V
-set CURVER=!CURVER: =!
-echo   The shipped compose currently names !CURVER!
-set /p VERSION="  New version to build [e.g. 3.28]: "
+REM  A hint only: the newest image of this component already built here. (This
+REM  used to read the compose file with "tokens=2 delims=:", which splits
+REM  "image: aicyberauditbox-app:1.2.3" at every colon and printed the image
+REM  NAME as the version.)
+set IMGNAME=aicyberauditbox-app
+if "!CHOICE!"=="2" set IMGNAME=aicyberauditbox-llm
+if "!CHOICE!"=="3" set IMGNAME=aicyberauditbox-llm
+if "!CHOICE!"=="4" set IMGNAME=aicyberauditbox-shakthidb
+set CURVER=
+for /f "delims=" %%V in ('docker images !IMGNAME! --format "{{.Tag}}" 2^>nul') do if not defined CURVER if not "%%V"=="<none>" if not "%%V"=="entrypoint-check" set CURVER=%%V
+if defined CURVER (echo   Newest !IMGNAME! image on this PC: !CURVER!) else (echo   No !IMGNAME! image on this PC yet.)
+set /p VERSION="  New version to build [e.g. 1.2.5]: "
 if "!VERSION!"=="" (
     echo   [X] A version is required.
     goto :fail
@@ -66,20 +74,21 @@ set OUTDIR=..\customer_deployment_package\v!VERSION!
 echo   -^> building !VERSION!
 echo.
 
-REM --- Tests, for anything carrying our own code ---------------------------
+REM --- Tests, for every choice ---------------------------------------------
 REM  Before the build, not after: a failing suite is far cheaper to find here
-REM  than in a multi-gigabyte artifact already on its way to a customer.
-if "!CHOICE!"=="1" (
-    echo ---^> Running the tests
-    python -m pytest -q
-    if errorlevel 1 (
-        echo.
-        echo   [X] Tests failed. Nothing has been built.
-        goto :fail
-    )
-    echo   [ok] Tests pass.
+REM  than in a multi-gigabyte artifact already on its way to a customer. Every
+REM  choice, not only the application: the suite also pins the LLM startup
+REM  script (its memory sizing, its Linux line endings) and the shipped
+REM  installers, which options 2 and 3 carry.
+echo ---^> Running the tests
+python -m pytest -q
+if errorlevel 1 (
     echo.
+    echo   [X] Tests failed. Nothing has been built.
+    goto :fail
 )
+echo   [ok] Tests pass.
+echo.
 
 REM =========================================================================
 if "!CHOICE!"=="1" goto :app
@@ -131,6 +140,17 @@ REM  customer already holds, so this ships the shell script and the recipe
 REM  rather than 13GB of unchanged model weights. The customer rebuilds in
 REM  seconds, entirely offline, against the image they already have.
 :llmconf
+REM  The script is tested the way it will run: built onto the newest LLM image
+REM  on this PC and started as on a 16-core / 32GB machine. The build never
+REM  used to run it at all, so a script that failed to start, or an engine
+REM  without a flag it relies on, reached the customer untested.
+echo ---^> Checking the startup script on a real LLM image
+python scripts\llm_image_check.py --rebase-on newest
+if errorlevel 1 (
+    echo.
+    echo   [X] The startup script failed its check. Nothing has been packaged.
+    goto :fail
+)
 echo ---^> Packaging the LLM startup settings
 set STAGE=!OUTDIR!\llm-config-!VERSION!
 if not exist "!OUTDIR!" mkdir "!OUTDIR!"
@@ -140,8 +160,15 @@ copy /y docker\llm-entrypoint.sh "!STAGE!\docker\" >nul
 copy /y Dockerfile.llm.rebase "!STAGE!\" >nul
 copy /y apply_llm_config.ps1 "!STAGE!\" >nul
 copy /y apply_llm_config.bat "!STAGE!\" >nul
-powershell -NoProfile -Command ^
-  "Compress-Archive -Path '!STAGE!\*' -DestinationPath '!OUTDIR!\aicyberauditbox-llm-config-!VERSION!.zip' -Force"
+copy /y apply_llm_config.sh "!STAGE!\" >nul
+for %%A in ("!OUTDIR!") do set OUTABS=%%~fA
+for %%A in ("!STAGE!") do set STAGEABS=%%~fA
+set ZIPFILE=!OUTABS!\aicyberauditbox-llm-config-!VERSION!.zip
+if exist "!ZIPFILE!" del /q "!ZIPFILE!"
+REM  Windows' own tar, not Compress-Archive: Windows PowerShell 5.1 stores
+REM  "docker\llm-entrypoint.sh" with a backslash, which a Linux unzip may keep
+REM  as part of the file name instead of making a docker/ folder.
+"%SystemRoot%\System32\tar.exe" -a -c -f "!ZIPFILE!" -C "!STAGEABS!" Dockerfile.llm.rebase docker apply_llm_config.ps1 apply_llm_config.bat apply_llm_config.sh
 if errorlevel 1 goto :buildfail
 rmdir /s /q "!STAGE!"
 echo   [ok] aicyberauditbox-llm-config-!VERSION!.zip
@@ -152,9 +179,14 @@ echo ===========================================================================
 echo.
 echo   Send:   aicyberauditbox-llm-config-!VERSION!.zip     ^(a few KB^)
 echo.
-echo   Tell them: extract it anywhere and double-click apply_llm_config.bat.
+echo   Tell them: extract it anywhere, then
+echo       Windows:  double-click apply_llm_config.bat
+echo       Linux:    sudo sh apply_llm_config.sh
 echo   It rebuilds their LLM image on top of the one they already have -- no
 echo   download, no model copy, seconds rather than a 13 GB transfer.
+echo.
+echo   A site that pulls from Artifact Registry is not updated this way: push
+echo   a rebuilt llm and llm-embed image there instead.
 echo.
 pause
 exit /b 0
@@ -166,6 +198,17 @@ docker build -f Dockerfile.llm -t aicyberauditbox-llm:!VERSION! .
 if errorlevel 1 goto :buildfail
 docker tag aicyberauditbox-llm:!VERSION! aicyberauditbox-llm-embed:!VERSION!
 if errorlevel 1 goto :buildfail
+echo.
+REM  Dockerfile.llm builds on llama.cpp's floating :server tag, so the engine
+REM  is whatever was newest on the day. Start it as a customer machine would
+REM  before it is exported: the model files, the startup script, the flags.
+echo ---^> Checking the new LLM image starts correctly
+python scripts\llm_image_check.py --image aicyberauditbox-llm:!VERSION!
+if errorlevel 1 (
+    echo.
+    echo   [X] The new LLM image failed its check. Nothing has been packaged.
+    goto :fail
+)
 echo.
 echo ---^> Exporting both tags into one tar (shared layers, written once)
 if not exist "!OUTDIR!" mkdir "!OUTDIR!"
@@ -204,7 +247,8 @@ if errorlevel 1 goto :buildfail
 
 copy /y apply_update.bat "!OUTDIR!\" >nul
 copy /y apply_update.ps1 "!OUTDIR!\" >nul
-echo   [ok] apply_update.bat + .ps1 copied beside the image
+copy /y apply_update.sh "!OUTDIR!\" >nul
+echo   [ok] apply_update.bat + .ps1 (Windows) and apply_update.sh (Linux) copied beside the image
 
 echo.
 echo ===========================================================================
@@ -216,11 +260,17 @@ echo       !TARNAME!
 echo       !TARNAME!.sha256
 echo       apply_update.bat
 echo       apply_update.ps1
+echo       apply_update.sh
 echo.
-echo   Tell them: put all four in one folder and double-click apply_update.bat.
-echo   It works out which component this is, verifies the download, loads the
-echo   image, repoints their installation, restarts only what changed, and
-echo   confirms the new version is running.
+echo   Tell them: put them all in one folder, then
+echo       Windows:  double-click apply_update.bat
+echo       Linux:    sudo sh apply_update.sh
+echo   It works out which component this is, verifies the download, backs up
+echo   their audits, loads the image, repoints their installation, restarts
+echo   only what changed, and confirms the new version is running.
+echo.
+echo   A site that pulls from Artifact Registry is not updated with a tar:
+echo   tag and push the image there, then they run setup_registry.sh.
 echo.
 echo   Put the checksum in your message too, so it does not travel only
 echo   alongside the file it vouches for.

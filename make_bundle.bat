@@ -73,15 +73,26 @@ if !FREEGB! LSS 45 (
     if /i not "!SPACEGO!"=="y" goto :fail
 )
 
-REM --- Version. Asked every run: the tag has to match what the shipped
-REM     compose names, and guessing it wrong ships a compose file pointing at
-REM     an image the bundle does not contain.
+REM --- Version. Asked every run, and required: there is no default to accept
+REM     by pressing Enter. The default used to be read from docker-compose.yml
+REM     with "tokens=2 delims=:", which splits "image: aicyberauditbox-app:3.22"
+REM     at every colon -- so Enter built version "aicyberauditbox-app". The
+REM     newest app image on this PC is shown as a hint only.
 echo.
-for /f "tokens=2 delims=:" %%V in ('findstr /c:"image: aicyberauditbox-app:" docker-compose.yml') do set CURVER=%%V
-set CURVER=!CURVER: =!
-echo   docker-compose.yml currently names version !CURVER!
-set /p VERSION="  Version to build [!CURVER!]: "
-if "!VERSION!"=="" set VERSION=!CURVER!
+set CURVER=
+for /f "delims=" %%V in ('docker images aicyberauditbox-app --format "{{.Tag}}" 2^>nul') do if not defined CURVER if not "%%V"=="<none>" set CURVER=%%V
+if defined CURVER (echo   Newest application image on this PC: !CURVER!) else (echo   No application image on this PC yet.)
+set VERSION=
+set /p VERSION="  Version to build [e.g. 1.2.5]: "
+if "!VERSION!"=="" (
+    echo   [X] A version is required.
+    goto :fail
+)
+echo !VERSION!| findstr /r /x "[0-9][0-9.]*" >nul
+if errorlevel 1 (
+    echo   [X] "!VERSION!" is not a version number like 1.2.5.
+    goto :fail
+)
 echo   -^> building version !VERSION!
 
 REM --- Source protection. Off by default, deliberately: src/ resolves 15 data
@@ -104,6 +115,19 @@ set DB_TAG=aicyberauditbox-shakthidb:3.10
 set LLM_TAG=aicyberauditbox-llm:!VERSION!
 set EMB_TAG=aicyberauditbox-llm-embed:!VERSION!
 set APP_TAG=aicyberauditbox-app:!VERSION!
+
+REM --- Tests, before any build. A full bundle is hours of building and a
+REM     20 GB handover; a failing suite is found here in minutes. This used to
+REM     build and package with no tests at all.
+echo.
+echo ---^> Running the tests
+python -m pytest -q
+if errorlevel 1 (
+    echo.
+    echo   [X] Tests failed. Nothing has been built.
+    goto :fail
+)
+echo   [ok] Tests pass.
 
 echo.
 echo ===========================================================================
@@ -134,22 +158,46 @@ if errorlevel 1 (
 )
 
 REM --- 3/4 LLM + embedding ------------------------------------------------
-REM     One image, two tags. Dockerfile.llm bakes both completion models and
-REM     the embedding model in; docker/llm-entrypoint.sh picks which server to
+REM     One image, two tags. docker/llm-entrypoint.sh picks which server to
 REM     start from LLM_MODE at runtime. Tagging twice costs nothing because
-REM     the layers are shared -- building twice would copy 18 GB again.
+REM     the layers are shared -- building twice would copy the weights again.
+REM
+REM     A new version is built ON the newest LLM image already here
+REM     (Dockerfile.llm.rebase): the same llama.cpp engine and weights that
+REM     were shipped and tested, with the current startup script -- seconds,
+REM     no weight copy. Dockerfile.llm is used only when there is no LLM image
+REM     at all, because its base is llama.cpp's floating :server tag, i.e.
+REM     whatever engine is newest on the day. Set LLM_BASE_VERSION to build on
+REM     a particular one.
 echo.
 echo ---^> 3/4  LLM + embedding  (!LLM_TAG!, !EMB_TAG!)
 docker image inspect !LLM_TAG! >nul 2>&1
 if errorlevel 1 (
-    echo      building (copies ~18 GB of GGUF weights, be patient)
-    docker build -f Dockerfile.llm -t !LLM_TAG! .
+    set LLM_BASE=!LLM_BASE_VERSION!
+    if not defined LLM_BASE for /f "delims=" %%T in ('docker images aicyberauditbox-llm --format "{{.Tag}}" 2^>nul') do if not defined LLM_BASE if not "%%T"=="<none>" if not "%%T"=="entrypoint-check" set LLM_BASE=%%T
+    if defined LLM_BASE (
+        echo      building on aicyberauditbox-llm:!LLM_BASE! -- same engine and weights, current startup script
+        docker build -f Dockerfile.llm.rebase --build-arg LLM_BASE_IMAGE=aicyberauditbox-llm:!LLM_BASE! -t !LLM_TAG! .
+    ) else (
+        echo      no LLM image on this PC: full build from Dockerfile.llm
+        echo      ^(copies ~13 GB of GGUF weights, be patient^)
+        docker build -f Dockerfile.llm -t !LLM_TAG! .
+    )
     if errorlevel 1 (
         echo      [X] LLM image build failed.
         goto :fail
     )
 ) else (
-    echo      !LLM_TAG! already present, reusing
+    echo      !LLM_TAG! already present
+)
+REM     An image of this version may be left from an earlier run, carrying the
+REM     startup script as it was then; reusing it shipped the OLD script.
+REM     --refresh rebuilds that one layer when it differs, then the image is
+REM     started as a customer machine would start it.
+python scripts\llm_image_check.py --image !LLM_TAG! --refresh
+if errorlevel 1 (
+    echo      [X] The LLM image failed its check. Nothing has been packaged.
+    goto :fail
 )
 docker tag !LLM_TAG! !EMB_TAG!
 if errorlevel 1 goto :fail
@@ -167,6 +215,29 @@ if errorlevel 1 (
         echo          still load from inside the binary. If that check is what
         echo          failed, rerun and answer n to "Compile source".
     )
+    goto :fail
+)
+
+REM     The same two checks make_update.bat runs before it packages an app:
+REM     the image on its own with no network (imports, knowledge files, a
+REM     sample scan, the reports), then on the customer's database image,
+REM     fresh and upgrading a database earlier versions built. A full bundle
+REM     used to skip both -- the 0-findings failure 1.2.3 had at a customer
+REM     would have shipped in one unseen.
+echo.
+echo ---^> Checking the new image works (no network, as at the customer)
+docker run --rm --network none --entrypoint python -e POSTGRES_PASSWORD= -v "%~dp0scripts\image_smoke_test.py:/tmp/image_smoke_test.py:ro" -w /app !APP_TAG! /tmp/image_smoke_test.py
+if errorlevel 1 (
+    echo.
+    echo   [X] The new image failed its check. Nothing has been packaged.
+    goto :fail
+)
+echo.
+echo ---^> Checking the new image on Postgres: fresh, and upgrading an earlier database
+python scripts\upgrade_e2e_check.py --image !APP_TAG! --new-version !VERSION!
+if errorlevel 1 (
+    echo.
+    echo   [X] The new image failed on Postgres. Nothing has been packaged.
     goto :fail
 )
 
