@@ -73,7 +73,7 @@ Then:
 ```bash
 pip install -r requirements.txt
 run_all.bat                         # Postgres :15234, Redis :6380, llama.cpp :11434/:11435, app :8000
-python -m pytest                    # 288 passed, 18 skipped as of 2026-09-11 (~12s)
+python -m pytest                    # 1195 passed, 28 skipped on Developer, 2026-09-30 (~3 min)
 ```
 
 ---
@@ -197,15 +197,65 @@ These cost real time on this project; don't repeat them.
   tools, or build escapes with `chr(92)`.
 - **cp1252 console.** Printed non-ASCII raises or prints as `→`. Keep
   printed strings ASCII; `run_all.bat` sets `chcp 65001`.
+- **Check which copy is running.** `.kilo/worktrees/` (the Kilo IDE extension)
+  holds full old copies of the repo, each with its own `run_all.bat`. A server
+  started from one serves that copy's old code: "the feature is missing" was
+  exactly this. Compare the `app.js?v=` key the server returns with
+  `src/api/static/index.html`, and look for the newest `logs/run_all_*.log`
+  (written UTF-16) in each copy.
+- **PDFium is one thread at a time.** Every pypdfium2 use, including
+  pdfplumber's `to_image`, must hold `doc_parsers._PDFIUM_LOCK` and close what
+  it opens; PDFium ends the process on overlap or on a failed allocation
+  (Windows exception 0x80000003 in `pdfium.dll`, visible in the Application
+  event log, Id 1000). The upload's `_bg_extract_and_chunk` runs alongside scans.
+- **Test the app without touching the owner's.** A throwaway server:
+  `POSTGRES_PASSWORD= python -m uvicorn src.api.main:app --port 8010` uses the
+  SQLite fallback; untick AI recommendations (ticked by default), or the app
+  auto-starts the 12B model. Playwright is installed for `py -3.11`. In Git Bash,
+  `timeout python ...` exits 127 (not found); call `python` directly.
 
 ---
 
-## State as of 2026-09-11 — what to continue
+## State as of 2026-09-30 — what to continue
 
-**Product** — `Developer` at `c4e89ab`, tag `v3.24`, 288 tests passing.
-Latest work: DB password moved to `POSTGRES_PASSWORD`; Checklist mode rebuilt
-as document Q&A; ISO DOCX export parity with the PDF; CORS opened for remote
-access; seats now limit simultaneous audits.
+**Branches** (all pushed to `testing`; customer versions are now 1.x: app
+1.2.4, llm 1.1 → 1.2, shakthidb 1.1 on Artifact Registry):
+
+- **`Developer`** — everything below except the two features. Since 11 Sept:
+  customer DB upgrade fixes (Postgres column retype; `make_update.bat` checks
+  the image on Postgres, fresh and upgraded from 1.1 / 1.2.3); VAPT OVERALL
+  score and AI-remediation JSON repair; ISO context summary gives up after 120 s
+  (was 1800 s, audits sat at 0%); LLM entrypoint keeps `LLM_STACK_RESERVE_GB`
+  (8) for the stack and loads weights with `--load-mode none` (llama.cpp build
+  10991 renamed `--no-mmap`); `deployment_sizing` plans with the same 8 GB;
+  registry deployment (`docker-compose.registry.yml`, `setup_registry.sh`);
+  Linux appliers `apply_update.sh` / `apply_llm_config.sh`; installers write
+  `.env`; build scripts test what they ship (`scripts/llm_image_check.py`);
+  ISO 5.9 / 5.10 listed under ISO (the page filed by the letters "SOC"); PDFium
+  crash fixes (lock, and pages rendered under 40 M pixels).
+- **`feature/vapt-retest`** — VAPT retest: upload a newer scan into the same
+  session, findings compared version by version (still open / fixed / new / not
+  retested / reopened), version bar, per-version exports; plus the "how to
+  retest" hint after a scan. The mentor wants it kept off Developer until
+  approved. Cherry-picks of the Developer crash fixes are on it.
+- **`feature/iec-62443`** — "IEC 62443 – Industrial Communication Networks:
+  Network and System Security (121 controls)" in both Target Framework
+  dropdowns; the page and `/audit/start` refuse the run until controls with
+  `standard` "IEC62443" exist. Waiting for the 121-control list from the mentor.
+
+Merging either feature will conflict on the `app.js?v=` / `style.css?v=` keys
+in `index.html` and near `loadFrameworkControls`' filter: resolve by hand.
+
+**To do next**
+
+- Registry customers (GCP VMs): build `llm:1.2` from `Dockerfile.llm.rebase` on
+  the registry's `llm:1.1`, tag `llm-embed:1.2`, build the app from Developer,
+  push; then rebuild the registry install zip. Send it only after the push.
+- The `v1.2.4` app tar in `customer_deployment_package` was built before the
+  retest split and contains retest: rebuild from Developer before sending.
+- Uploading a very large PDF (the browser-printed PortSwigger report: two pages
+  of 1152 x 47339 pt, 45 embedded images) takes ~2.5 min of background reading,
+  mostly OCR. The owner chose to keep it rather than skip image OCR.
 
 **Urgent**
 
@@ -218,9 +268,6 @@ access; seats now limit simultaneous audits.
 
 **Open**
 
-- `run_all.bat` line 184 prints `-> %LLM_SLOTS% Slots`; batch reads `>` as a
-  redirect, so every boot writes a junk file named `2` / `3` in the repo root
-  and truncates the console line. Fix: `-^>`.
 - The next customer bundle must be **full**, not a patch: no commit represents
   the shipped v3.23, and `aicyberauditbox-llm:3.23` lacks the 12B model.
 - `docs/guides/AICyberAuditBox_User_Guide.html` predates the rename to
