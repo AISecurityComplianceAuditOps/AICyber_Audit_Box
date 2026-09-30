@@ -127,6 +127,94 @@ def test_reads_never_overlap_and_nothing_is_left_open(monkeypatch):
     assert stats.opened == stats.closed, (stats.opened, stats.closed)
 
 
+def test_the_upload_text_job_renders_pages_under_the_same_lock(monkeypatch):
+    """extract_text -- run after every upload by _bg_extract_and_chunk -- renders
+    PDF pages with pdfplumber, i.e. PDFium. It rendered outside the lock, so a
+    scan started right after an upload crashed the server on the same PDF."""
+    import io
+    from PIL import Image
+
+    held = []
+
+    class Page:
+        width, height = 100.0, 100.0
+        images = [{"x0": 10.0, "top": 10.0, "x1": 60.0, "bottom": 60.0}]
+
+        def extract_text(self):
+            return ""                                    # short: full-page OCR too
+
+        def to_image(self, resolution=150):
+            held.append(doc_parsers._PDFIUM_LOCK.locked())
+            return types.SimpleNamespace(original=Image.new("RGB", (200, 200), "white"))
+
+    class Pdf:
+        pages = [Page(), Page()]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setitem(sys.modules, "pdfplumber", types.SimpleNamespace(open=lambda f: Pdf()))
+    monkeypatch.setattr(doc_parsers, "get_ocr_reader",
+                        lambda: types.SimpleNamespace(readtext=lambda img, detail=0: []))
+    f = io.BytesIO(b"%PDF")
+    f.name = "report.pdf"
+    doc_parsers.extract_text(f)
+    assert held and all(held), "a page was rendered without the PDFium lock"
+    assert not doc_parsers._PDFIUM_LOCK.locked()
+
+
+def test_ordinary_pages_render_exactly_as_before():
+    for w, h in ((595, 842), (612, 792), (842, 1191), (612, 1008)):       # A4, Letter, A3, Legal
+        assert doc_parsers._page_render_dpi(types.SimpleNamespace(width=w, height=h)) == 150
+
+
+def test_a_huge_page_is_rendered_within_the_pixel_ceiling():
+    """The browser-printed PortSwigger report: one page 1152 x 47339 points.
+    At 150 dpi, 2400 x 98623 pixels -- PDFium ran out of memory drawing it."""
+    page = types.SimpleNamespace(width=1152, height=47339)
+    dpi = doc_parsers._page_render_dpi(page)
+    pixels = (1152 * dpi / 72) * (47339 * dpi / 72)
+    assert dpi < 150 and pixels <= doc_parsers._OCR_MAX_PIXELS
+    assert dpi >= 24
+
+
+def test_the_upload_text_job_uses_the_capped_resolution(monkeypatch):
+    from PIL import Image
+    import io
+    asked = []
+
+    class Page:
+        width, height = 1152.0, 47339.0
+        images = []
+
+        def extract_text(self):
+            return ""
+
+        def to_image(self, resolution=150):
+            asked.append(resolution)
+            return types.SimpleNamespace(original=Image.new("RGB", (100, 4000), "white"))
+
+    class Pdf:
+        pages = [Page()]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setitem(sys.modules, "pdfplumber", types.SimpleNamespace(open=lambda f: Pdf()))
+    monkeypatch.setattr(doc_parsers, "get_ocr_reader",
+                        lambda: types.SimpleNamespace(readtext=lambda img, detail=0: []))
+    f = io.BytesIO(b"%PDF")
+    f.name = "long.pdf"
+    doc_parsers.extract_text(f)
+    assert asked == [doc_parsers._page_render_dpi(Page())] and asked[0] < 150
+
+
 def test_a_failed_read_still_closes_everything(monkeypatch):
     stats = _Stats()
     fake = _fake_pdfium(stats)

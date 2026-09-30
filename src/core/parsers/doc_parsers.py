@@ -209,6 +209,9 @@ def _empty_exchange_heads(text, section=""):
 # -- two auditors, or one scan while another's pages are still being freed --
 # stopped the whole server inside pdfium.dll (Windows: exception 0x80000003;
 # reproduced 3 runs of 3 with four overlapping calls, never with one at a time).
+# Every PDFium use takes it: this module's Burp reader, and pdfplumber's
+# page rendering in extract_text -- which the upload's background text job
+# runs, so a scan started right after an upload crashed on the same file.
 _PDFIUM_LOCK = threading.Lock()
 
 
@@ -679,6 +682,26 @@ _OCR_MAX_UPSCALE = 3.0       # never more than this, whatever the width
 _OCR_MAX_PIXELS = 40_000_000  # ceiling on the result, to bound memory
 
 
+def _page_render_dpi(page, wanted=150):
+    """The resolution to render a PDF page at for OCR: `wanted`, lowered only
+    for a page so large that it would exceed _OCR_MAX_PIXELS.
+
+    A browser-printed Burp report can be one page 1152 x 47339 points (16 x 657
+    inches). At 150 dpi that is 2400 x 98623 pixels -- 710 MB as RGB and about
+    2 GB while PDFium draws it -- and PDFium stops the whole process when an
+    allocation fails (the same 0x80000003 a server showed after such an upload).
+    An A4 or Letter page is about 2 million pixels at 150 dpi, far under the
+    ceiling, so ordinary documents render exactly as before.
+    """
+    try:
+        area = float(page.width) * float(page.height)
+    except (AttributeError, TypeError, ValueError):
+        return wanted
+    if area <= 0 or area * (wanted / 72.0) ** 2 <= _OCR_MAX_PIXELS:
+        return wanted
+    return max(24, int(72.0 * (_OCR_MAX_PIXELS / area) ** 0.5))
+
+
 def _preprocess_image_for_ocr(img_np):
     """Option 2: OpenCV pre-processing before OCR.
 
@@ -1107,8 +1130,12 @@ def extract_text(f):
                     img_page = None
                     if hasattr(p, "images") and p.images:
                         try:
-                            # Render page once at 150 resolution (optimized for CPU performance)
-                            img_page = p.to_image(resolution=150)
+                            # Render page once at 150 resolution (optimized for CPU performance).
+                            # pdfplumber renders with PDFium: the same lock as the VAPT
+                            # scan's Burp reader, or an upload read alongside a scan
+                            # stops the server (see _PDFIUM_LOCK).
+                            with _PDFIUM_LOCK:
+                                img_page = p.to_image(resolution=_page_render_dpi(p))
                             pil_full = img_page.original
                             width_pixels, height_pixels = pil_full.size
                             scale_x = width_pixels / p.width
@@ -1150,7 +1177,8 @@ def extract_text(f):
                     if should_full_ocr:
                         try:
                             if img_page is None:
-                                img_page = p.to_image(resolution=150)
+                                with _PDFIUM_LOCK:
+                                    img_page = p.to_image(resolution=_page_render_dpi(p))
                             pil_img = img_page.original
                             reader = get_ocr_reader()
                             img_np = _preprocess_image_for_ocr(np.array(pil_img))
