@@ -5527,6 +5527,27 @@ function formatRemediationSteps(text, color) {
     `;
 }
 
+// A VAPT recommendation the AI wrote as points: every line starts with "- "
+// (remediation_llm._as_points). Shown as a bulleted list; any other text is
+// shown by formatRemediationSteps exactly as before.
+function formatVaptRecommendation(text, color) {
+    const lines = String(text || "").split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    if (lines.length < 2 || !lines.every(l => l.startsWith("- "))) return formatRemediationSteps(text, color);
+    const c = escapeHtml(color);
+    const items = lines.map(l =>
+        `<li style="margin-bottom:5px; line-height:1.55; font-size:0.86rem; color:${c};">${escapeHtml(l.slice(2).trim())}</li>`
+    ).join("");
+    return `<ul style="margin:0; padding-left:18px; list-style:disc; color:${c};">${items}</ul>`;
+}
+
+// The text for a VAPT card's copy button, as the argument of its inline
+// onclick. A quoted '...' literal broke on a line break or an apostrophe
+// (escapeHtml's &#39; is decoded back to ' before the handler runs), and the
+// AI's points are several lines and say "the vendor's patched release".
+function vaptCopyArg(text) {
+    return escapeHtml(JSON.stringify(String(text || "")));
+}
+
 
 function _isOcrNoiseText(str) {
     if (!str || typeof str !== "string") return false;
@@ -7025,16 +7046,16 @@ function renderFindingsList() {
                     <div class="finding-detail-row" style="margin-bottom: 12px;">
                         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
                             <label style="font-weight:700; font-size:0.78rem; color:#3b82f6; text-transform:uppercase; letter-spacing:0.5px;">🔧 Recommended Remediation & Action</label>
-                            <button type="button" onclick="navigator.clipboard.writeText('${_vRem ? escapeHtml(_remed).replace(/'/g, "\\'") : safeRemedForClick}'); showToastBanner('Remediation script copied to clipboard!');" style="padding:2px 8px; font-size:0.72rem; border-radius:4px; border:1px solid rgba(59,130,246,0.4); background:rgba(59,130,246,0.1); color:#3b82f6; font-weight:700; cursor:pointer;">📋 Copy Fix Command</button>
+                            <button type="button" onclick="navigator.clipboard.writeText(${_vRem ? vaptCopyArg(_remed) : `'${safeRemedForClick}'`}); showToastBanner('Remediation script copied to clipboard!');" style="padding:2px 8px; font-size:0.72rem; border-radius:4px; border:1px solid rgba(59,130,246,0.4); background:rgba(59,130,246,0.1); color:#3b82f6; font-weight:700; cursor:pointer;">📋 Copy Fix Command</button>
                         </div>
-                        <div style="margin:0;">${formatRemediationSteps(_remed, '#2563eb')}</div>
+                        <div style="margin:0;">${_vRem ? formatVaptRecommendation(_remed, '#2563eb') : formatRemediationSteps(_remed, '#2563eb')}</div>
                     </div>`}
 
                     ${(_remedActionable && _remedActionable !== _remed) ? `
                     <div class="finding-detail-row" style="margin-bottom: 12px;">
                         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
                             <label style="font-weight:700; font-size:0.78rem; color:#10b981; text-transform:uppercase; letter-spacing:0.5px;">👨‍💻 Developer Actionable Mitigation Steps</label>
-                            <button type="button" onclick="navigator.clipboard.writeText('${escapeHtml(_remedActionable).replace(/'/g, "\\'")}'); showToastBanner('Mitigation steps copied to clipboard!');" style="padding:2px 8px; font-size:0.72rem; border-radius:4px; border:1px solid rgba(16,185,129,0.4); background:rgba(16,185,129,0.1); color:#10b981; font-weight:700; cursor:pointer;">📋 Copy Steps</button>
+                            <button type="button" onclick="navigator.clipboard.writeText(${_vRem ? vaptCopyArg(_remedActionable) : `'${escapeHtml(_remedActionable).replace(/'/g, "\\'")}'`}); showToastBanner('Mitigation steps copied to clipboard!');" style="padding:2px 8px; font-size:0.72rem; border-radius:4px; border:1px solid rgba(16,185,129,0.4); background:rgba(16,185,129,0.1); color:#10b981; font-weight:700; cursor:pointer;">📋 Copy Steps</button>
                         </div>
                         <div style="margin:0;">${formatRemediationSteps(_remedActionable, '#059669')}</div>
                     </div>` : ""}

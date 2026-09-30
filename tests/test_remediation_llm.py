@@ -503,3 +503,282 @@ def test_a_finding_that_still_gets_nothing_is_counted_as_failed():
         enrich_remediations(findings, model="x", timeout=5)
     assert all(f["remediation"] == GENERIC for f in findings)
     assert enrich_remediations.last_failed_batches == 1
+
+
+# ── VAPT: recommendation and developer steps as points ───────────────────────
+# Reviewers asked for the fix as points with enough detail to act on, not 2-4
+# sentences of prose. VAPT scans pass pointwise=True; PQC scans (and any other
+# caller) keep the prose prompt and the text exactly as the model wrote it.
+
+import html
+import io
+import json as _json
+import os as _os
+import re as _re
+
+from src.core.parsers.remediation_llm import (_POINTWISE_PROMPT_TEMPLATE,
+                                              _PROMPT_TEMPLATE,
+                                              _as_numbered_steps, _as_points)
+
+SQLI_STEPS = ("1. Replace string-built SQL for `category` with parameterized queries. "
+              "2. Validate `category` against an allow-list of known values "
+              "3. Re-test /catalog/filter with Burp to confirm the fix.")
+SQLI_STORED = ("1. Replace string-built SQL for `category` with parameterized queries.\n"
+               "2. Validate `category` against an allow-list of known values.\n"
+               "3. Re-test /catalog/filter with Burp to confirm the fix.")
+SQLI_POINTS = ("1. The `category` parameter on /catalog/filter is put into a SQL query unsafely. "
+               "2. Rewrite that query with prepared statements "
+               "3. Accept only known category values. "
+               "4. This stops attackers reading or changing data through this parameter.")
+SQLI_POINTS_STORED = ("- The `category` parameter on /catalog/filter is put into a SQL query unsafely.\n"
+                      "- Rewrite that query with prepared statements.\n"
+                      "- Accept only known category values.\n"
+                      "- This stops attackers reading or changing data through this parameter.")
+
+
+def _pw_reply(actionable, remediation=SQLI_POINTS):
+    return _json.dumps({"remediations": {"0": {"remediation": remediation, "actionable": actionable}}})
+
+
+def _run(reply, pointwise, finding=None):
+    prompts = []
+    f = finding or _finding()
+    with mock.patch("src.core.llm_client.query_llm",
+                    side_effect=lambda p, *a, **k: prompts.append(p) or reply):
+        enrich_remediations([f], model="x", timeout=5, pointwise=pointwise)
+    return f, prompts
+
+
+def test_vapt_asks_for_points_and_numbered_steps():
+    _f, prompts = _run(_pw_reply(SQLI_STEPS), pointwise=True)
+    assert prompts[0] == _POINTWISE_PROMPT_TEMPLATE.format(n=1, findings_block=_format_finding_block(0, _finding()))
+    assert "3 to 4 points for the report reader" in prompts[0]
+    assert "3 to 5 numbered developer steps" in prompts[0]
+    # A config edit without the restart that applies it leaves the finding open
+    # (seen live: Redis steps edited redis.conf and went straight to re-test).
+    assert "a later step applies it (restart or reload that service)" in " ".join(prompts[0].split())
+
+
+def test_the_pointwise_prompt_keeps_every_grounding_rule():
+    """More detail must not mean invented detail: the rules against invented
+    CVEs, versions and products, and the sparse-evidence rule, are all there."""
+    for rule in ("Do not invent a CVE, version number, or fact",
+                 "Do not change or restate the severity",
+                 "too sparse to say anything specific",
+                 "Read each finding's evidence",
+                 'mark any example with "e.g."'):
+        assert rule in _POINTWISE_PROMPT_TEMPLATE, rule
+
+
+def test_pqc_and_other_callers_keep_the_prose_prompt_and_text():
+    f, prompts = _run(_pw_reply(SQLI_STEPS), pointwise=False)
+    assert prompts[0] == _PROMPT_TEMPLATE.format(n=1, findings_block=_format_finding_block(0, _finding()))
+    assert "1 to 4 sentences" in prompts[0]
+    assert f["remediation"] == SQLI_POINTS                               # stored as written
+    assert f["remediation_actionable"] == SQLI_STEPS
+
+
+def test_vapt_points_and_steps_are_stored_one_per_line():
+    f, _p = _run(_pw_reply(SQLI_STEPS), pointwise=True)
+    assert f["remediation"] == SQLI_POINTS_STORED
+    assert f["remediation_actionable"] == SQLI_STORED
+
+
+def test_steps_sent_as_a_json_list_are_numbered():
+    f, _p = _run(_pw_reply(["Set `requirepass` in redis.conf", "Bind Redis to 127.0.0.1",
+                            "Re-scan port 6379 to confirm"]), pointwise=True)
+    assert f["remediation_actionable"] == ("1. Set `requirepass` in redis.conf.\n"
+                                           "2. Bind Redis to 127.0.0.1.\n"
+                                           "3. Re-scan port 6379 to confirm.")
+
+
+def test_points_sent_as_a_json_list_are_bulleted():
+    f, _p = _run(_pw_reply(SQLI_STEPS, remediation=["Redis on port 6379 accepts clients without a password",
+                                                    "Enable `requirepass`"]), pointwise=True)
+    assert f["remediation"] == "- Redis on port 6379 accepts clients without a password.\n- Enable `requirepass`."
+
+
+def test_prose_is_kept_as_written():
+    f, _p = _run(_pw_reply("Run: systemctl disable telnetd; ufw deny 23/tcp.",
+                           remediation="Disable the Telnet service on port 23."), pointwise=True)
+    assert f["remediation"] == "Disable the Telnet service on port 23."
+    assert f["remediation_actionable"] == "Run: systemctl disable telnetd; ufw deny 23/tcp."
+
+
+@pytest.mark.parametrize("raw, stored", [
+    # a number inside a step is not the next step
+    ("1. Set MaxAuthTries to 2. 2. Restart sshd. 3. Re-scan port 22.",
+     "1. Set MaxAuthTries to 2.\n2. Restart sshd.\n3. Re-scan port 22."),
+    ("1. Upgrade OpenSSH to 9. Then restart it. 2. Re-scan port 22.",
+     "1. Upgrade OpenSSH to 9. Then restart it.\n2. Re-scan port 22."),
+    ("1. Disable TLS 1.0 and TLS 1.1 in nginx 2. Reload nginx 3. Re-run the TLS scan",
+     "1. Disable TLS 1.0 and TLS 1.1 in nginx.\n2. Reload nginx.\n3. Re-run the TLS scan."),
+    # one per line, "1)" numbering, "-" bullets, a heading before step 1
+    ("1) Remove the vsftpd 2.3.4 package\n2) Install the vendor's patched release\n3) Re-scan port 21",
+     "1. Remove the vsftpd 2.3.4 package.\n2. Install the vendor's patched release.\n3. Re-scan port 21."),
+    ("- Enable HSTS\n- Redirect HTTP to HTTPS\n- Re-test the site",
+     "1. Enable HSTS.\n2. Redirect HTTP to HTTPS.\n3. Re-test the site."),
+    ("Steps: 1. Add the header. 2. Re-test.", "1. Add the header.\n2. Re-test."),
+    ("Patch first. 1. Add the header. 2. Re-test.", "Patch first.\n1. Add the header.\n2. Re-test."),
+    # already in the stored shape: unchanged
+    (SQLI_STORED, SQLI_STORED),
+])
+def test_step_splitting(raw, stored):
+    assert _as_numbered_steps(raw) == stored
+
+
+@pytest.mark.parametrize("raw, stored", [
+    (SQLI_POINTS, SQLI_POINTS_STORED),
+    ("- Enable HSTS on the site\n- Redirect HTTP to HTTPS", "- Enable HSTS on the site.\n- Redirect HTTP to HTTPS."),
+    ("Summary: 1. Fix it here. 2. Harden it.", "- Fix it here.\n- Harden it."),
+    ("Patch first. 1. Fix it here. 2. Harden it.", "- Patch first.\n- Fix it here.\n- Harden it."),
+    (SQLI_POINTS_STORED, SQLI_POINTS_STORED),                       # already stored: unchanged
+])
+def test_point_splitting(raw, stored):
+    assert _as_points(raw) == stored
+
+
+@pytest.mark.parametrize("raw", ["", None, "Upgrade to TLS 1.2 now. Use AES-GCM.", "1. Only one step here."])
+def test_fewer_than_two_is_left_alone(raw):
+    assert _as_numbered_steps(raw) == (raw or "")
+    assert _as_points(raw) == (raw or "")
+
+
+def test_the_one_at_a_time_retry_also_uses_the_pointwise_prompt():
+    prompts = []
+
+    def _fake(prompt, model, **kw):
+        prompts.append(prompt)
+        n = len(_re.findall(r"^\[\d+\]", prompt, _re.MULTILINE))
+        return "Sure! {remediations: [broken" if n > 1 else _pw_reply(SQLI_STEPS)
+
+    findings = [_finding(title=f"Telnet {i}", target=f"10.0.0.{i}") for i in range(2)]
+    with mock.patch("src.core.llm_client.query_llm", side_effect=_fake):
+        enrich_remediations(findings, model="x", timeout=5, pointwise=True)
+    assert len(prompts) == 3 and all("3 to 5 numbered developer steps" in p for p in prompts)
+    assert all(f["remediation_actionable"] == SQLI_STORED for f in findings)
+    assert all(f["remediation"] == SQLI_POINTS_STORED for f in findings)
+
+
+def test_vapt_asks_two_findings_per_call():
+    """Pointwise answers run about three times longer; four per call nears the
+    time budget on a CPU-only box."""
+    counts = []
+
+    def _fake(prompt, model, **kw):
+        n = len(_re.findall(r"^\[\d+\]", prompt, _re.MULTILINE))
+        counts.append(n)
+        return _json.dumps({"remediations": {str(i): {"remediation": SQLI_POINTS, "actionable": SQLI_STEPS}
+                                             for i in range(n)}})
+
+    findings = [_finding(title=f"Finding {i}", target=f"10.0.0.{i}") for i in range(5)]
+    with mock.patch("src.core.llm_client.query_llm", side_effect=_fake):
+        enrich_remediations(findings, model="x", timeout=5, pointwise=True)
+    assert sorted(counts) == [1, 2, 2]
+
+
+def test_the_worker_asks_for_points_for_vapt_only():
+    import inspect
+    from src.core import bg_worker
+    src = inspect.getsource(bg_worker._run_fast_technical_vapt_bg)
+    block = src[src.index("if ai_recommendations and all_findings:"):]
+    block = block[:block.index("# Update database")]
+    assert 'pointwise=(_dispatch_framework == "vapt")' in block
+    assert '_dispatch_framework = "pqc" if "PQC" in _fw_upper else "vapt"' in src
+
+
+# The finding card (formatRemediationSteps in app.js) starts a new step only
+# after a full stop: /([.!?])\s+(\d{1,2})\.\s+/. Mirrored here, and the JS
+# checked for that exact rule, so the stored shape and the card cannot drift.
+_APP_JS = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+                        "src", "api", "static", "app.js")
+
+
+def _card_steps(text):
+    marked = _re.sub(r"([.!?])\s+(\d{1,2})\.\s+", lambda m: f"{m.group(1)} \x00{m.group(2)}. ", text)
+    marked = _re.sub(r":\s+(\d{1,2})\.\s+(?=[A-Z])", lambda m: f": \x00{m.group(1)}. ", marked)
+    marked = _re.sub(r"^(\d{1,2})\.\s+", lambda m: f"\x00{m.group(1)}. ", marked, count=1)
+    return [p.strip() for p in marked.split("\x00") if p.strip()]
+
+
+def test_the_card_splits_the_stored_steps_where_they_are():
+    with open(_APP_JS, encoding="utf-8") as fh:
+        js = fh.read()
+    assert r".replace(/([.!?])\s+(\d{1,2})\.\s+/g, `$1 ${delim}$2. `)" in js
+    for raw in (SQLI_STEPS,
+                "1. Set `ssl_protocols TLSv1.2 TLSv1.3;` in nginx 2. Reload nginx 3. Re-scan port 443",
+                ["Upgrade PyJWT from 2.13.0 to the vendor's patched release",
+                 "Run `pip install -U PyJWT`", "Re-run dependency-check"]):
+        stored = _as_numbered_steps(raw)
+        assert _card_steps(stored) == stored.splitlines(), stored
+
+
+# The VAPT card lists a recommendation whose every line starts with "- "
+# (formatVaptRecommendation in app.js); anything else, such as a scanner's own
+# advice in parser mode, still goes to formatRemediationSteps.
+def _card_points(text):
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if len(lines) >= 2 and all(ln.startswith("- ") for ln in lines):
+        return [ln[2:].strip() for ln in lines]
+    return None
+
+
+def _app_js():
+    with open(_APP_JS, encoding="utf-8") as fh:
+        return fh.read()
+
+
+def test_the_vapt_card_lists_the_stored_points():
+    js = _app_js()
+    assert "function formatVaptRecommendation(text, color)" in js
+    assert 'lines.every(l => l.startsWith("- "))' in js
+    assert "${_vRem ? formatVaptRecommendation(_remed, '#2563eb') : formatRemediationSteps(_remed, '#2563eb')}" in js
+    for raw in (SQLI_POINTS, ["Redis on port 6379 needs no password", "Enable `requirepass`"]):
+        stored = _as_points(raw)
+        assert _card_points(stored) == [ln[2:] for ln in stored.splitlines()], stored
+
+
+def test_a_scanners_own_advice_is_not_taken_for_points():
+    burp = ("[Remediation]\nThe most effective way to prevent SQL injection attacks is to use "
+            "parameterized queries (also known as prepared statements) for all database access.")
+    assert _card_points(burp) is None
+
+
+def test_the_vapt_copy_buttons_survive_line_breaks_and_apostrophes():
+    """vaptCopyArg: escapeHtml(JSON.stringify(text)). The browser decodes the
+    attribute, then runs the handler: the argument must be one valid string
+    literal that gives back the text exactly."""
+    js = _app_js()
+    assert 'return escapeHtml(JSON.stringify(String(text || "")));' in js
+    assert "writeText(${_vRem ? vaptCopyArg(_remed) :" in js
+    assert "writeText(${_vRem ? vaptCopyArg(_remedActionable) :" in js
+    text = SQLI_POINTS_STORED + "\n- Install the vendor's patched release of C:\\Apps <v2> & \"cfg\"."
+    arg = html.escape(_json.dumps(text, ensure_ascii=False), quote=True)    # what the page writes
+    handler_arg = html.unescape(arg)                                         # what the handler runs
+    assert "\n" not in handler_arg and handler_arg.startswith('"') and handler_arg.endswith('"')
+    assert _json.loads(handler_arg) == text
+
+
+def _vapt_row(steps, recommendation="Use parameterized queries."):
+    return [dict(control_id="VAPT-4", title="SQL injection", severity="HIGH", status="Non-Compliant",
+                 final_result="NON_COMPLIANT", description="d", target="https://shop.test/",
+                 evidence_snippet="proof", recommendation=recommendation,
+                 remediation_actionable=steps)]
+
+
+def test_the_pdf_prints_one_point_and_one_step_per_line():
+    from pypdf import PdfReader
+    from src.core.report_exporter import export_pdf_report
+    out = export_pdf_report("t", _vapt_row(SQLI_STORED, SQLI_POINTS_STORED), [], "FINAL", audit_type="vapt")
+    text = "\n".join(p.extract_text() or "" for p in PdfReader(io.BytesIO(out)).pages)
+    for line in SQLI_POINTS_STORED.splitlines() + SQLI_STORED.splitlines():
+        assert _re.search(r"^" + _re.escape(line[:30]), text, _re.MULTILINE), line
+
+
+def test_the_docx_prints_one_point_and_one_step_per_line():
+    from docx import Document
+    from src.core.report_exporter import export_docx_report
+    d = Document(io.BytesIO(export_docx_report("t", _vapt_row(SQLI_STORED, SQLI_POINTS_STORED), [], "FINAL",
+                                               audit_type="vapt")))
+    texts = [p.text for p in d.paragraphs]
+    assert SQLI_POINTS_STORED in texts and SQLI_STORED in texts   # a line break between lines

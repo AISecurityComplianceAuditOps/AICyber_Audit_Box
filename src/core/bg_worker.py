@@ -2955,9 +2955,12 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
                 # Not a closed finding: it is fixed, needs no fix text, and what
                 # the model wrote would be saved as the report's own advice.
                 # (The dicts are shared, so the open ones are enriched in place.)
+                # VAPT: the recommendation and developer steps as points. PQC
+                # keeps the prose it had.
                 enrich_remediations([f for f in all_findings if f.get("status") != "Closed"],
                                     model=_model, session_id=bg_key,
-                                    progress_cb=_enrich_progress)
+                                    progress_cb=_enrich_progress,
+                                    pointwise=(_dispatch_framework == "vapt"))
 
                 # Report a partial or total enrichment failure. Without this the
                 # auditor ticks "AI recommendations", waits, and receives the

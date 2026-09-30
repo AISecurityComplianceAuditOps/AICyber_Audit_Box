@@ -107,6 +107,145 @@ FINDINGS:
 {findings_block}
 """
 
+# VAPT scans (pointwise=True). Reviewers asked for the fix as points with
+# enough detail to act on: the prompt above gives 2-4 sentences of prose for
+# each field. The detail comes from the shape asked for (3-4 recommendation
+# points; 3-5 steps, each with the exact command or config and a short reason),
+# and every point still names what was found in that finding's own evidence.
+# PQC scans keep the prompt above.
+_POINTWISE_PROMPT_TEMPLATE = """You are a senior penetration tester writing the fix section of a
+vulnerability report. You will be given {n} findings, each with its title,
+severity, CVE(s) if any, and the raw evidence that was actually observed.
+
+Read each finding's evidence, then write TWO point-wise answers for it. Both
+must be about THAT finding: name the exact endpoint, parameter, header, port,
+service, package or configuration value that appears in its own title or
+evidence (a NOTE given with a finding overrides this), not a generic
+instruction that would fit any finding of that type.
+  1. "remediation" -- 3 to 4 points for the report reader, written as
+     "1. ... 2. ... 3. ...", each ONE full sentence of at most 25 words:
+       - what is wrong, and exactly where;
+       - the fix;
+       - any extra hardening that applies to this finding;
+       - the risk to this system that the fix removes.
+  2. "actionable" -- 3 to 5 numbered developer steps, written as
+     "1. ... 2. ... 3. ...", each at most 35 words: the action, the exact
+     command, config line, header value or package name in backticks, and a
+     short reason. When a step changes a configuration file or installs a
+     package, a later step applies it (restart or reload that service). The
+     last step says how to re-test the same endpoint, port or package, and
+     what result confirms the fix.
+
+KEEP IT USEFUL:
+  - No filler. Never write "follow best practices", "consult the
+    documentation", "consider", "ensure security", "regularly monitor" or "as
+    appropriate". Every point and step is specific to this finding.
+  - No textbook background about the vulnerability class.
+  - If the evidence does not identify the language, framework or product,
+    mark any example with "e.g." and keep it generic; never state that the
+    target runs it.
+
+RULES, followed exactly:
+  - Do not invent a CVE, version number, or fact that is not present in the
+    finding's own evidence or title. If the fixed version is not given, write
+    "the vendor's patched release" instead of guessing a number. If the
+    evidence does not say which software is running, the first step is to
+    identify the service, not a guessed product name.
+  - Do not change or restate the severity -- you are writing remediation only.
+  - If a finding's evidence is too sparse to say anything specific, give
+    GENERAL hardening points and steps for the affected port/service class
+    named in the title, and say plainly in the first point that the specific
+    software could not be identified from the evidence provided.
+  - Output ONLY a JSON object, no other text, in exactly this shape:
+    {{"remediations": {{"0": {{"remediation": "1. ... 2. ... 3. ...", "actionable": "1. ... 2. ... 3. ..."}}, ...}}}}
+    keyed by the finding's index below, as a string.
+
+FINDINGS:
+{findings_block}
+"""
+
+# Findings per call for pointwise answers, which run about three times longer
+# than the prose ones: at four per call a CPU-only box nears the 1800 s budget
+# (see _BATCH_SIZE above for what a batch that runs out of time costs).
+_POINTWISE_BATCH_SIZE = int(os.environ.get("REMEDIATION_POINTWISE_BATCH_SIZE", "2"))
+
+# A step number: "2. " or "2) " at the start or after whitespace, followed by
+# the step's first character (not another digit, so "set it to 2. 2. Restart"
+# is one marker, not two). Only the NEXT number in sequence counts as a marker
+# (see _split_numbered): "upgrade to 9. Then" inside step 1 does not start a step.
+_STEP_MARK_RE = re.compile(r"(?:^|(?<=\s))(\d{1,2})[.)]\s+(?=[^\s\d])")
+_BULLET_LINE_RE = re.compile(r"^\s*[-*•]\s+")
+
+
+def _split_numbered(text):
+    """(preamble, [steps]) for "1. a 2. b" written inline or one per line."""
+    marks, want = [], 1
+    for m in _STEP_MARK_RE.finditer(text):
+        if int(m.group(1)) == want:
+            marks.append(m)
+            want += 1
+    if len(marks) < 2:
+        return "", []
+    steps = [text[m.end():(marks[i + 1].start() if i + 1 < len(marks) else len(text))]
+             for i, m in enumerate(marks)]
+    return text[:marks[0].start()], steps
+
+
+def _split_points(value):
+    """(preamble, [points]) for points written inline ("1. a 2. b"), one per
+    line, as "-" bullets, or as a JSON list; no points when there are fewer
+    than two. A heading before the first point ("Steps:") is dropped."""
+    if isinstance(value, (list, tuple)):
+        preamble, points = "", [str(s) for s in value if str(s or "").strip()]
+    else:
+        text = str(value or "").strip()
+        preamble, points = _split_numbered(text)
+        if not points:
+            lines = [ln for ln in text.splitlines() if ln.strip()]
+            if len(lines) >= 2 and all(_BULLET_LINE_RE.match(ln) for ln in lines):
+                points = [_BULLET_LINE_RE.sub("", ln) for ln in lines]
+    points = [p for p in (re.sub(r"\s+", " ", p).strip() for p in points) if p]
+    if len(points) < 2:
+        return "", []
+    preamble = re.sub(r"\s+", " ", preamble).strip()
+    return ("" if preamble.endswith(":") else preamble), points
+
+
+def _as_written(value):
+    """Fewer than two points: prose stays prose, and nothing is dropped."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        return " ".join(re.sub(r"\s+", " ", str(s)).strip() for s in value if str(s or "").strip())
+    return ""
+
+
+def _full_stop(text):
+    return text if text[-1] in ".!?" else text + "."
+
+
+def _as_numbered_steps(value):
+    """The model's developer steps as one numbered step per line:
+    "1. Do this.\\n2. Do that." -- the shape the finding card splits into a
+    numbered list (formatRemediationSteps in app.js splits after a full stop)
+    and the PDF/DOCX print one step per line. A sentence before step 1 is kept
+    as its own line."""
+    preamble, steps = _split_points(value)
+    if not steps:
+        return _as_written(value)
+    lines = [_full_stop(preamble)] if preamble else []
+    return "\n".join(lines + [f"{i}. {_full_stop(s)}" for i, s in enumerate(steps, 1)])
+
+
+def _as_points(value):
+    """The model's recommendation as one "- " point per line: the VAPT finding
+    card lists text whose every line starts with "- " (formatVaptRecommendation
+    in app.js), and the PDF/DOCX print it as written."""
+    preamble, points = _split_points(value)
+    if not points:
+        return _as_written(value)
+    return "\n".join(f"- {_full_stop(p)}" for p in ([preamble] if preamble else []) + points)
+
 
 def _clip(text, limit):
     text = str(text or "").strip()
@@ -265,7 +404,8 @@ def _enrich_budget() -> int:
     return max(_ENRICH_TIMEOUT, min(active * 180, _ENRICH_TIMEOUT_MAX))
 
 
-def _enrich_batch(batch: List[Dict], model: str, session_id=None, timeout=None) -> bool:
+def _enrich_batch(batch: List[Dict], model: str, session_id=None, timeout=None,
+                  pointwise=False) -> bool:
     """Mutates `.remediation` on the findings in `batch` in place. Never raises
     -- a finding the model gives no usable text keeps its original text, and
     the caller moves on rather than aborting the run. True when every finding
@@ -278,23 +418,27 @@ def _enrich_batch(batch: List[Dict], model: str, session_id=None, timeout=None) 
     -- a timeout or an unreachable server -- where asking again only multiplies
     the wait.
     """
-    missing, answered = _ask_batch(batch, model, session_id=session_id, timeout=timeout)
+    missing, answered = _ask_batch(batch, model, session_id=session_id, timeout=timeout,
+                                   pointwise=pointwise)
     if missing and answered and len(batch) > 1:
         print(f"[REMEDIATION LLM] Asking again for {len(missing)} finding(s), "
               f"one at a time.", flush=True)
         missing = [f for f in missing
-                   if _ask_batch([f], model, session_id=session_id, timeout=timeout)[0]]
+                   if _ask_batch([f], model, session_id=session_id, timeout=timeout,
+                                 pointwise=pointwise)[0]]
     return not missing
 
 
-def _ask_batch(batch: List[Dict], model: str, session_id=None, timeout=None):
+def _ask_batch(batch: List[Dict], model: str, session_id=None, timeout=None,
+               pointwise=False):
     """One call for `batch`. Returns (the findings that got no remediation
     text, whether the model answered at all)."""
     from src.core.llm_client import query_llm
 
     findings_block = "\n".join(_format_finding_block(i, f, f.get("_group_size", 1))
                                for i, f in enumerate(batch))
-    prompt = _PROMPT_TEMPLATE.format(n=len(batch), findings_block=findings_block)
+    template = _POINTWISE_PROMPT_TEMPLATE if pointwise else _PROMPT_TEMPLATE
+    prompt = template.format(n=len(batch), findings_block=findings_block)
 
     try:
         raw = query_llm(
@@ -338,8 +482,13 @@ def _ask_batch(batch: List[Dict], model: str, session_id=None, timeout=None):
         # despite the prompt) -- treated as "remediation" only, since that was
         # the original single-field contract and is the more important half.
         if isinstance(entry, dict):
-            rem_text = str(entry.get("remediation") or "").strip()
-            act_text = str(entry.get("actionable") or "").strip()
+            rem_raw, act_raw = entry.get("remediation"), entry.get("actionable")
+            if pointwise:
+                rem_text = _as_points(rem_raw).strip()
+                act_text = _as_numbered_steps(act_raw).strip()
+            else:
+                rem_text = str(rem_raw or "").strip()
+                act_text = str(act_raw or "").strip()
         else:
             rem_text = str(entry or "").strip()
             act_text = ""
@@ -387,12 +536,18 @@ def _vuln_type_key(f: Dict) -> str:
 
 
 def enrich_remediations(findings: List[Dict], model: str = "gemma4:e4b",
-                        session_id=None, timeout=None, progress_cb=None) -> List[Dict]:
+                        session_id=None, timeout=None, progress_cb=None,
+                        pointwise=False) -> List[Dict]:
     """Rewrite the "remediation" and "remediation_actionable" keys on each
     finding dict using the LLM, grounded in that finding's own evidence.
     Returns the same list, mutated in place, so callers that already hold a
     reference (bg_worker.py's all_findings) see the change without needing to
     reassign anything.
+
+    pointwise (VAPT scans): the recommendation as 3-4 "- " points and the
+    developer steps as 3-5 numbered steps, one per line, asked for two
+    findings per call. Off: the prose prompt, and the text stored as the model
+    wrote it, exactly as before (PQC scans).
 
     Every other key -- severity, cve_list, control_id, title, evidence,
     dedup_key -- is read-only here and is never written to.
@@ -434,7 +589,8 @@ def enrich_remediations(findings: List[Dict], model: str = "gemma4:e4b",
               f"({len(findings) - len(representatives)} duplicate host instance(s) "
               f"will reuse the same text).", flush=True)
 
-    batches = [representatives[i:i + _BATCH_SIZE] for i in range(0, len(representatives), _BATCH_SIZE)]
+    size = _POINTWISE_BATCH_SIZE if pointwise else _BATCH_SIZE
+    batches = [representatives[i:i + size] for i in range(0, len(representatives), size)]
     # Count what actually landed. A failed batch keeps its parser text, which is a
     # valid report -- but the auditor asked for AI-tailored text and got the canned
     # version, and nothing anywhere said so. The caller surfaces this.
@@ -454,7 +610,8 @@ def enrich_remediations(findings: List[Dict], model: str = "gemma4:e4b",
         # one lands. Batches still run in parallel exactly as before.
         with ThreadPoolExecutor(max_workers=min(_MAX_PARALLEL_BATCHES, len(batches))) as pool:
             futures = [pool.submit(_enrich_batch, b, model,
-                                   session_id=session_id, timeout=timeout)
+                                   session_id=session_id, timeout=timeout,
+                                   pointwise=pointwise)
                        for b in batches]
             for _i, _f in enumerate(as_completed(futures), start=1):
                 try:
@@ -463,7 +620,8 @@ def enrich_remediations(findings: List[Dict], model: str = "gemma4:e4b",
                     _results.append(False)   # keeps its parser-generated text
                 _done(_i)
     elif batches:
-        _results = [_enrich_batch(batches[0], model, session_id=session_id, timeout=timeout)]
+        _results = [_enrich_batch(batches[0], model, session_id=session_id, timeout=timeout,
+                                  pointwise=pointwise)]
         _done(1)
 
     _failed = sum(1 for r in _results if not r)
