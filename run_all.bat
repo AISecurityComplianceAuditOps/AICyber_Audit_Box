@@ -13,6 +13,14 @@ cd /d "%~dp0"
 chcp 65001 >nul
 set "PYTHONIOENCODING=utf-8"
 set "PYTHONPATH=%~dp0;%PYTHONPATH%"
+if exist "%LOCALAPPDATA%\Programs\Python\Python311\python.exe" (
+    set "PATH=%LOCALAPPDATA%\Programs\Python\Python311;%LOCALAPPDATA%\Programs\Python\Python311\Scripts;%PATH%"
+)
+:: A per-user Docker Desktop install does not always put its CLI on PATH; without
+:: it "docker ps" fails and the database step below reports Docker as offline.
+if exist "%LOCALAPPDATA%\Programs\DockerDesktop\resources\bin\docker.exe" (
+    set "PATH=%LOCALAPPDATA%\Programs\DockerDesktop\resources\bin;%PATH%"
+)
 
 :: ShaktiDB password, from .env (see .env.example). It used to be written into
 :: this script. Loaded here, before anything starts, so the Postgres container
@@ -61,7 +69,7 @@ if "%PORT8000_STATE%"=="BUSY" (
     )
     echo [i] Port 8000 still busy, retrying cleanup ^(attempt %PORT8000_RETRY%/5^)...
     powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }" >nul 2>&1
-    timeout /t 1 >nul
+    timeout /t 1 >nul 2>&1 || ping 127.0.0.1 -n 2 >nul
     goto CHECK_PORT_8000
 )
 :PORT8000_DONE
@@ -208,7 +216,7 @@ if %errorlevel% equ 0 (
     if errorlevel 1 (
         docker stop shakthidb_service > nul 2>&1
         docker rm   shakthidb_service > nul 2>&1
-        docker run -d --name shakthidb_service -e "POSTGRES_PASSWORD=%POSTGRES_PASSWORD%" -e POSTGRES_DB=shakthidb -p 15234:5432 -v audittest_box_pgdata:/var/lib/postgresql/data --restart always aicyberauditbox-shakthidb:2.1 > nul 2>&1
+        docker run -d --name shakthidb_service -e "POSTGRES_PASSWORD=%POSTGRES_PASSWORD%" -e POSTGRES_DB=shakthidb -p 15234:15234 -v audittest_box_pgdata:/var/lib/postgresql/data --restart always aicyberauditbox-shakthidb:2.1 postgres -p 15234 > nul 2>&1
     )
     call :DoBackup
 ) else (
@@ -218,7 +226,7 @@ if %errorlevel% equ 0 (
 
 echo.
 echo Waiting 12 seconds for models to load in RAM...
-timeout /t 12 >nul
+timeout /t 12 >nul 2>&1 || ping 127.0.0.1 -n 13 >nul
 
 set LLM_BACKEND=llama.cpp
 set EMBEDDING_HOST=http://127.0.0.1:11435
@@ -266,7 +274,7 @@ if %errorlevel% equ 0 (
         docker stop %%c > nul 2>&1
     )
     echo [v] Port 8000 freed from Docker.
-    timeout /t 2 >nul
+    timeout /t 2 >nul 2>&1 || ping 127.0.0.1 -n 3 >nul
 )
 
 start http://localhost:8000/
@@ -307,7 +315,7 @@ if errorlevel 1 (
         echo [!] PostgreSQL not ready after 15s -- skipping today's backup, continuing startup.
         exit /b
     )
-    timeout /t 1 >nul
+    timeout /t 1 >nul 2>&1 || ping 127.0.0.1 -n 2 >nul
     goto WAIT_PG_READY
 )
 for /f "tokens=*" %%t in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss"') do set BACKUP_TIMESTAMP=%%t
