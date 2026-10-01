@@ -3648,6 +3648,46 @@ def _finding_is_compliant(f):
     return is_compliant_verdict(f.get("display_status") or f.get("status"), f.get("final_result"))
 
 
+# Control and Selective findings keep the model's impact and the missing
+# requirements together in `description`: "Business Impact: X | Missing
+# Requirements: Y". The report read description as the observation and
+# `reasoning` as the impact, so the two columns came out swapped; on a
+# Checklist row both held the answer, so Impact repeated Observation.
+_BIZ_IMPACT_DESC_RE = re.compile(
+    r"^\s*Business Impact:\s*(?P<impact>.*?)\s*(?:\|\s*Missing Requirements:\s*(?P<missing>.*?))?\s*$",
+    re.S | re.I)
+_NO_IMPACT_RECORDED = "Impact not recorded for this finding -- see Observations."
+
+
+def _same_text(a, b):
+    """True when b says nothing a does not (ignoring case, spacing, punctuation)."""
+    na, nb = (re.sub(r"\W+", " ", str(x or "")).strip().lower() for x in (a, b))
+    return bool(na and nb) and (na == nb or (len(na) > 40 and na in nb))
+
+
+def _iso_observation_and_impact(f):
+    """(observation, impact) for a row of the ISO observations table.
+
+    Observation is what was found; Impact is the consequence -- the
+    business_impact the audit stored -- and NIL on a compliant row. An impact
+    that only repeats the observation is never printed as one."""
+    obs = str(f.get("gap_description") or f.get("reasoning") or f.get("observation")
+              or f.get("description") or f.get("finding") or "").strip()
+    impact = str(f.get("business_impact") or f.get("impact") or f.get("risk_impact") or "").strip()
+    m = _BIZ_IMPACT_DESC_RE.match(obs)
+    if m:
+        missing = re.sub(r"\.\s*,\s*", "; ", (m.group("missing") or "").strip()).rstrip(" .;,")
+        obs = str(f.get("reasoning") or "").strip()
+        if missing:
+            obs = (obs + "\n" if obs else "") + f"Missing requirements: {missing}."
+        impact = impact or m.group("impact").strip()
+    if _finding_is_compliant(f):
+        return obs, "NIL"
+    if not impact or impact.upper() in ("NIL", "N/A", "NONE") or _same_text(impact, obs):
+        impact = _NO_IMPACT_RECORDED
+    return obs, impact
+
+
 # Branding that ships inside the image.
 #
 # data/assets is a Docker volume (app_data:/app/data in docker-compose.customer.yml)
@@ -3730,6 +3770,29 @@ def _control_group_label(f):
     return ctrl or "General"
 
 
+_FRAMEWORK_EXPECTED = None
+
+
+def _norm_label(text):
+    return re.sub(r"[\s.;:]+$", "", re.sub(r"\s+", " ", str(text or "")).strip().lower())
+
+
+def _is_framework_expected_text(text):
+    """True when `text` is a control's own expected-evidence line from the
+    framework (controls_data USE_CASES "expected"), not a question the auditor
+    wrote. A Control-mode sheet with no question column gets that line as its
+    "question", so the row would show it in place of the control's name."""
+    global _FRAMEWORK_EXPECTED
+    if _FRAMEWORK_EXPECTED is None:
+        try:
+            from src.core.controls_data import USE_CASES
+            _FRAMEWORK_EXPECTED = {_norm_label(uc.get("expected")) for uc in USE_CASES
+                                   if isinstance(uc, dict) and uc.get("expected")}
+        except Exception:
+            _FRAMEWORK_EXPECTED = set()
+    return bool(text) and _norm_label(text) in _FRAMEWORK_EXPECTED
+
+
 def _control_point_label(f):
     """What belongs in a report's "Control points" cell.
 
@@ -3762,10 +3825,17 @@ def _control_point_label(f):
         question = _re_cp.sub(r"^[\s–—-]+", "", question)
         # Split on the FIRST separator only -- a question may legitimately
         # contain a dash of its own, and everything after the prefix is question.
+        _prefix = ""
         for _sep in (" – ", " — ", " - "):
             if _sep in question:
-                question = question.split(_sep, 1)[1].strip()
+                _prefix, question = (p.strip() for p in question.split(_sep, 1))
                 break
+        # Not a question: the control's own expected-evidence line, filled in
+        # for a sheet with no question column. The control's name is the label.
+        if _is_framework_expected_text(question):
+            if _prefix:
+                return _dedupe_repeated_phrase(_prefix).strip()
+            question = ""
         question = _dedupe_repeated_phrase(question).strip()
         if question:
             return question
@@ -3778,6 +3848,13 @@ def _control_point_label(f):
     # id is already its own column.
     name = _re_cp.sub(r"\s*\(\s*\d{1,2}\.\d{1,2}(?:\.\d{1,2})?\s*\)\s*$", "",
                       c_name or c_ctl or c_use).strip()
+    # "8.13 Information Backup — <its expected evidence>": the name is the prefix.
+    for _sep in (" – ", " — ", " - "):
+        if _sep in name:
+            _head, _tail = (p.strip() for p in name.split(_sep, 1))
+            if _head and _is_framework_expected_text(_tail):
+                name = _head
+            break
     return _dedupe_repeated_phrase(name or c_id).strip()
 
 
@@ -4736,13 +4813,10 @@ def _export_iso_template_docx(session_title, findings, resolved_list, status, co
             # 800 characters ended observations mid-word ("...enabled without an
             # own") with nothing to say the rest was gone; 4000 is a safety net
             # for a runaway value, cut at a word and marked.
+            _obs_core, _impact_core = _iso_observation_and_impact(f)
             obs = redact_pii(_cut_words(
-                _strip_reasoning_narrative(
-                    str(f.get("gap_description") or f.get("reasoning")
-                        or f.get("observation") or f.get("description")
-                        or f.get("finding") or ""),
-                    f.get("final_result") or f.get("status") or "",
-                ), 4000))
+                _strip_reasoning_narrative(_obs_core, f.get("final_result") or f.get("status") or ""),
+                4000))
             # A readable sentence instead of the raw enum dump
             # ("Policy: NOT_FOUND, NON_COMPLIANT | Evidence: FOUND, COMPLIANT"), which
             # reads as internal field values rather than an auditor's observation.
@@ -4770,10 +4844,7 @@ def _export_iso_template_docx(session_title, findings, resolved_list, status, co
             # impact narrative from the same finding. Same document, same data, two
             # different answers -- and the DOCX was the one that looked stale.
             impact     = redact_pii(_strip_reasoning_narrative(
-                str(f.get("business_impact") or f.get("impact") or f.get("risk_impact")
-                    or ("NIL" if _is_compliant_row else "Business Risk")),
-                f.get("final_result") or f.get("status") or "",
-            ))
+                _impact_core, f.get("final_result") or f.get("status") or ""))
             suggestion = redact_pii(str(f.get("recommendation") or f.get("suggestion") or ("NIL" if _is_compliant_row else "Remediate as per IS guidelines."))[:400])
 
             # ── Evidence ────────────────────────────────────────────────────────
@@ -5355,14 +5426,9 @@ def export_docx_report(session_title, findings, resolved_list, status, comments=
             str(f.get("policy_reference") or f.get("policy_ref") or f.get("clause") or "").strip()
         )
         _status_for_row = str(f.get("final_result") or f.get("status") or "")
-        obs_text = redact_pii(_strip_reasoning_narrative(
-            # "finding" is the CONTROL NAME in the payload the export endpoint
-            # builds ("finding": f.control_name or f.description), so reading it
-            # first printed the control name again in the Observations column
-            # instead of the observation. Same precedence as the DOCX template
-            # exporter: the gap description is the observation.
-            str(f.get("gap_description") or f.get("reasoning") or f.get("observation")
-                or f.get("description") or f.get("finding") or ""), _status_for_row))
+        # Same Observation / Impact as the DOCX template and the PDF.
+        _obs_core, _impact_core = _iso_observation_and_impact(f)
+        obs_text = redact_pii(_strip_reasoning_narrative(_obs_core, _status_for_row))
         # Readable sentence rather than the raw enum dump
         # ("Policy: NOT_FOUND, NON_COMPLIANT | Evidence: FOUND, COMPLIANT").
         pe_summary = _readable_policy_evidence_line(f)
@@ -5385,7 +5451,7 @@ def export_docx_report(session_title, findings, resolved_list, status, comments=
         add_highlighted_runs(row_cells[3].paragraphs[0], obs_text)
         row_cells[4].paragraphs[0].add_run(risk_text).bold = True
         add_highlighted_runs(row_cells[5].paragraphs[0], redact_pii(_strip_reasoning_narrative(
-            str(f.get("business_impact") or "NIL"), _status_for_row)))
+            _impact_core, _status_for_row)))
         row_cells[6].paragraphs[0].add_run(redact_pii(f.get("recommendation") or "NIL"))
 
         # Evidence identifies WHERE the artifact lives so a reviewer can open it --
@@ -6110,14 +6176,9 @@ def _export_pdf_report(session_title, findings, resolved_list, status, comments=
 
             _status_for_row = str(f.get("final_result") or f.get("status") or "")
             # PII redacted before writing to exported PDF
-            obs_text = redact_pii(_strip_reasoning_narrative(
-                # "finding" is the CONTROL NAME in the payload the export endpoint
-            # builds ("finding": f.control_name or f.description), so reading it
-            # first printed the control name again in the Observations column
-            # instead of the observation. Same precedence as the DOCX template
-            # exporter: the gap description is the observation.
-            str(f.get("gap_description") or f.get("reasoning") or f.get("observation")
-                or f.get("description") or f.get("finding") or ""), _status_for_row))
+            # Same Observation / Impact as both DOCX exporters.
+            _obs_core, _impact_core = _iso_observation_and_impact(f)
+            obs_text = redact_pii(_strip_reasoning_narrative(_obs_core, _status_for_row))
             # Readable sentence rather than the raw enum dump.
             pe_summary = _readable_policy_evidence_line(f)
             pe_gap = _policy_evidence_gap_text(f)
@@ -6140,8 +6201,7 @@ def _export_pdf_report(session_title, findings, resolved_list, status, comments=
 
             r.cell(clean_text(risk_text), style=risk_style)
 
-            imp_text = redact_pii(_strip_reasoning_narrative(
-                str(f.get("business_impact") or "NIL"), _status_for_row))
+            imp_text = redact_pii(_strip_reasoning_narrative(_impact_core, _status_for_row))
             r.cell(highlight_markdown(clean_text(truncate_cell_text(imp_text, 600))), style=cell_style)
 
             sug_text = redact_pii(f.get("recommendation") or "NIL")

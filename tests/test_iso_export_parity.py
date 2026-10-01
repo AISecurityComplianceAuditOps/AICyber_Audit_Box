@@ -63,10 +63,14 @@ def _obs_row_sources():
 
 
 def test_every_iso_layout_reads_business_impact():
+    """All three layouts take Observation and Impact from one helper, and that
+    helper reads business_impact -- so no layout can print boilerplate (or the
+    observation again) where the others print the real impact."""
     for name, body in _obs_row_sources().items():
-        assert "business_impact" in body, (
-            "%s never reads business_impact -- its Impact column will print "
-            "boilerplate while the other layouts print the real narrative" % name)
+        assert "_iso_observation_and_impact(f)" in body, (
+            "%s builds Observation/Impact by hand instead of _iso_observation_and_impact" % name)
+    _obs, impact = rx._iso_observation_and_impact(dict(FINDING))
+    assert impact == FINDING["business_impact"]
 
 
 def test_every_iso_layout_uses_the_same_control_point_label():
@@ -123,12 +127,12 @@ def test_template_docx_prints_the_real_impact_not_boilerplate():
 
 
 def test_observations_precedence_matches_across_layouts():
-    """A finding whose text lives only in `description` must not export empty."""
-    for name, body in _obs_row_sources().items():
-        chain = re.search(r'gap_description.{0,220}?finding', body, re.S)
-        assert chain, "%s: could not find the observation fallback chain" % name
-        assert 'description' in chain.group(0), (
-            "%s omits description from the observation chain" % name)
+    """A finding whose text lives only in `description` must not export empty.
+    The chain lives once, in _iso_observation_and_impact, which every layout calls."""
+    only_desc = {k: v for k, v in FINDING.items() if k not in ("gap_description", "reasoning")}
+    only_desc["description"] = "Only the description holds this observation text."
+    obs, _imp = rx._iso_observation_and_impact(only_desc)
+    assert obs == "Only the description holds this observation text."
 
 
 def test_iso_pdf_renders_the_template_when_a_converter_exists(monkeypatch):

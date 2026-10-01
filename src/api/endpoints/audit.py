@@ -3690,7 +3690,9 @@ def api_export_docx(
                     "final_result": f.final_result,
                     "severity": f.severity or "Medium",
                     "severity_score": sev_score,
-                    "business_impact": f.reasoning or "Compliance verification pending.",
+                    # The impact the audit stored, not `reasoning` -- that is the
+                    # observation, and sent here it printed twice in the report.
+                    "business_impact": getattr(f, "business_impact", None) or "",
                     "recommendation": f.recommendation or "",
                     "evidence_snippet": f.evidence_snippet or "",
                     "evidence_quote": f.evidence_snippet or "",
@@ -4168,7 +4170,9 @@ def api_export_pdf(
                     "severity": "N/A" if is_comp else c_sev,
                     "severity_score": 0.0 if is_comp else sev_score,
                     "target": f.source_files or "Scoped Target Systems",
-                    "business_impact": f.reasoning or "Compliance verification pending.",
+                    # The impact the audit stored, not `reasoning` -- that is the
+                    # observation, and sent here it printed twice in the report.
+                    "business_impact": getattr(f, "business_impact", None) or "",
                     "recommendation": f.recommendation or "",
                     "evidence_snippet": f.evidence_snippet or "",
                     "evidence_quote": f.evidence_snippet or "",
