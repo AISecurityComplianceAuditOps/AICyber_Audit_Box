@@ -5657,7 +5657,14 @@ function formatEvidenceSnippet(snip) {
 
     // ── Clean Terminal / Screenshot OCR Text ──
     const lowerSnip = snip.toLowerCase();
-    const isTerminalOrNtp = /ntp|timedatectl|clock|mobaxterm|root@|systemd-timesyncd|chronyd/i.test(snip);
+    // Only text that states a sync status is summarised. Policy prose that
+    // merely mentions NTP or clocks ("servers shall synchronise their system
+    // clocks with an approved internal NTP source") used to come here too, and
+    // with no "synchronized: yes" in it the card printed "NTP Clock
+    // Synchronized: NO" under Documented Policy Statements -- a status the
+    // policy never gave, beside evidence that said YES. It is quoted as written.
+    const hasSyncStatus = /synchronized:\s*(yes|no)\b|ntp\s+active/i.test(snip);
+    const isTerminalOrNtp = hasSyncStatus && /ntp|timedatectl|clock|mobaxterm|root@|systemd-timesyncd|chronyd/i.test(snip);
 
     if (isTerminalOrNtp) {
         let bullets = [];
