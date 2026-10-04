@@ -233,9 +233,11 @@ set EMBEDDING_HOST=http://127.0.0.1:11435
 set OLLAMA_KEEP_ALIVE=24h
 set OLLAMA_NUM_PARALLEL=4
 set OLLAMA_MAX_LOADED_MODELS=3
-:: 2x LLM_SLOTS: LLM_SLOTS truly-parallel + the same again as a queue buffer,
-:: rejected clearly past that instead of queuing indefinitely at the LLM server.
-set /a MAX_CONCURRENT_AUDITS=%LLM_SLOTS%*2
+:: MAX_CONCURRENT_AUDITS is NOT set here: the app sizes it from the hardware
+:: (bg_state.current_audit_limit: about 2 physical cores per audit, capped by
+:: the model's slots) -- 2 on a 4-core machine. This used to set slots x 2 = 8,
+:: admitting four times what a 4-core box can run comfortably. Set it yourself
+:: only for hardware you have load-tested.
 set REDIS_URL=redis://127.0.0.1:6380/0
 :: Resource guard thresholds: lowered so audits aren't paused or blocked prematurely on tight host RAM.
 :: 2% free / 0.5GB absolute floor prevents OOM while avoiding false alarms on 16GB machines.

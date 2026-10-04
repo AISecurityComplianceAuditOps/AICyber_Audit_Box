@@ -53,13 +53,9 @@ echo.
 :: 3. Launching FastAPI & browser
 echo [3/3] Launching AICyberAuditBox Dashboard...
 
-:: Set dynamic concurrency strictly based on Physical Cores (Physical Cores * 2)
-set "PHYSICAL_CORES="
-for /f "tokens=*" %%c in ('powershell -NoProfile -Command "(Get-CimInstance Win32_Processor).NumberOfCores" 2^>nul') do set PHYSICAL_CORES=%%c
-if "%PHYSICAL_CORES%"=="" set /a PHYSICAL_CORES=%NUMBER_OF_PROCESSORS% / 2
-if %PHYSICAL_CORES% LSS 1 set PHYSICAL_CORES=2
-set /a MAX_CONCURRENT_AUDITS=%PHYSICAL_CORES% * 2
-if %MAX_CONCURRENT_AUDITS% LSS 4 set MAX_CONCURRENT_AUDITS=4
+:: MAX_CONCURRENT_AUDITS is NOT set here: the app sizes it from the hardware
+:: (about 2 physical cores per audit, capped by the model's slots) -- see
+:: run_all.bat. This used to set cores x 2, at least 4.
 set REDIS_URL=redis://127.0.0.1:6379/0
 
 :: Check for Let's Encrypt (Certbot) trusted certificates first

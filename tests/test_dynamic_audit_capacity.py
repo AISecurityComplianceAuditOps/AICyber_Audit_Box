@@ -264,3 +264,22 @@ def test_a_licence_limit_shows_no_hardware_advice_in_the_ui():
     src = _io.open(_os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
                                  "src", "api", "endpoints", "audit.py"), encoding="utf-8").read()
     assert '"advice": "" if _licensed else _hardware_advice' in src
+
+
+# -- the Windows launchers leave the limit to the hardware sizing -------------------
+# run_all.bat set MAX_CONCURRENT_AUDITS to slots x 2 (8 on a 4-core VM) and
+# run_api.bat to cores x 2, overriding the hardware-sized limit with four times
+# what a small machine runs comfortably. Two audits on a 4-core VM took 49 min.
+
+def test_a_four_core_machine_admits_two():
+    assert audit_capacity(4, available_slots=4, total_ram_gb=32)["limit"] == 2
+
+
+@pytest.mark.parametrize("launcher", ["run_all.bat", "run_api.bat"])
+def test_the_launchers_do_not_override_the_limit(launcher):
+    import io as _io
+    import os as _os
+    import re as _re
+    path = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), launcher)
+    src = _io.open(path, encoding="utf-8", errors="replace").read()
+    assert not _re.search(r"(?im)^\s*set\s+(/a\s+)?\"?MAX_CONCURRENT_AUDITS\s*=", src), launcher
