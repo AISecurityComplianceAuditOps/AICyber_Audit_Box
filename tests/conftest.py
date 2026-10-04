@@ -21,6 +21,13 @@ looking for a module-level sys.exit rather than adding names as they surface.
 """
 import os
 
+# Model-call retries pause between attempts in production (20-30 s) and the
+# fair-share calculation asks the live model server for its slot count. Tests
+# fake the model, so neither should cost wall-clock time or a network probe.
+os.environ.setdefault("REMEDIATION_RETRY_DELAY_SEC", "0")
+os.environ.setdefault("LLM_RETRY_DELAY_SEC", "0")
+os.environ.setdefault("LLM_SLOTS", "4")
+
 # Scripts, not tests: each calls sys.exit() at module level.
 collect_ignore = [
     "run_evals.py",

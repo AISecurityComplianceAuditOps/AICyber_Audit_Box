@@ -168,14 +168,30 @@ class LLMPortPoolManager:
             if self._limit_is_explicit:
                 return                          # operator's number; only recorded
             extra = server_slots - self._limit_per_port
-            if extra <= 0:
-                return
-            for lock in self.port_locks.values():
-                for _ in range(extra):
-                    lock.release()
             old = self._limit_per_port
+            if extra > 0:
+                for lock in self.port_locks.values():
+                    for _ in range(extra):
+                        lock.release()
+                verb = "raising"
+            elif extra < 0:
+                # Lowered too, to exactly the server's slots. Requests beyond
+                # them used to go to llama-server and wait in its own queue,
+                # where the wait counted against the HTTP timeout: on a 4-slot
+                # machine sent up to 32 at once, queued requests timed out
+                # before they started. They now wait here, where waiting costs
+                # nothing. Permits are taken back by a helper thread, so any
+                # request already holding one simply finishes first.
+                def _retire(lock, n):
+                    for _ in range(n):
+                        lock.acquire()
+                for lock in self.port_locks.values():
+                    threading.Thread(target=_retire, args=(lock, -extra), daemon=True).start()
+                verb = "lowering"
+            else:
+                return
             self._limit_per_port = server_slots
-            print(f"[PORT POOL] LLM server reports {server_slots} slot(s); raising the "
+            print(f"[PORT POOL] LLM server reports {server_slots} slot(s); {verb} the "
                   f"per-port limit from {old} to {server_slots}. Set "
                   f"MAX_LLM_CONNECTIONS to override.", flush=True)
 
@@ -272,8 +288,12 @@ class LLMPortPoolManager:
         }
 
     @contextmanager
-    def acquire_control_slot(self, session_id=None, timeout=None):
+    def acquire_control_slot(self, session_id=None, timeout=None, wait_forever=False):
         """Context manager leasing a port mutex lock for 1 control query.
+
+        wait_forever: wait for a free slot however long it takes. Every holder
+        releases when its request ends, and a request whose model goes silent
+        ends after LLM_STALL_TIMEOUT_SEC, so the wait is bounded by real work.
 
         When all CPU slots are busy, the request is safely queued. A CPU_QUEUE_NOTICE
         system event is emitted and a structured warning is published so the UI can
@@ -358,7 +378,7 @@ class LLMPortPoolManager:
                 except Exception:
                     pass
             # Now block until a slot is actually free (respecting timeout)
-            acquired = port_lock.acquire(timeout=timeout)
+            acquired = port_lock.acquire() if wait_forever else port_lock.acquire(timeout=timeout)
             if not acquired:
                 self._decrement_queue_depth()
                 try:

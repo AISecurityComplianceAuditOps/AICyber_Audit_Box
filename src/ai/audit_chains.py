@@ -1603,7 +1603,10 @@ class NativeOllamaChain:
                 # the graph gave up and moved on while this thread kept running
                 # and kept holding its port_pool concurrency slot until its own,
                 # separately-computed timeout expired.
-                timeout=input_dict.get("timeout")
+                timeout=input_dict.get("timeout"),
+                # The audit graph passes timeout None: no ceiling, the request
+                # fails only if the model falls silent.
+                no_time_limit=input_dict.get("timeout") is None,
             )
             self.last_token_stats = _stats
             if not content or not content.strip():
@@ -1633,6 +1636,14 @@ class NativeOllamaChain:
             return AuditFindingSchema(**normalized_data)
             
         except Exception as e:
+            from src.core.llm_client import LLMUnavailableError
+            # The model never answered. Raised, not turned into a finding: this
+            # used to return a NON_COMPLIANT assessment ("No assessment was
+            # produced ...") -- a compliance verdict against the customer for a
+            # control nothing assessed. The audit graph retries, then reports
+            # the control Not Assessed.
+            if isinstance(e, LLMUnavailableError):
+                raise
             print(f"[LLM CHAIN ERROR] Parse failed for {input_dict.get('control_id', 'unknown')}: {e}", flush=True)
             control_id_str = str(input_dict.get('control_id', 'unknown'))
 
@@ -1681,32 +1692,9 @@ class NativeOllamaChain:
                 "timed out", "timeout", "read timed out", "connection", "connectionerror",
                 "max retries", "refused", "unreachable", "remote end closed",
             )):
-                # The LLM never answered -- it timed out or the server was unreachable.
-                # This says NOTHING about the document, so it must not be reported as
-                # though it did. Confirmed on this box: a 21K-char prompt against the
-                # loaded 12B model exceeded the request timeout, and the failure landed
-                # in the generic branch below, telling the auditor "the system did not
-                # locate clear, structured statements in the document" about a clean,
-                # well-structured policy -- an infrastructure fault dressed up as a
-                # compliance gap on the customer's evidence.
-                business_impact = (
-                    f"Unable to determine compliance for {control_id_str}: the AI model did not respond "
-                    "before the request timed out. This is an infrastructure/capacity issue, NOT a finding "
-                    "about the uploaded document."
-                )
-                justification = (
-                    f"No assessment was produced for {control_id_str} because the model request timed out or "
-                    "the LLM server was unreachable. This is a generation failure, not evidence of a "
-                    "compliance gap, and the document has not actually been evaluated."
-                )
-                missing_requirements = [
-                    f"Re-run control {control_id_str} -- it was never evaluated."
-                ]
-                recommendation = (
-                    "Re-run this control once the LLM server is responsive. If it times out repeatedly, the "
-                    "loaded model may be too large for this hardware, or the evidence context for this control "
-                    "may be unusually large -- check which model is loaded and consider narrowing the evidence."
-                )
+                # Same as above, for an infrastructure failure that reached here
+                # without the LLMUnavailableError type.
+                raise LLMUnavailableError(f"LLM request timed out or unreachable: {err_msg}") from e
             else:
                 # General JSON / Formatting failure. Note this is about the MODEL'S
                 # RESPONSE not parsing, not about the document being unstructured --

@@ -120,11 +120,38 @@ def test_an_explicit_setting_is_never_overridden(monkeypatch):
     assert _permits(pool) == 8, "an explicit limit was overridden"
 
 
-def test_a_smaller_server_never_lowers_the_limit(monkeypatch):
-    """Lowering would strand requests already holding a permit."""
+def _settles_to(pool, n, within=5.0):
+    """The permits reach n once the helper thread has retired the extras."""
+    import time
+    deadline = time.time() + within
+    while time.time() < deadline:
+        if _permits(pool) == n:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def test_a_smaller_server_lowers_the_limit_to_its_slots(monkeypatch):
+    """It used to stay at 32: requests beyond the server's 4 slots waited in
+    llama-server's own queue with their HTTP timeout running, and timed out
+    before starting. They now wait in the app."""
     pool = _fresh_pool(monkeypatch, slots=4)
     pool._match_server_slot_count()
-    assert _permits(pool) == 32
+    assert pool._limit_per_port == 4
+    assert _settles_to(pool, 4)
+
+
+def test_lowering_never_strands_a_request_holding_a_permit(monkeypatch):
+    """The extras are taken back by a helper thread, so a request that already
+    holds a permit finishes and releases it first."""
+    pool = _fresh_pool(monkeypatch, slots=4)
+    lock = list(pool.port_locks.values())[0]
+    held = [lock.acquire(blocking=False) for _ in range(30)]      # 30 of 32 in use
+    assert all(held)
+    pool._match_server_slot_count()
+    for _ in held:
+        lock.release()
+    assert _settles_to(pool, 4)
 
 
 def test_an_unreachable_server_leaves_the_limit_alone(monkeypatch):

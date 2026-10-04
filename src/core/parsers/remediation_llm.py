@@ -38,7 +38,8 @@ untouched. This function is never allowed to make a finding worse by running.
 import json
 import re
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from typing import Dict, List
 
 # Findings per LLM call. This was 8, which on a CPU-only box produces ~2000
@@ -51,28 +52,19 @@ from typing import Dict, List
 # enough to finish inside the budget.
 _BATCH_SIZE = int(os.environ.get("REMEDIATION_BATCH_SIZE", "4"))
 
-# Explicit budget for enrichment rather than inheriting query_llm()'s default,
-# which is tuned for the ISO generator's much shorter completions. This path
-# writes several paragraphs per call and legitimately needs longer; the scan
-# already runs in the background, so waiting is cheap -- silently dropping the
-# text the auditor asked for is not.
-_ENRICH_TIMEOUT = int(os.environ.get("REMEDIATION_TIMEOUT_SEC", "1800"))
-_ENRICH_TIMEOUT_MAX = int(os.environ.get("REMEDIATION_TIMEOUT_MAX_SEC", "3600"))
 _MAX_EVIDENCE_CHARS = 400
 _MAX_DESCRIPTION_CHARS = 400
 
-# How many batches run at once. query_llm() already serializes through
-# port_pool_manager's per-port semaphore and relies on llama-server's own
-# --cont-batching / -np slots to actually execute concurrent requests -- the
-# same mechanism concurrent audits already use elsewhere in this app (see
-# port_pool.py: "generous limit here -- llama-server queues excess requests
-# internally"). Batches used to run one at a time in a plain for-loop, which on
-# a large VAPT/PQC scan (hundreds of findings) left every CPU slot beyond the
-# first sitting idle while batches queued up sequentially. 4 is deliberately
-# modest rather than matching a specific slot count exactly: llama-server's own
-# queue absorbs the mismatch safely either way, so there is no correctness
-# reason to tune this precisely to the deployment's hardware.
-_MAX_PARALLEL_BATCHES = 4
+# How many batches run at once: this scan's fair share of the model server's
+# slots (llm_capacity.fair_share), recomputed after every batch. It was a fixed
+# 4, which on a 4-core machine split the CPU four ways and slowed each batch
+# until one ran into the 30-minute request ceiling (measured: 1 of 17 batches,
+# one auditor). Batches are no longer cut off for being slow -- query_llm with
+# no_time_limit waits while the model keeps writing -- and a batch that fails
+# outright is retried, alone, after the others.
+_MAX_PARALLEL_BATCHES = int(os.environ.get("REMEDIATION_MAX_PARALLEL", "64"))
+_RETRY_ATTEMPTS = int(os.environ.get("REMEDIATION_RETRY_ATTEMPTS", "3"))
+_RETRY_DELAY_SEC = float(os.environ.get("REMEDIATION_RETRY_DELAY_SEC", "20"))
 
 _PROMPT_TEMPLATE = """You are a senior penetration tester writing a vulnerability
 report. You will be given {n} findings, each with its title, severity, CVE(s)
@@ -381,29 +373,6 @@ def _salvage_remediations(text):
     return {"remediations": out}
 
 
-def _enrich_budget() -> int:
-    """Enrichment budget: our floor, but still scaling with concurrent load.
-
-    query_llm()'s own default is max(600, active*180). Replacing it with a flat
-    number fixed the single-scan case and quietly made the busy case worse --
-    generation is slowest exactly when many audits share the CPU, which is when
-    the scaling mattered. So keep the scaling and only raise the floor.
-    """
-    try:
-        # Same source of truth as llm_client.py and audit_graph.py: sessions that
-        # are actually running, not the dashboard list that includes history.
-        from src.core.redis_metrics import get_running_session_count
-        active = max(1, get_running_session_count())
-    except Exception:
-        active = 1
-    # Ceiling, because the load signal cannot be trusted: the Redis
-    # active-sessions set accumulates entries that are never cleared (measured
-    # 422 "active" while nothing at all was running), which turns a scaling
-    # budget into a ~21-hour one -- long enough that a genuinely hung request
-    # never fails and the scan simply never ends. Scale, but not past an hour.
-    return max(_ENRICH_TIMEOUT, min(active * 180, _ENRICH_TIMEOUT_MAX))
-
-
 def _enrich_batch(batch: List[Dict], model: str, session_id=None, timeout=None,
                   pointwise=False) -> bool:
     """Mutates `.remediation` on the findings in `batch` in place. Never raises
@@ -443,7 +412,9 @@ def _ask_batch(batch: List[Dict], model: str, session_id=None, timeout=None,
     try:
         raw = query_llm(
             prompt, model, num_ctx=8192, temperature=0.1,
-            timeout=timeout if timeout is not None else _enrich_budget(),
+            # No ceiling unless a caller sets one: the request waits while the
+            # model keeps writing and fails only if it falls silent.
+            timeout=timeout, no_time_limit=timeout is None,
             session_id=session_id,
             # query_llm()'s DEFAULT stop list includes "```", tuned for the
             # ISO/VAPT XML-tag generator chains where a fence never appears in
@@ -604,27 +575,55 @@ def enrich_remediations(findings: List[Dict], model: str = "gemma4:e4b",
             except Exception:
                 pass
 
-    if len(batches) > 1:
-        # submit/as_completed rather than pool.map: map only yields once every
-        # batch has finished, so there is nothing to report until the slowest
-        # one lands. Batches still run in parallel exactly as before.
-        with ThreadPoolExecutor(max_workers=min(_MAX_PARALLEL_BATCHES, len(batches))) as pool:
-            futures = [pool.submit(_enrich_batch, b, model,
-                                   session_id=session_id, timeout=timeout,
-                                   pointwise=pointwise)
-                       for b in batches]
-            for _i, _f in enumerate(as_completed(futures), start=1):
-                try:
-                    _results.append(bool(_f.result()))
-                except Exception:
-                    _results.append(False)   # keeps its parser-generated text
-                _done(_i)
-    elif batches:
-        _results = [_enrich_batch(batches[0], model, session_id=session_id, timeout=timeout,
-                                  pointwise=pointwise)]
-        _done(1)
+    from src.core.llm_capacity import fair_share, model_slots, active_scans, scan_using_llm
 
-    _failed = sum(1 for r in _results if not r)
+    def _run_one(b):
+        try:
+            return bool(_enrich_batch(b, model, session_id=session_id, timeout=timeout,
+                                      pointwise=pointwise))
+        except Exception:
+            return False                     # keeps its parser-generated text
+
+    failed_batches = []
+    with scan_using_llm(session_id or f"enrich-{id(findings)}"):
+        if batches:
+            print(f"[REMEDIATION LLM] {len(batches)} batch(es); up to {fair_share()} at once "
+                  f"({model_slots()} model slot(s), {active_scans()} scan(s) using the model).",
+                  flush=True)
+        # In flight at any moment: this scan's fair share of the model's slots,
+        # read again whenever a batch finishes -- so a scan grows into slots
+        # another one releases and makes room when a new one starts.
+        pending = list(batches)
+        done_n = 0
+        with ThreadPoolExecutor(max_workers=max(1, min(_MAX_PARALLEL_BATCHES, len(batches)))) as pool:
+            inflight = {}
+            while pending or inflight:
+                while pending and len(inflight) < min(fair_share(), _MAX_PARALLEL_BATCHES):
+                    b = pending.pop(0)
+                    inflight[pool.submit(_run_one, b)] = b
+                finished, _ = wait(list(inflight), return_when=FIRST_COMPLETED)
+                for fut in finished:
+                    b = inflight.pop(fut)
+                    ok = fut.result()
+                    _results.append(ok)
+                    if not ok:
+                        failed_batches.append(b)
+                    done_n += 1
+                    _done(done_n)
+
+        # A batch that still failed (the model stopped responding, or its reply
+        # could not be read) is asked again, alone, once the others are done --
+        # up to _RETRY_ATTEMPTS times -- rather than leaving the canned text.
+        for attempt in range(1, _RETRY_ATTEMPTS + 1):
+            if not failed_batches:
+                break
+            print(f"[REMEDIATION LLM] Retrying {len(failed_batches)} batch(es), "
+                  f"attempt {attempt} of {_RETRY_ATTEMPTS}.", flush=True)
+            if _RETRY_DELAY_SEC > 0:
+                time.sleep(_RETRY_DELAY_SEC)
+            failed_batches = [b for b in failed_batches if not _run_one(b)]
+
+    _failed = len(failed_batches)
     if _failed:
         print(f"[REMEDIATION LLM] {_failed}/{len(batches)} batch(es) failed -- those "
               f"finding(s) keep their parser-generated text.", flush=True)

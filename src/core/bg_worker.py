@@ -2195,6 +2195,11 @@ Return format: ["topic1", "topic2", ...]"""
 def _run_ollama_bg(bg_key, files_data, selected_sls_copy, ai_model, session_id=None, audit_mode="Deep", custom_docs=None, custom_evidence=None, file_registry=None, already_done_ids=None, username=None, scoping_mode=None):
     print(f"[_run_ollama_bg] Starting thread for key {bg_key} with model {ai_model}...", flush=True)
     _sid = session_id or bg_key
+    # Counted as a scan using the model, so a VAPT scan running at the same time
+    # takes its fair share of the slots instead of all of them (llm_capacity).
+    from src.core.llm_capacity import scan_using_llm as _scan_using_llm
+    _llm_scan = _scan_using_llm(bg_key)
+    _llm_scan.__enter__()
     try:
 
 
@@ -2557,6 +2562,7 @@ def _run_ollama_bg(bg_key, files_data, selected_sls_copy, ai_model, session_id=N
             _rm.session_done(session_id=_sid, status="done")
         except Exception:
             pass
+        _llm_scan.__exit__(None, None, None)
         with _bg_lock:
             _bg_running.discard(bg_key)
             _bg_store["progress"].pop(bg_key, None)

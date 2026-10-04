@@ -279,23 +279,26 @@ def test_empty_findings_list_is_a_no_op():
     assert enrich_remediations([], model="x") == []
 
 
-def test_a_failed_batch_does_not_stop_later_batches():
-    """20 findings, first batch's call raises, second batch's call succeeds --
-    the second batch's findings must still be enriched."""
+def test_a_failed_batch_does_not_stop_later_batches_and_is_retried():
+    """Two batches; the first call raises. The other batch is still enriched,
+    and the failed one is asked again at the end instead of keeping the
+    parser's text."""
     import src.core.parsers.remediation_llm as mod
     calls = {"n": 0}
 
     def _fake_query(prompt, model, **kw):
         calls["n"] += 1
         if calls["n"] == 1:
-            raise RuntimeError("first batch fails")
-        return '{"remediations": {"0": "Batch two succeeded with a specific remediation."}}'
+            raise RuntimeError("first call fails")
+        n = len(__import__("re").findall(r"^\[\d+\]", prompt, __import__("re").MULTILINE))
+        return __import__("json").dumps({"remediations": {
+            str(i): "Enriched with a specific remediation for this finding." for i in range(n)}})
 
     findings = [_finding(title=f"F{i}") for i in range(mod._BATCH_SIZE + 1)]
     with mock.patch("src.core.llm_client.query_llm", side_effect=_fake_query):
         enrich_remediations(findings, model="x", timeout=5)
-    assert findings[0]["remediation"] == GENERIC                    # batch 1 failed
-    assert findings[mod._BATCH_SIZE]["remediation"] != GENERIC       # batch 2 succeeded
+    assert all(f["remediation"] != GENERIC for f in findings)
+    assert enrich_remediations.last_failed_batches == 0
 
 
 # ── the stop-token fix, pinned so it cannot regress silently ────────────────
@@ -478,8 +481,11 @@ def test_only_the_findings_the_reply_left_out_are_asked_again():
     assert all(f["remediation"] != GENERIC for f in findings)
 
 
-def test_a_call_that_failed_is_not_asked_again():
-    """A timeout or an unreachable server: asking again only multiplies the wait."""
+def test_a_call_that_failed_is_retried_alone_at_the_end():
+    """A model that stopped responding: not asked one finding at a time (that
+    only multiplies the wait), but the whole batch is asked again once the
+    others are done, up to _RETRY_ATTEMPTS times."""
+    import src.core.parsers.remediation_llm as mod
     calls = []
 
     def _fake(prompt, model, **kw):
@@ -489,9 +495,26 @@ def test_a_call_that_failed_is_not_asked_again():
     findings = [_finding(title=f"Telnet {i}", target=f"10.0.0.{i}") for i in range(4)]
     with mock.patch("src.core.llm_client.query_llm", side_effect=_fake):
         enrich_remediations(findings, model="x", timeout=5)
-    assert calls == [4]
+    assert calls == [4] * (1 + mod._RETRY_ATTEMPTS)
     assert all(f["remediation"] == GENERIC for f in findings)
     assert enrich_remediations.last_failed_batches == 1
+
+
+def test_a_call_that_recovers_on_retry_is_enriched():
+    calls = []
+
+    def _fake(prompt, model, **kw):
+        calls.append(_count(prompt))
+        if len(calls) == 1:
+            raise TimeoutError("llama-server did not answer")
+        return _answer(_count(prompt))
+
+    findings = [_finding(title=f"Telnet {i}", target=f"10.0.0.{i}") for i in range(4)]
+    with mock.patch("src.core.llm_client.query_llm", side_effect=_fake):
+        enrich_remediations(findings, model="x", timeout=5)
+    assert calls == [4, 4]
+    assert all(f["remediation"] != GENERIC for f in findings)
+    assert enrich_remediations.last_failed_batches == 0
 
 
 def test_a_finding_that_still_gets_nothing_is_counted_as_failed():

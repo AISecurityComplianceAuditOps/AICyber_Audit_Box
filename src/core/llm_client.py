@@ -304,12 +304,69 @@ def count_tokens(text, host=None, timeout=1.5):
     return len(text) // 4
 
 
-def query_llm(prompt, model, format=None, num_ctx=16384, temperature=0.0, num_thread=None, timeout=None, stop=None, session_id=None, token_stats=None):
-    """Sends a non-streaming prompt completion request exclusively to llama-server.exe."""
+# How long the model may stay completely silent before a request counts as
+# stuck. Silence, not duration: answers are streamed, and while tokens (or the
+# server's prompt-progress events) keep arriving a request keeps going however
+# long it takes. A fixed 30-minute ceiling on the whole answer used to cut off
+# work that was progressing normally on a small CPU -- measured: a VAPT batch
+# of two findings, four batches sharing four cores, killed at 1800 s while the
+# model was still writing.
+LLM_STALL_TIMEOUT_SEC = int(os.environ.get("LLM_STALL_TIMEOUT_SEC", "600"))
+
+
+class LLMUnavailableError(TimeoutError):
+    """The model stopped producing output, or could not be reached. Says nothing
+    about the document being assessed. The message always contains "timed out",
+    which the callers that predate this class test for."""
+
+
+def _read_completion_stream(r, deadline=None):
+    """Read a streamed /completion reply into the dict the non-streamed one gave:
+    content, stop_type, tokens_evaluated, tokens_predicted."""
+    import time as _time
+    out = {"content": "", "stop_type": None, "tokens_evaluated": 0, "tokens_predicted": 0}
+    try:
+        for line in r.iter_lines():
+            if deadline is not None and _time.time() > deadline:
+                r.close()
+                raise LLMUnavailableError("LLM request timed out: the caller's time budget ran out")
+            if not line:
+                continue
+            decoded = line.decode("utf-8", errors="replace").strip()
+            if not decoded.startswith("data:"):
+                continue
+            body = decoded[5:].strip()
+            if body == "[DONE]":
+                break
+            try:
+                chunk = json.loads(body)
+            except ValueError:
+                continue
+            out["content"] += chunk.get("content") or ""
+            if chunk.get("stop"):
+                out["stop_type"] = chunk.get("stop_type")
+                out["tokens_evaluated"] = chunk.get("tokens_evaluated") or 0
+                out["tokens_predicted"] = chunk.get("tokens_predicted") or 0
+                break
+    except requests.exceptions.ConnectionError as e:
+        # While streaming, requests reports the read timeout as a ConnectionError.
+        if "timed out" in str(e).lower():
+            raise LLMUnavailableError(f"LLM request timed out: no output from the model ({e})") from e
+        raise
+    return out
+
+
+def query_llm(prompt, model, format=None, num_ctx=16384, temperature=0.0, num_thread=None, timeout=None, stop=None, session_id=None, token_stats=None, no_time_limit=False):
+    """Prompt completion from llama-server, streamed.
+
+    no_time_limit=True: no ceiling on the answer and no limit on waiting for a
+    free model slot -- the request fails only if the model is silent for
+    LLM_STALL_TIMEOUT_SEC. Otherwise `timeout` caps the whole request as before.
+    """
     # Only auto-compute when the caller genuinely didn't specify a timeout -- see
     # the matching comment in port_pool.py's acquire_control_slot() for why literal
     # 1800/600 are no longer treated as an "auto-compute this" sentinel.
-    if timeout is None:
+    if timeout is None and not no_time_limit:
         try:
             # get_live_metrics()["active_sessions"] is the ADMIN DASHBOARD list:
             # live sessions plus up to 500 completed ones read back from the
@@ -332,7 +389,15 @@ def query_llm(prompt, model, format=None, num_ctx=16384, temperature=0.0, num_th
     # have completed was killed. Waiting for a slot is a queueing problem with its
     # own, much shorter, deadline; the request itself keeps the full budget.
     _pool_timeout = int(os.environ.get("LLM_POOL_WAIT_TIMEOUT_SEC", "300"))
-    with port_pool_manager.acquire_control_slot(session_id=session_id, timeout=_pool_timeout) as host:
+    import time as _time
+    _t0 = _time.time()
+    # The read timeout is the longest SILENCE allowed between streamed chunks.
+    # With a caller budget it is that budget (as before), with the total also
+    # checked as chunks arrive; without one it is the stall window.
+    _read_timeout = LLM_STALL_TIMEOUT_SEC if no_time_limit else timeout
+    _deadline = None if no_time_limit else _t0 + timeout
+    with port_pool_manager.acquire_control_slot(session_id=session_id, timeout=_pool_timeout,
+                                                wait_forever=no_time_limit) as host:
         if "gemma" in model.lower():
             prompt = f"<start_of_turn>user\n{prompt}<end_of_turn>\n<start_of_turn>model\n"
         url = f"{host}/completion"
@@ -342,21 +407,37 @@ def query_llm(prompt, model, format=None, num_ctx=16384, temperature=0.0, num_th
             payload = {
                 "prompt": prompt_text,
                 "temperature": temperature,
-                "stream": False,
+                # Streamed so that a slow answer is told apart from a dead one.
+                "stream": True,
+                # Prompt-processing progress events: a long prompt on a small
+                # CPU can take minutes before the first token, and these keep
+                # the connection visibly alive meanwhile.
+                "return_progress": True,
                 "n_predict": n_predict,
                 "stop": stop_tokens
             }
             if format == "json":
                 payload["response_format"] = {"type": "json_object"}
             try:
-                r = requests.post(url, json=payload, timeout=timeout)
+                r = requests.post(url, json=payload, stream=True, timeout=(10, _read_timeout))
                 if r.status_code != 200:
                     try:
                         from src.core.bg_worker import log_system_event
                         log_system_event("LLM_HTTP_ERROR", "ERROR", f"LLM server returned HTTP {r.status_code}: {r.text[:200]}", session_id=session_id)
                     except Exception: pass
+                    if r.status_code >= 500:
+                        # 503 "Loading model" and the like: temporary, so retryable.
+                        raise LLMUnavailableError(
+                            f"LLM request timed out: server error HTTP {r.status_code} - {r.text[:200]}")
                     raise Exception(f"llama-server.exe error: HTTP {r.status_code} - {r.text}")
-                return r.json()
+                return _read_completion_stream(r, _deadline)
+            except LLMUnavailableError:
+                try:
+                    from src.core.bg_worker import log_system_event
+                    log_system_event("LLM_REQUEST_TIMEOUT", "ERROR",
+                                     f"LLM produced no output for {_read_timeout}s", session_id=session_id)
+                except Exception: pass
+                raise
             except requests.exceptions.Timeout as _to_err:
                 # Must be caught BEFORE the broader ConnectionError/RequestException
                 # clause below -- requests.exceptions.Timeout (which ReadTimeout
@@ -368,16 +449,20 @@ def query_llm(prompt, model, format=None, num_ctx=16384, temperature=0.0, num_th
                 # (accurate, and often totally expected under load) timeout.
                 try:
                     from src.core.bg_worker import log_system_event
-                    log_system_event("LLM_REQUEST_TIMEOUT", "ERROR", f"LLM HTTP request timed out after {timeout}s", session_id=session_id)
+                    log_system_event("LLM_REQUEST_TIMEOUT", "ERROR", f"LLM HTTP request timed out after {_read_timeout}s", session_id=session_id)
                 except Exception: pass
-                raise
+                raise LLMUnavailableError(f"LLM request timed out: no reply in {_read_timeout}s ({_to_err})") from _to_err
             except (requests.exceptions.ConnectionError, requests.exceptions.RequestException) as _conn_err:
                 print(f"[LLM CLIENT] Connection error to {url}: {_conn_err}. Attempting auto-start...", flush=True)
                 if _ensure_llama_server_running(11434):
-                    r = requests.post(url, json=payload, timeout=timeout)
-                    if r.status_code == 200:
-                        return r.json()
-                raise Exception(f"llama-server.exe connection error on {url}: {_conn_err}")
+                    try:
+                        r = requests.post(url, json=payload, stream=True, timeout=(10, _read_timeout))
+                        if r.status_code == 200:
+                            return _read_completion_stream(r, _deadline)
+                    except requests.exceptions.RequestException:
+                        pass
+                raise LLMUnavailableError(
+                    f"LLM request timed out: llama-server unreachable on {url} ({_conn_err})") from _conn_err
 
         result = _complete(1536, prompt)
         accumulated = result.get("content", "")

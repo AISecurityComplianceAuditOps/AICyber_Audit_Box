@@ -222,6 +222,41 @@ LLM_TIMEOUT_PER_SESSION_SEC = int(os.environ.get("LLM_TIMEOUT_PER_SESSION_SEC", 
 # than holding the thread.
 LLM_POOL_WAIT_TIMEOUT_SEC = int(os.environ.get("LLM_POOL_WAIT_TIMEOUT_SEC", "300"))
 
+# The generation and reflection calls no longer have a wall-clock budget: the
+# request is streamed and fails only when the model falls silent
+# (llm_client.LLM_STALL_TIMEOUT_SEC). A control used to be cut off at 30
+# minutes while the model was still writing -- measured on a 4-core VM, two
+# audits at once -- and then reported NON_COMPLIANT. A call that does fail that
+# way is asked again, after a pause, up to LLM_RETRY_ATTEMPTS times.
+LLM_RETRY_ATTEMPTS = int(os.environ.get("LLM_RETRY_ATTEMPTS", "3"))
+LLM_RETRY_DELAY_SEC = float(os.environ.get("LLM_RETRY_DELAY_SEC", "30"))
+
+
+def _invoke_with_retries(state, chain, args, what):
+    """chain.invoke(args), asked again while the model is unavailable."""
+    from src.core.llm_client import LLMUnavailableError
+    for attempt in range(LLM_RETRY_ATTEMPTS + 1):
+        try:
+            return chain.invoke(args)
+        except LLMUnavailableError as e:
+            if attempt >= LLM_RETRY_ATTEMPTS:
+                raise
+            print(f"[LANGGRAPH RETRY] {what} for control {state.get('control_id', '')}: the model did "
+                  f"not respond ({e}); retry {attempt + 1} of {LLM_RETRY_ATTEMPTS}.", flush=True)
+            _time.sleep(LLM_RETRY_DELAY_SEC)
+
+
+def _wait_while_working(t, state, label, lo, hi):
+    """Wait for the call thread, with no ceiling -- the call itself ends when the
+    model finishes or falls silent -- moving the progress bar meanwhile."""
+    elapsed = 0
+    while t.is_alive():
+        t.join(timeout=15)
+        elapsed += 15
+        if t.is_alive():
+            # Approaches `hi` without reaching it, however long the call runs.
+            _update_progress(state, f"{label}... ({elapsed}s)", lo + (hi - lo) * elapsed / (elapsed + 600))
+
 
 def _record_control_timeout(state, control_id: str, budget_sec: int, phase: str = "generation"):
     """Records a control timeout everywhere it needs to be visible.
@@ -265,8 +300,8 @@ def _record_control_timeout(state, control_id: str, budget_sec: int, phase: str 
             else:
                 _msg = (
                     f"⚠️ Control {control_id} could not be evaluated — the analysis engine "
-                    f"did not respond in {budget_sec // 60} minutes. It will be reported as "
-                    f"Not Evaluated."
+                    f"stopped responding and did not recover after {LLM_RETRY_ATTEMPTS} retries. "
+                    f"It will be reported as Not Assessed; re-run it."
                 )
             _bg_store["progress"][session_id] = {**_prev, "warning": _msg}
     except Exception:
@@ -372,98 +407,66 @@ def generate_node(state: AuditState) -> Dict[str, Any]:
         # _align_customize_answer in validator.py had to keep cleaning up after.
 
         result_holder = {}
-        # Adaptive: scales with active session count (1800s floor, +360s per active
-        # session) so heavier concurrent load gets more time before giving up,
-        # instead of a flat ceiling that starts producing real timeouts under load.
-        # Computed once, up front, and passed into the chain's own query_llm() call
-        # (via "timeout" in the invoke dict below) so the actual HTTP request's
-        # timeout matches this wait loop's budget exactly -- previously the two
-        # were computed independently and could diverge, leaving the thread still
-        # blocked in query_llm() (and still holding its port_pool slot) after this
-        # loop had already given up and moved on.
-        _timeout = _calculate_adaptive_timeout()
+        if use_rag_qa_mode:
+            # Pure document Q&A: the question and the extracts, nothing else.
+            # No control id, no expected evidence and no auditor feedback
+            # few-shots -- each of those reintroduces control framing through
+            # the back door, which is exactly what this mode is not.
+            _args = {
+                "locked_filenames": ", ".join(locked_filenames) or "the uploaded evidence",
+                "checklist_question": checklist_question,
+                "condensed_context": state["retrieved_context"],
+            }
+        elif use_excel_judge_mode:
+            # Judge-only mode: pass locked_filenames + checklist_question
+            _args = {
+                "locked_filenames": ", ".join(locked_filenames),
+                "checklist_question": checklist_question,
+                "column_source_hint": column_source_hint,
+                "condensed_context": state["retrieved_context"],
+                "control_id": state["control_id"],
+                "control_label": state["control_label"],
+                "expected_evidence": state["expected_evidence"],
+                "feedback_section": feedback_section,
+            }
+        else:
+            # Standard mode: original prompt
+            _args = {
+                "summary_text": state["summary_text"],
+                "condensed_context": state["retrieved_context"],
+                "control_id": state["control_id"],
+                "control_label": state["control_label"],
+                "expected_evidence": state["expected_evidence"],
+                "feedback_section": feedback_section,
+                "standard": state.get("standard", ""),
+            }
+        # timeout None: no ceiling on the answer (see LLM_RETRY_ATTEMPTS above).
+        _args.update({"session_id": state.get("bg_key"), "timeout": None})
+
         def _run():
+            from src.core.llm_client import LLMUnavailableError
             try:
                 print("\n===== EVIDENCE CONTEXT SENT TO LLM =====", flush=True)
                 print(state.get("retrieved_context", ""), flush=True)
                 print("===== END EVIDENCE CONTEXT =====\n", flush=True)
-
-                if use_rag_qa_mode:
-                    # Pure document Q&A: the question and the extracts, nothing else.
-                    # No control id, no expected evidence and no auditor feedback
-                    # few-shots -- each of those reintroduces control framing through
-                    # the back door, which is exactly what this mode is not.
-                    result_holder["draft"] = generator_chain.invoke({
-                        "locked_filenames": ", ".join(locked_filenames) or "the uploaded evidence",
-                        "checklist_question": checklist_question,
-                        "condensed_context": state["retrieved_context"],
-                        "session_id": state.get("bg_key"),
-                        "timeout": _timeout,
-                    })
-                elif use_excel_judge_mode:
-                    # Judge-only mode: pass locked_filenames + checklist_question
-                    result_holder["draft"] = generator_chain.invoke({
-                        "locked_filenames": ", ".join(locked_filenames),
-                        "checklist_question": checklist_question,
-                        "column_source_hint": column_source_hint,
-                        "condensed_context": state["retrieved_context"],
-                        "control_id": state["control_id"],
-                        "control_label": state["control_label"],
-                        "expected_evidence": state["expected_evidence"],
-                        "feedback_section": feedback_section,
-                        "session_id": state.get("bg_key"),
-                        "timeout": _timeout,
-                    })
-                else:
-                    # Standard mode: original prompt
-                    result_holder["draft"] = generator_chain.invoke({
-                        "summary_text": state["summary_text"],
-                        "condensed_context": state["retrieved_context"],
-                        "control_id": state["control_id"],
-                        "control_label": state["control_label"],
-                        "expected_evidence": state["expected_evidence"],
-                        "feedback_section": feedback_section,
-                        "standard": state.get("standard", ""),
-                        "session_id": state.get("bg_key"),
-                        "timeout": _timeout,
-                    })
+                result_holder["draft"] = _invoke_with_retries(state, generator_chain, _args, "Generation")
+            except LLMUnavailableError as ex:
+                result_holder["unavailable"] = str(ex)
             except Exception as ex:
                 result_holder["error"] = str(ex)
         t = threading.Thread(target=_run, daemon=True)
         t.start()
-        # ── Heartbeat: update progress every 15s so UI never shows stuck 0% ──
-        # The wrapper allows the slot wait ON TOP of the request budget, so a
-        # control that queued for a while still gets its full compute time --
-        # the wrapper must never be the thing that cuts a running request short.
-        _wall_budget = _timeout + LLM_POOL_WAIT_TIMEOUT_SEC
-        _elapsed = 0
-        _heartbeat_interval = 15
-        while t.is_alive() and _elapsed < _wall_budget:
-            t.join(timeout=_heartbeat_interval)
-            _elapsed += _heartbeat_interval
-            if t.is_alive():
-                # Slowly increment between 30%→70% to show LLM is still working
-                _hb_phase = min(0.3 + (_elapsed / _wall_budget) * 0.4, 0.69)
-                _update_progress(state, f"LLM analysing control... ({_elapsed}s)", _hb_phase)
-        if t.is_alive():
+        _wait_while_working(t, state, "LLM analysing control", 0.3, 0.69)
+        if "unavailable" in result_holder:
             _ctrl = state.get('control_id', '')
-            print(f"[LANGGRAPH TIMEOUT] Generator timed out after {_wall_budget}s for control {_ctrl}. Not evaluated.", flush=True)
-            _record_control_timeout(state, _ctrl, _wall_budget, phase="generation")
-            # NOT_EVALUATED, never a fabricated verdict. This previously fell
-            # through to the same failure path as a validation error, which ends
-            # in a NON_COMPLIANT/PARTIAL finding -- publishing a compliance
-            # judgement for a control the model never actually assessed. An
-            # audit may report that it could not evaluate something; it must not
-            # invent the answer.
+            print(f"[LANGGRAPH] Model unavailable for control {_ctrl} after "
+                  f"{LLM_RETRY_ATTEMPTS} retries. Not evaluated.", flush=True)
+            _record_control_timeout(state, _ctrl, 0, phase="generation")
+            # NOT_EVALUATED, never a fabricated verdict: the audit may report that
+            # it could not assess a control; it must not invent the answer.
             return {
                 "draft_finding": None,
-                "validation_error": f"LLM call timed out after {_wall_budget}s",
-                "not_evaluated": True,
-                "not_evaluated_reason": (
-                    f"Control was not evaluated: the analysis engine did not respond within "
-                    f"{_wall_budget // 60} minutes. Re-run this control; if it recurs, the "
-                    f"server is under-provisioned for the number of concurrent auditors."
-                ),
+                "validation_error": f"LLM request timed out: {result_holder['unavailable']}",
             }
         # ─────────────────────────────────────────────────────────────────────
         if "error" in result_holder:
@@ -494,7 +497,11 @@ def validate_node(state: AuditState) -> Dict[str, Any]:
         # pass (see should_continue), so without this a question whose generation
         # failed would end with final_finding=None and vanish from the report
         # instead of being reported as unanswered.
-        if state.get("audit_mode") == "Quick" or state["retry_count"] >= 1 or state.get("rag_mode"):
+        # A model that stayed unavailable through its retries is reported Not
+        # Assessed in every mode: a Deep-mode reflection pass would only start
+        # from an empty draft, on the same unavailable model.
+        _unavailable = "timed out" in str(state.get("validation_error") or "").lower()
+        if state.get("audit_mode") == "Quick" or state["retry_count"] >= 1 or state.get("rag_mode") or _unavailable:
             mode_prefix = ("Customize Q&A" if state.get("rag_mode")
                            else ("Quick audit" if state.get("audit_mode") == "Quick" else "Self-correction"))
             print(f"[LANGGRAPH] {mode_prefix} failed generation for control {state['control_id']}. Routing to fallback.", flush=True)
@@ -519,14 +526,13 @@ def validate_node(state: AuditState) -> Dict[str, Any]:
 
             if _is_timeout:
                 finding_text = (
-                    f"SYSTEM TIMEOUT: Control {ctrl_code} ({ctrl_name}) was NOT evaluated. "
-                    f"The LLM did not respond within the time limit, likely due to high concurrent "
-                    f"system load. This is not a compliance assessment -- re-run this control once "
-                    f"system load decreases."
+                    f"NOT ASSESSED: Control {ctrl_code} ({ctrl_name}) was not evaluated. The analysis "
+                    f"engine stopped responding and did not recover after {LLM_RETRY_ATTEMPTS} retries. "
+                    f"This is not a compliance verdict -- re-run this control."
                 )
-                gap_text = f"Control {ctrl_code} was not evaluated due to a system timeout ({_prior_error}). Re-run required."
-                rec_text = "Re-run this control -- it was not evaluated due to a system timeout, not a documented compliance gap."
-                review_note = "SYSTEM TIMEOUT -- not a real evaluation. Re-run required, do not treat as a genuine finding."
+                gap_text = f"Control {ctrl_code} was not assessed: the analysis engine stopped responding. Re-run required."
+                rec_text = "Re-run this control -- it was not assessed, which says nothing about the evidence."
+                review_note = "NOT ASSESSED -- the model stopped responding. Re-run required; not a genuine finding."
             elif has_retrieved:
                 finding_text = f"Evidence context was identified for Control {ctrl_code} ({ctrl_name}), demonstrating partial alignment with governance requirements. However, complete operational logs or formal approval sign-offs remain unverified."
                 gap_text = f"Context identified for {ctrl_code}, but complete evidence verification requires auditor sign-off. Context excerpt: {ev_snippet[:200]}..."
@@ -783,15 +789,11 @@ def reflection_node(state: AuditState) -> Dict[str, Any]:
     
     try:
         result_holder = {}
-        # Adaptive, same formula as generate_node's timeout above. Computed before
-        # the thread starts and passed into the invoke dict's "timeout" key (same
-        # fix as generate_node) so the actual HTTP request's timeout can't outlive
-        # this wait loop's budget and keep holding a port_pool slot after this
-        # node has already given up on it.
-        _ref_timeout = _calculate_adaptive_timeout()
+        # No ceiling, as in generate_node: streamed, and asked again if the model
+        # falls silent.
         def _run_reflect():
             try:
-                result_holder["refined"] = reflection_chain.invoke({
+                result_holder["refined"] = _invoke_with_retries(state, reflection_chain, {
                     "condensed_context": state["retrieved_context"],
                     "control_id": state["control_id"],
                     "control_label": state["control_label"],
@@ -808,35 +810,13 @@ def reflection_node(state: AuditState) -> Dict[str, Any]:
                     "validation_error": state["validation_error"],
                     "standard": state.get("standard", ""),
                     "session_id": state.get("bg_key"),
-                    "timeout": _ref_timeout,
-                })
+                    "timeout": None,
+                }, "Reflection")
             except Exception as ex:
                 result_holder["error"] = str(ex)
         t = threading.Thread(target=_run_reflect, daemon=True)
         t.start()
-        # ── Heartbeat: keep progress moving between 85%→95% during reflection ──
-        _ref_elapsed = 0
-        _ref_hb = 15
-        # Same wrapper rule as generation: the slot wait is allowed on top of the
-        # request budget so queueing cannot cut a running reflection short.
-        _ref_wall = _ref_timeout + LLM_POOL_WAIT_TIMEOUT_SEC
-        while t.is_alive() and _ref_elapsed < _ref_wall:
-            t.join(timeout=_ref_hb)
-            _ref_elapsed += _ref_hb
-            if t.is_alive():
-                _hb_ref_phase = min(0.85 + (_ref_elapsed / _ref_wall) * 0.1, 0.94)
-                _update_progress(state, f"Self-correcting finding... ({_ref_elapsed}s)", _hb_ref_phase)
-        if t.is_alive():
-            # Unlike a generation timeout, this is NOT reported as NOT_EVALUATED:
-            # generation already produced a real assessment and only the optional
-            # refinement pass was lost, so the draft is a genuine finding.
-            print(f"[LANGGRAPH TIMEOUT] Reflection timed out after {_ref_wall}s for control {state.get('control_id','')}. Accepting draft as-is.", flush=True)
-            _record_control_timeout(state, state.get('control_id', ''), _ref_wall, phase="reflection")
-            return {
-                "draft_finding": draft,
-                "validation_error": None,
-                "retry_count": state["retry_count"] + 1
-            }
+        _wait_while_working(t, state, "Self-correcting finding", 0.85, 0.94)
         if "error" in result_holder:
             raise Exception(result_holder["error"])
         refined = result_holder["refined"]
