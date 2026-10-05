@@ -129,6 +129,59 @@ def test_the_portswigger_pdf_and_html_write_one_finding_two_ways():
     assert plan["updates"][1]["retest_status"] == rt.STILL_OPEN and plan["new"] == []
 
 
+# Burp's XML export writes the target as the host and path, then the issue's
+# location in brackets. Measured: the PortSwigger PDF as v1 and the Burp XML
+# of the same site as v2 gave every issue found again as Fixed and New both.
+PDF_SQLI = ("SQL injection (https://ginandjuice.shop/catalog/filter [category parameter])",
+            "https://ginandjuice.shop/catalog/filter [category parameter]")
+XML_SQLI = ("SQL injection", "https://ginandjuice.shop/catalog/filter (/catalog/filter [category parameter])")
+
+
+@pytest.mark.parametrize("title, target", [
+    PDF_SQLI, XML_SQLI,
+    ("SQL injection (/catalog/filter [category parameter])", "https://ginandjuice.shop/catalog/filter"),
+])
+def test_the_pdf_html_and_xml_forms_name_one_place(title, target):
+    assert rt.issue_and_location(title, target) == (
+        "sql injection", "ginandjuice.shop", "ginandjuice.shop/catalog/filter [category parameter]")
+
+
+@pytest.mark.parametrize("pdf_target, xml_target", [
+    ("https://ginandjuice.shop/", "https://ginandjuice.shop/ (/)"),
+    ("https://ginandjuice.shop/catalog/product/stock", "https://ginandjuice.shop/catalog/product/stock (/catalog/product/stock)"),
+])
+def test_the_xml_form_without_a_parameter(pdf_target, xml_target):
+    assert rt.issue_and_location("x", pdf_target) == rt.issue_and_location("x", xml_target)
+
+
+def test_the_portswigger_pdf_then_its_burp_xml_retest():
+    prev = [_prev(1, *PDF_SQLI, key="k-pdf"),
+            _prev(2, "SQL injection (https://ginandjuice.shop/catalog/product/stock [request body])",
+                  "https://ginandjuice.shop/catalog/product/stock [request body]", key="k-pdf-2")]
+    cur = [_cur(*XML_SQLI, key="k-xml"),
+           _cur("Cross-site request forgery", "https://ginandjuice.shop/my-account/change-email "
+                "(/my-account/change-email)", key="k-xml-2", severity="MEDIUM")]
+    plan = rt.compare(prev, cur, 2)
+    assert plan["updates"][1]["retest_status"] == rt.STILL_OPEN
+    assert plan["updates"][2]["retest_status"] == rt.FIXED          # the host was rescanned
+    assert [n["title"] for n in plan["new"]] == ["Cross-site request forgery"]
+    assert plan["counts"] == {"still_open": 1, "fixed": 1, "new": 1, "not_retested": 0, "reopened": 0}
+
+
+def test_an_xml_location_at_another_url_is_still_another_finding():
+    prev = [_prev(1, "Cross-site scripting (reflected) (https://ginandjuice.shop/catalog/search/3 [term parameter])",
+                  "https://ginandjuice.shop/catalog/search/3 [term parameter]", key="k-pdf")]
+    cur = [_cur("Cross-site scripting (reflected)",
+                "https://ginandjuice.shop/catalog/search/5 (/catalog/search/5 [term parameter])", key="k-xml")]
+    plan = rt.compare(prev, cur, 2)
+    assert plan["updates"][1]["retest_status"] == rt.FIXED
+    assert [n["target"] for n in plan["new"]] == [cur[0]["target"]]
+
+
+def test_a_service_name_in_brackets_is_not_read_as_a_location():
+    assert rt.issue_and_location("TLS 1.0", "10.20.30.40:443/tcp (www)")[2] == "10.20.30.40:443"
+
+
 def test_a_finding_listed_with_every_host_matches_its_per_host_rows():
     """Nessus by plugin lists one finding with all its hosts; by host lists it
     once per host. Measured on a real pair of exports of one scan: 97 false

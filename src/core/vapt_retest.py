@@ -157,11 +157,21 @@ def split_title(title):
     return (t[:m.start()].strip(), m.group(1).strip()) if m else (t, "")
 
 
+# Burp's XML export: the host and path, then the issue's location in brackets
+# -- "https://shop/catalog/filter (/catalog/filter [category parameter])". The
+# PDF report writes the same place as "https://shop/catalog/filter [category
+# parameter]". A bracket that is not a path -- "(www)" -- is not this.
+_BURP_XML_LOCATION_RE = re.compile(r"^((?:[a-z][a-z0-9+.-]*://)?[^/\s()]+)[^\s()]*\s*\((/[^()]*)\)\s*$")
+
+
 def _location_parts(text):
     """(host, path, parameter note) of a target or a title's location."""
     t = re.sub(r"\s+", " ", str(text or "").strip().lower())
     if t in _PLACEHOLDERS:
         return "", "", ""
+    m = _BURP_XML_LOCATION_RE.match(t)
+    if m:
+        t = m.group(1) + m.group(2)
     note = ""
     m = re.search(r"\[([^\]]*)\]\s*$", t)
     if m:

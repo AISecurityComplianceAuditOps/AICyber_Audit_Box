@@ -3133,6 +3133,12 @@ function syncControlsScopeFromFindings(findings) {
     // the control labels would tick controls the run never looked at.
     if (window._sessionIsCustomizeRun) return;
 
+    // A VAPT session's findings name the categories that had a vulnerability,
+    // not the categories that were scanned. Ticking only those narrowed the next
+    // run, so a retest left out every new finding in a category the first scan
+    // found clean. A VAPT session's scope stays as the auditor set it.
+    if (isVaptOnlySession()) return;
+
     // An empty findings list means "the scan has not produced anything yet", which
     // is the normal state for the first minutes of every run -- it does NOT mean
     // "the auditor wants all 93 controls". Selecting everything here overwrote a
