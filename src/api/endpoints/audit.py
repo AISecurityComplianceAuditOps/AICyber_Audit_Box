@@ -234,6 +234,8 @@ class UpdateFindingRequest(BaseModel):
     evidence_snippet: Optional[str] = None
     recommendation: Optional[str] = None
     reasoning: Optional[str] = None
+    # ISO Impact, as the card and the report show it. None = leave unchanged.
+    business_impact: Optional[str] = None
     policy_present: Optional[str] = None
     evidence_present: Optional[str] = None
     source_files: Optional[str] = None
@@ -284,7 +286,7 @@ class UpdateFindingRequest(BaseModel):
     # the proof of a stored XSS is "<script>...</script>". Control characters are
     # still refused. Every one of these is escaped where the UI renders it.
     _CONTENT_FIELDS = (
-        "description", "evidence_snippet", "recommendation", "reasoning", "comment",
+        "description", "evidence_snippet", "recommendation", "reasoning", "business_impact", "comment",
         "policy_finding", "policy_gap", "evidence_finding", "evidence_gap",
         "final_reason", "custom_heading", "remediation_actionable", "target",
     )
@@ -2534,6 +2536,7 @@ def api_update_finding(finding_id: int, req: UpdateFindingRequest, request: Requ
             if req.evidence_snippet is not None: finding.evidence_snippet = req.evidence_snippet
             if req.recommendation is not None: finding.recommendation = req.recommendation
             if req.reasoning is not None: finding.reasoning = req.reasoning
+            if req.business_impact is not None: finding.business_impact = req.business_impact
             if req.policy_present is not None: finding.policy_present = req.policy_present
             if req.evidence_present is not None: finding.evidence_present = req.evidence_present
             if req.source_files is not None: finding.source_files = req.source_files

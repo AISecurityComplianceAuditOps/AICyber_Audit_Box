@@ -5076,6 +5076,12 @@ function isVaptOnlySession() {
     return fw.includes("VAPT") && !fw.includes("PQC");
 }
 
+// ISO 27001 only. NIST CSF, SOC 2, DPDP and BCMS share the ISO finding card
+// and keep it as it was.
+function isIsoRecordsSession() {
+    return /ISO\s*27001/i.test(String(findingsSessionFramework || ""));
+}
+
 // The findings a /audit/findings?include_info=true payload puts on screen:
 // all of them for a VAPT session, all but informational for any other.
 function findingsForSession(data) {
@@ -6209,7 +6215,51 @@ function _leadingAnswerIcon(text) {
 // second sentence of real supporting detail is not visually shouted as loudly
 // as the answer itself.
 function renderFindingDescriptionHtml(f) {
-    const text = getCleanFindingDescription(f);
+    return renderFindingTextHtml(getCleanFindingDescription(f));
+}
+
+// ISO card: Observation and Impact as the report shows them
+// (report_exporter._iso_observation_and_impact). Control and Selective findings
+// store "Business Impact: X | Missing Requirements: Y" as their description, and
+// the card printed that under AUDITOR OBSERVATIONS -- the impact where the
+// observation belongs, the observation (reasoning) nowhere. Impact is the stored
+// business_impact; NIL on a compliant control; never a repeat of the observation.
+const _ISO_BIZ_IMPACT_DESC_RE = /^\s*Business Impact:\s*([\s\S]*?)\s*(?:\|\s*Missing Requirements:\s*([\s\S]*?))?\s*$/i;
+const ISO_NO_IMPACT_RECORDED = "Impact not recorded for this finding -- see Observations.";
+// An observation saved from Modify keeps its missing requirements as its last
+// line, the way the report prints them (sentences may come back space-joined).
+const _ISO_MISSING_TAIL_RE = /(^|[.!?]|\n)\s*Missing requirements:\s*([^\n]*?)[\s.;,]*$/i;
+
+function _isoSameText(a, b) {
+    const n = s => String(s || "").replace(/\W+/g, " ").trim().toLowerCase();
+    const na = n(a), nb = n(b);
+    return !!(na && nb) && (na === nb || (na.length > 40 && nb.includes(na)));
+}
+
+function isoObservationAndImpact(f) {
+    let obs = String(getCleanFindingDescription(f) || "").trim();
+    let missing = "";
+    let impact = String((f && (f.business_impact || f.impact)) || "").trim();
+    const m = _ISO_BIZ_IMPACT_DESC_RE.exec(obs);
+    if (m) {
+        missing = String(m[2] || "").replace(/\.\s*,\s*/g, "; ").replace(/[\s.;,]+$/, "");
+        obs = stripReasoningNarrative(String((f && f.reasoning) || "").trim(), f.final_result || f.status);
+        if (_ISO_BIZ_IMPACT_DESC_RE.test(obs)) obs = "";
+        if (!impact) impact = String(m[1] || "").trim();
+    } else {
+        const t = _ISO_MISSING_TAIL_RE.exec(obs);
+        if (t) {
+            missing = t[2].trim();
+            obs = obs.slice(0, t.index + t[1].length).trim();
+        }
+    }
+    // `stored` is the impact itself, for the Modify dialog; `impact` is what shows.
+    const stored = (!impact || /^(nil|n\/a|none)$/i.test(impact) || _isoSameText(impact, obs)) ? "" : impact;
+    impact = isFindingCompliant(f) ? "NIL" : (stored || ISO_NO_IMPACT_RECORDED);
+    return { obs, missing, impact, stored };
+}
+
+function renderFindingTextHtml(text) {
     const icon = _leadingAnswerIcon(text);
     if (!icon) {
         // A "what/how/which" answer, or a NOT_EVALUATED/error message -- no
@@ -7107,6 +7157,7 @@ function renderFindingsList() {
                 }
             }
 
+            const _isoOI = isIsoRecordsSession() ? isoObservationAndImpact(f) : null;
             card.innerHTML = `
                 <div class="finding-header" style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; border-bottom:1px solid rgba(148,163,184,0.15); padding-bottom:10px; margin-bottom:12px;">
                     <div style="flex:1; min-width:0;">
@@ -7130,7 +7181,8 @@ function renderFindingsList() {
 
                     <div class="finding-detail-row" style="margin-bottom: 12px;">
                         <label style="font-weight:700; font-size:0.78rem; color:#94a3b8; text-transform:uppercase; letter-spacing:0.5px; display:block; margin-bottom:4px;">${isQaFinding ? "ANSWER" : "AUDITOR OBSERVATIONS"}</label>
-                        <p style="margin:0; font-size:0.86rem; color:var(--text-primary); line-height:1.5;">${renderFindingDescriptionHtml(f)}</p>
+                        <p style="margin:0; font-size:0.86rem; color:var(--text-primary); line-height:1.5;">${_isoOI ? renderFindingTextHtml(_isoOI.obs) : renderFindingDescriptionHtml(f)}</p>
+                        ${(_isoOI && _isoOI.missing) ? `<p style="margin:6px 0 0 0; font-size:0.84rem; color:var(--text-primary); line-height:1.5;"><strong>Missing requirements:</strong> ${escapeHtml(_isoOI.missing)}.</p>` : ""}
                     </div>
 
                     ${isQaFinding ? "" : buildRequirementsCoveragePanelHtml(f)}
@@ -7139,7 +7191,14 @@ function renderFindingsList() {
                         ${buildEvidenceSnippetHtml(singleSnip, f)}
                     </div>
 
-                    ${(isQaFinding && String(f.business_impact || "").trim()) ? `
+                    <!-- ISO: between the evidence and the recommendation, as in the
+                         report's Observations | Risk | Impact | Recommendation columns.
+                         Other frameworks: the Checklist answer's impact, as before. -->
+                    ${_isoOI ? `
+                    <div class="finding-detail-row iso-impact-row" style="margin-bottom: 12px;">
+                        <label style="font-weight:700; font-size:0.78rem; color:#94a3b8; text-transform:uppercase; letter-spacing:0.5px; display:block; margin-bottom:4px;">IMPACT</label>
+                        <p style="margin:0; font-size:0.86rem; color:var(--text-primary); line-height:1.5;">${escapeHtml(_isoOI.impact)}</p>
+                    </div>` : (isQaFinding && String(f.business_impact || "").trim()) ? `
                     <div class="finding-detail-row" style="margin-bottom: 12px;">
                         <label style="font-weight:700; font-size:0.78rem; color:#94a3b8; text-transform:uppercase; letter-spacing:0.5px; display:block; margin-bottom:4px;">IMPACT</label>
                         <p style="margin:0; font-size:0.86rem; color:var(--text-primary); line-height:1.5;">${escapeHtml(String(f.business_impact).trim())}</p>
@@ -7557,6 +7616,21 @@ function openEditFindingModal(finding) {
     document.getElementById("edit-finding-reasoning").value = getCleanFindingDescription(finding);
     if (_vaptMode) _fillVaptFields(finding);
 
+    // ISO 27001: the observation and the impact as the card shows them, each in
+    // its own box. A Control or Selective finding stores "Business Impact: X |
+    // Missing Requirements: Y" as its description; this box showed that, and a
+    // save wrote it over the observation. Other frameworks are unchanged.
+    const _isoEdit = !_vaptMode && !_isTechnicalFinding && isIsoRecordsSession();
+    const _impactGroup = document.getElementById("edit-impact-group");
+    if (_impactGroup) _impactGroup.style.display = _isoEdit ? "" : "none";
+    _modal.dataset.isoImpact = _isoEdit ? "1" : "";
+    if (_isoEdit) {
+        const _oi = isoObservationAndImpact(finding);
+        document.getElementById("edit-finding-reasoning").value = _oi.obs
+            + (_oi.missing ? `${_oi.obs ? "\n" : ""}Missing requirements: ${_oi.missing}.` : "");
+        document.getElementById("edit-finding-impact").value = _oi.stored;
+    }
+
     document.getElementById("edit-finding-modal").classList.add("active");
 }
 
@@ -7827,6 +7901,11 @@ async function handleEditFindingSubmit(e) {
         reasoning: descValue,
         custom_heading: customHeadingVal.trim() || null
     };
+
+    // ISO 27001: the Impact box (openEditFindingModal). "" clears it.
+    if (document.getElementById("edit-finding-modal").dataset.isoImpact === "1") {
+        body.business_impact = String((document.getElementById("edit-finding-impact") || {}).value || "").trim();
+    }
 
     // A VAPT finding: its own status / severity, and what the scanner reported.
     if (_editDialogIsVapt()) {
