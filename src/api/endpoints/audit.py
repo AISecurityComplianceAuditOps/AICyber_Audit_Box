@@ -2441,6 +2441,10 @@ def api_get_findings(request: Request, session_id: str, saved_only: bool = False
                 "id": f.id,
                 "control_id": f.control_id,
                 "control_name": ctrl_name,
+                # The control's catalogue name ("VAPT-5 Internal Network
+                # Penetration Test"); a VAPT finding's control_name is the
+                # vulnerability, so the card had only "VAPT-5" for the control.
+                "control_full_name": uc_info.get("use_case") or "",
                 "severity": sev,
                 "severity_score": _sev_score,
                 "description": desc,

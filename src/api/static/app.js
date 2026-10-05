@@ -5041,6 +5041,29 @@ function isVaptFinding(f) {
         || cid.startsWith("PQC") || cat.includes("PQC") || fw.includes("PQC");
 }
 
+// A VAPT card's header: the control's full name, then the vulnerability. The
+// shared header split "VAPT-5 — <vulnerability>" at " — " for ISO's question,
+// which left only "VAPT-5" and dropped the vulnerability from the card.
+const _VAPT_NAME_LOCATION_RE = /\s*\(((?:[a-z][a-z0-9+.-]*:\/\/|\/)[^()]*)\)\s*$/i;
+
+function vaptControlHeading(f, fallback) {
+    const id = String((f && f.control_id) || "").trim();
+    const full = String((f && f.control_full_name) || "").trim();
+    if (!full) return fallback || id;
+    if (id && full.toUpperCase().startsWith(id.toUpperCase())) {
+        const rest = full.slice(id.length).trim();
+        return rest ? `${id} — ${rest}` : id;
+    }
+    return full;
+}
+
+// The vulnerability as the report titles it (custom heading, else the scanner's
+// name), without the URL the target line already shows.
+function vaptFindingName(f) {
+    const name = String((f && (f.custom_heading || f.control_name || f.title)) || "").trim();
+    return name.replace(_VAPT_NAME_LOCATION_RE, "").trim();
+}
+
 // PQC findings render inside the same VAPT-style card as isVaptFinding() above
 // (isVaptFinding already matches PQC control IDs/category/framework), but carry
 // their own extra columns (quantum_status/asset_name/ca_algorithm/key_algorithm/
@@ -7279,10 +7302,16 @@ function renderFindingsList() {
                 }
             }
 
+            // VAPT: the control's full name, the vulnerability under it. PQC as before.
+            const _vHeading = isPqc ? displayHeaderTitle : vaptControlHeading(f, displayHeaderTitle);
+            const _vName = isPqc ? "" : vaptFindingName(f);
+            const _vNameHtml = (_vName && _vName.toLowerCase() !== String(f.control_id || "").trim().toLowerCase())
+                ? `<p class="vapt-finding-name" style="margin:4px 0 0 0; font-size:0.92rem; font-weight:600; color:var(--text-primary); line-height:1.4;">${escapeHtml(_vName)}</p>` : "";
             card.innerHTML = `
                 <div class="finding-header" style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; border-bottom:1px solid rgba(148,163,184,0.15); padding-bottom:10px; margin-bottom:12px;">
                     <div style="flex:1; min-width:0;">
-                        <h3 style="margin:0; font-size:1.05rem; font-weight:700; color:var(--text-primary);">${escapeHtml(displayHeaderTitle)}</h3>
+                        <h3 style="margin:0; font-size:1.05rem; font-weight:700; color:var(--text-primary);">${escapeHtml(_vHeading)}</h3>
+                        ${_vNameHtml}
                         ${buildQuestionSubtitleHtml(f)}
                     </div>
                     <div class="badge-group" style="display:flex; gap:6px; align-items:center;">
