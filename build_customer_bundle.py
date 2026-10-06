@@ -226,6 +226,10 @@ def main():
                          "staged, then wrapped -- so point this at a drive that has the room.")
     ap.add_argument("--patch", metavar="FROM_VERSION",
                     help="tiny code-only patch (~8MB) for a site already running FROM_VERSION")
+    ap.add_argument("--app-only", action="store_true",
+                    help="an application update: the app image only, no companion zip. The "
+                         "customer's compose file and settings stay as they are; apply_update "
+                         "points them at the new version itself (make_update.bat, choice 1)")
     args = ap.parse_args()
 
     current = detect_version()
@@ -464,6 +468,20 @@ def main():
         print("     Export failed -- is the image built?")
         return 1
     print(f"     {tar}  ({gb(tar):.2f} GB)")
+
+    # An application update ships the image alone. The companion zip (compose
+    # files, the model server's entrypoint) is configuration the customer
+    # already has; sent with every app update it read as a second thing to
+    # install, which it is not.
+    if args.app_only:
+        print("")
+        print("=" * 74)
+        print(f"  App update ready: {out}")
+        print(f"    aicyberauditbox-app-{version}.tar        {gb(tar):.2f} GB")
+        print("    No configuration files: apply_update points the customer's")
+        print("    existing installation at this version.")
+        print("=" * 74)
+        return 0
 
     print("")
     print("---> 4/4  Packaging config, entrypoint and docs")
