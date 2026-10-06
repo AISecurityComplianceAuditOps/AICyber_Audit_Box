@@ -2853,35 +2853,18 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
             # Extract structured findings directly from the image's OCR text so
             # screenshots of SQLi, XSS, Nmap, or port scans produce immediate findings!
             if not combined_tool_findings and fname_lower.endswith((".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif")):
-                raw_ocr = (ftext or "").strip()
-                if not raw_ocr and fd.get("bytes"):
-                    try:
-                        import io
-                        buf = io.BytesIO(fd.get("bytes"))
-                        buf.name = fname
-                        raw_ocr = extract_text(buf) or ""
-                    except Exception:
-                        raw_ocr = ""
-                
+                # Read the picture as laid out and row by row, repair what OCR
+                # breaks, and keep the reading the parsers understood better
+                # (src/core/parsers/ocr_text.py). The row reading used to be
+                # tried only when the first found nothing, so a screenshot that
+                # gave 1 of its 4 findings kept the 1.
+                from src.core.parsers.ocr_text import findings_from_image
+                ocr_findings, raw_ocr = findings_from_image(fd.get("bytes"), fname,
+                                                            framework=_dispatch_framework,
+                                                            first_text=ftext)
+                raw_ocr = raw_ocr or ""
+
                 if raw_ocr and len(raw_ocr.strip()) > 10:
-                    # Pass OCR text to Python tool parsers!
-                    actionable_ocr, info_ocr = parse_tool_file("ocr_" + fname + ".txt", raw_ocr, framework=_dispatch_framework)
-                    info_ocr_list = info_ocr if isinstance(info_ocr, list) else []
-                    ocr_findings = actionable_ocr + info_ocr_list
-                    if not ocr_findings and fd.get("bytes"):
-                        # A terminal screenshot's aligned columns were read as
-                        # separate panes; read it once more strictly row by row.
-                        try:
-                            from src.core.parsers.doc_parsers import ocr_image_row_text
-                            _rows_text = ocr_image_row_text(fd["bytes"])
-                            if _rows_text and len(_rows_text.strip()) > 10:
-                                _a2, _i2 = parse_tool_file("ocr_" + fname + ".txt", _rows_text,
-                                                           framework=_dispatch_framework)
-                                ocr_findings = _a2 + (_i2 if isinstance(_i2, list) else [])
-                                if ocr_findings:
-                                    raw_ocr = _rows_text
-                        except Exception as _row_err:
-                            print(f"[VAPT] Row-wise OCR re-read of '{fname}' skipped: {_row_err}", flush=True)
                     if ocr_findings:
                         combined_tool_findings.extend(ocr_findings)
                     else:

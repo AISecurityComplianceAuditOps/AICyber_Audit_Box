@@ -14,6 +14,22 @@ chcp 65001 >nul
 title AICyberAuditBox - Build an Update
 cd /d "%~dp0"
 
+REM  A per-user Python and Docker Desktop install do not always put themselves
+REM  on PATH (an Administrator window gets its own); without them "docker info"
+REM  reports Docker as not running while it runs. The same as run_all.bat.
+if exist "%LOCALAPPDATA%\Programs\Python\Python311\python.exe" (
+    set "PATH=%LOCALAPPDATA%\Programs\Python\Python311;%LOCALAPPDATA%\Programs\Python\Python311\Scripts;%PATH%"
+)
+if exist "%LOCALAPPDATA%\Programs\DockerDesktop\resources\bin\docker.exe" (
+    set "PATH=%LOCALAPPDATA%\Programs\DockerDesktop\resources\bin;%PATH%"
+)
+
+REM  Where builds are written: one folder on the Desktop for every build,
+REM  AICyberAuditBox_Builds\v<version>. (It was ..\customer_deployment_package.)
+REM  The Desktop is asked for, not assumed -- it can be redirected.
+for /f "usebackq delims=" %%D in (`powershell -NoProfile -Command "[Environment]::GetFolderPath('Desktop')"`) do set "BUILDS_ROOT=%%D\AICyberAuditBox_Builds"
+if not defined BUILDS_ROOT set "BUILDS_ROOT=%USERPROFILE%\Desktop\AICyberAuditBox_Builds"
+
 echo ===========================================================================
 echo   AICyberAuditBox  --  Build an update
 echo ===========================================================================
@@ -70,7 +86,7 @@ if "!VERSION!"=="" (
     echo   [X] A version is required.
     goto :fail
 )
-set OUTDIR=..\customer_deployment_package\v!VERSION!
+set "OUTDIR=!BUILDS_ROOT!\v!VERSION!"
 echo   -^> building !VERSION!
 echo.
 
@@ -129,7 +145,7 @@ if errorlevel 1 (
 )
 echo.
 echo ---^> Packaging
-python build_customer_bundle.py --version !VERSION! --skip-build
+python build_customer_bundle.py --version !VERSION! --skip-build --app-only --out "!BUILDS_ROOT!"
 if errorlevel 1 goto :buildfail
 set TARNAME=aicyberauditbox-app-!VERSION!.tar
 goto :finish

@@ -141,6 +141,11 @@ def parse_tool_file(filename: str, content: str, framework: str = "",
     # hid the format from every parser.
     if isinstance(content, str):
         content = content.lstrip("﻿")
+    # A screenshot's OCR text ("ocr_<image>.txt"): repair what OCR breaks first
+    # (ocr_text.py). A report file is parsed exactly as written.
+    if isinstance(content, str) and str(filename or "").lower().startswith("ocr_"):
+        from src.core.parsers.ocr_text import repair_ocr_text
+        content = repair_ocr_text(content)
     segments = _split_tool_segments(content)
     if len(segments) > 1 and table_rows is not None:
         # A PDF with tables is never split by tool; whether it has any decides.

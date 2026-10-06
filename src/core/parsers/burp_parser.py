@@ -1091,6 +1091,13 @@ class BurpParser(BaseParser):
                 r'(?m)^\s*(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+\S+\s+HTTP/\d|HTTP/\d(?:\.\d)?\s+\d{3}\b',
                 content)
             poc_hits = list(re.finditer(r'(?:Vulnerability\s*Proof|Proof\s*of\s*Concept|SQL\s*Injection|Stored\s*XSS|Reflected\s*XSS|Cross-Site\s*Scripting|XSS)[A-Z]*[^\n\r<]{0,60}', content, re.IGNORECASE)) if _has_exchange else []
+            # Where the captured request went: its Host header and path (not the
+            # query string, which carries the payload). It was "Not recorded".
+            _poc_target = _NO_TARGET
+            _host_m = re.search(r'(?mi)^\s*Host:\s*([A-Za-z0-9.-]+(?::\d+)?)\s*$', content)
+            if _host_m:
+                _req_m = re.search(r'(?m)^\s*(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+(/\S*)\s+HTTP/', content)
+                _poc_target = _host_m.group(1) + (_req_m.group(1).split("?")[0] if _req_m else "")
             for ph in poc_hits:
                 if _is_non_finding_poc(ph.group(0)):
                     print(
@@ -1131,7 +1138,7 @@ class BurpParser(BaseParser):
                     # severity stands, flagged for the auditor to confirm.
                     severity_score=None,
                     confidence="Tentative",
-                    target=_NO_TARGET,
+                    target=_poc_target,
                     description=_description,
                     evidence=full_poc(content),
                     source_tool="Burp Suite / Visual OCR"

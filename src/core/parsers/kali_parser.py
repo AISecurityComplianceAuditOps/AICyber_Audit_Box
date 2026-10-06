@@ -698,6 +698,11 @@ class KaliParser(BaseParser):
     # ── directory brute-forcers ─────────────────────────────────────────────
     def _parse_gobuster(self, content: str) -> List[Finding]:
         target = _target_from(content)
+        # An output file (-o) has no "[+] Url:" line, and the only URL in it is
+        # a redirect ("[--> http://shop.test/admin/]"), which named the target
+        # "http://shop.test/admin/]". The site it belongs to is the target.
+        if not re.search(r'(?im)^\[\+\]\s*Url', content) and re.search(r'-->\s*https?://', content):
+            target = _site(target.rstrip("])"))[0]
         return [
             _path_finding(m.group("path"), m.group("status"), m.group("size") or "", target,
                           "Gobuster", m.group(0))
