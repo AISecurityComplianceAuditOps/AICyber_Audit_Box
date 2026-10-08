@@ -2888,7 +2888,6 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
                 #   Host/IP, Port, CVE, Plugin Output — not just the Nessus plugin description.
                 _target = f_dict.get("target") or ""
                 _cves = f_dict.get("cve_list") or []
-                _cve_str = ", ".join(_cves) if _cves else "No CVE assigned"
                 _plugin_id = f_dict.get("plugin_id") or ""
                 _plugin_out = str(f_dict.get("evidence") or f_dict.get("evidence_snippet") or f_dict.get("evidence_quote") or "").strip()
                 _desc_text = str(f_dict.get("description") or f_dict.get("title") or "").strip()
@@ -2899,8 +2898,15 @@ def _run_fast_technical_vapt_bg(bg_key, files_data, selected_sls, file_registry=
                     poc_lines.append(f"Target Host: {_target}")
                 if _plugin_id:
                     poc_lines.append(f"Plugin ID:   {_plugin_id}")
-                if _cves:
-                    poc_lines.append(f"CVE(s):      {_cve_str}")
+                # CVE ids and CWE ids on lines of their own: a Burp finding's
+                # proof read "CVE(s): CWE-89, CWE-94" beside "CVE References:
+                # None assigned" in the report.
+                _cwe_ids = [c for c in _cves if str(c).upper().startswith("CWE-")]
+                _cve_ids = [c for c in _cves if c not in _cwe_ids]
+                if _cve_ids:
+                    poc_lines.append(f"CVE(s):      {', '.join(_cve_ids)}")
+                if _cwe_ids:
+                    poc_lines.append(f"CWE(s):      {', '.join(_cwe_ids)}")
                 poc_lines.append(f"Scanner:     {_tool}")
                 if _plugin_out and "Not available in scan report" not in _plugin_out:
                     # Whole: the proof is what the auditor checks the
