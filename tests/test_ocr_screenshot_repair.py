@@ -11,6 +11,8 @@ all three styles. The broken strings below are what OCR actually returned.
 
 See src/core/parsers/ocr_text.py.
 """
+import os
+
 import pytest
 
 from src.core.parsers import parse_tool_file
@@ -232,25 +234,21 @@ def test_the_upload_uses_the_shared_image_path():
 # ── end to end through the real OCR (skipped where its models are absent) ────
 
 def test_a_real_screenshot_through_the_real_ocr():
+    """A terminal screenshot of this text, Courier 15 on a dark background.
+
+    Kept as a file rather than drawn here: drawing needs Courier, which only
+    Windows has. On the Linux CI runner the test fell back to Pillow's bitmap
+    font, which OCR cannot read, and failed with no findings."""
     pytest.importorskip("doctr")
-    import io
-    from PIL import Image, ImageDraw, ImageFont
-    try:
-        font = ImageFont.truetype(r"C:\Windows\Fonts\cour.ttf", 15)
-    except OSError:
-        font = ImageFont.load_default()
     text = ("DIRB v2.22\n---- Scanning URL: http://shop.test/ ----\n"
             "+ http://shop.test/.git/HEAD (CODE:200|SIZE:23)\n"
             "+ http://shop.test/server-status (CODE:403|SIZE:277)\n")
-    lines = text.strip().split("\n")
-    img = Image.new("RGB", (900, 22 * len(lines) + 40), (48, 10, 36))
-    d = ImageDraw.Draw(img)
-    for i, l in enumerate(lines):
-        d.text((20, 20 + i * 22), l, font=font, fill=(238, 238, 236))
-    out = io.BytesIO()
-    img.save(out, "JPEG", quality=85)
+    shot = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures",
+                        "dirb_terminal_screenshot.jpg")
+    with open(shot, "rb") as f:
+        image_bytes = f.read()
     try:
-        found, _ = findings_from_image(out.getvalue(), "dirb_shot.jpg", framework="vapt")
+        found, _ = findings_from_image(image_bytes, "dirb_shot.jpg", framework="vapt")
     except Exception as err:                       # OCR models not downloaded here
         pytest.skip(f"OCR unavailable: {err}")
     expected = _all(parse_tool_file("dirb.txt", text, framework="vapt"))
