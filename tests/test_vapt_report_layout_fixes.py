@@ -70,10 +70,29 @@ def test_the_cve_line_holds_cves_and_cwes_get_their_own():
 
 # -- the PDF ------------------------------------------------------------------
 
+def _pdf_bytes():
+    return rx.export_pdf_report("layout check", _findings(), [], "FINAL", audit_type="vapt")
+
+
 def _pdf_pages():
     from pypdf import PdfReader
-    out = rx.export_pdf_report("layout check", _findings(), [], "FINAL", audit_type="vapt")
-    return [" ".join((p.extract_text() or "").split()) for p in PdfReader(io.BytesIO(out)).pages]
+    return [" ".join((p.extract_text() or "").split()) for p in PdfReader(io.BytesIO(_pdf_bytes())).pages]
+
+
+def test_every_contents_line_starts_at_the_left_margin():
+    """fpdf2 fills the contents in at the end without putting x back: the first
+    line, "1 Penetration Test Methodology", was drawn off the right edge."""
+    import pdfplumber
+    with pdfplumber.open(io.BytesIO(_pdf_bytes())) as pdf:
+        words = pdf.pages[2].extract_words()
+    starts = []
+    for title in ("Penetration", "Executive", "Technical", "Appendix", "Disclaimer"):
+        t = next(w for w in words if w["text"] == title)
+        # the section number: the word just before the title on its line
+        starts.append(max((w for w in words if abs(w["top"] - t["top"]) < 2 and w["x1"] <= t["x0"]),
+                          key=lambda w: w["x1"]))
+    assert [w["text"] for w in starts] == ["1", "2", "3", "4", "5"]
+    assert all(w["x0"] < 60 for w in starts), [(w["text"], round(w["x0"])) for w in starts]
 
 
 def test_the_contents_give_the_pages_the_sections_are_on():
