@@ -794,7 +794,10 @@ def test_the_pdf_prints_one_point_and_one_step_per_line():
     from src.core.report_exporter import export_pdf_report
     out = export_pdf_report("t", _vapt_row(SQLI_STORED, SQLI_POINTS_STORED), [], "FINAL", audit_type="vapt")
     text = "\n".join(p.extract_text() or "" for p in PdfReader(io.BytesIO(out)).pages)
-    for line in SQLI_POINTS_STORED.splitlines() + SQLI_STORED.splitlines():
+    # Each point starts its own line behind a drawn bullet (so without its "- "),
+    # each step behind its number (test_vapt_recommendation_points.py).
+    points = [ln[2:] for ln in SQLI_POINTS_STORED.splitlines()]
+    for line in points + SQLI_STORED.splitlines():
         assert _re.search(r"^" + _re.escape(line[:30]), text, _re.MULTILINE), line
 
 
@@ -804,4 +807,10 @@ def test_the_docx_prints_one_point_and_one_step_per_line():
     d = Document(io.BytesIO(export_docx_report("t", _vapt_row(SQLI_STORED, SQLI_POINTS_STORED), [], "FINAL",
                                                audit_type="vapt")))
     texts = [p.text for p in d.paragraphs]
-    assert SQLI_POINTS_STORED in texts and SQLI_STORED in texts   # a line break between lines
+    # One paragraph per point (a bullet) and per step (its number), with a
+    # hanging indent -- test_vapt_recommendation_points.py.
+    for ln in SQLI_POINTS_STORED.splitlines():
+        assert "•\t" + ln[2:] in texts, ln
+    for ln in SQLI_STORED.splitlines():
+        num, body = ln.split(". ", 1)
+        assert f"{num}.\t{body}" in texts, ln

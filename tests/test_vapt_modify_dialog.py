@@ -165,11 +165,11 @@ def test_a_severity_the_old_dialog_saved_is_counted_in_the_reports():
     from src.core.report_exporter import export_docx_report, export_pdf_report
     d = Document(io.BytesIO(export_docx_report("t", _findings(), [], "FINAL", audit_type="vapt")))
     rows = [[c.text.strip() for c in r.cells] for t in d.tables for r in t.rows]
-    i = rows.index(["Critical", "High", "Medium", "Low", "Informational", "Closed", "Total Findings"])
-    assert rows[i + 1] == ["1", "1", "0", "0", "1", "0", "3"]
+    i = rows.index(["Critical", "High", "Medium", "Low", "Informational", "Open", "Closed", "Total Findings"])
+    assert rows[i + 1] == ["1", "1", "0", "0", "1", "3", "0", "3"]
     pdf = PdfReader(io.BytesIO(export_pdf_report("t", _findings(), [], "FINAL", audit_type="vapt")))
     flat = re.sub(r"\s+", " ", " ".join(p.extract_text() or "" for p in pdf.pages))
-    assert "Total Findings 1 1 0 0 1 0 3" in flat
+    assert "Total Findings 1 1 0 0 1 3 0 3" in flat
 
 
 # -- the page -----------------------------------------------------------------
