@@ -44,10 +44,10 @@ if errorlevel 1 (
 echo   What changed?
 echo.
 echo     [1]  Application code, Python packages, system packages, the report
-echo          template                                            ~2.3 GB
+echo          template -- and the AI startup settings: slots, memory ~2.3 GB
 echo.
-echo     [2]  LLM startup settings only -- threads, slots, context
-echo          size, which model is served                          ~10 KB
+echo     [2]  LLM startup settings only, for a site taking no app
+echo          update -- [1] already carries them                   ~10 KB
 echo.
 echo     [3]  LLM model weights (a different .gguf)                 ~13 GB
 echo.
@@ -142,6 +142,26 @@ if errorlevel 1 (
     echo.
     echo   [X] The new image failed on Postgres. Nothing has been packaged.
     goto :fail
+)
+echo.
+REM  The app image also carries the model server's startup script, and the
+REM  customer's apply_update builds it onto their LLM image when it differs:
+REM  it decides how many audits their machine can hold. Start it on a real LLM
+REM  image here when this PC has one -- the check option 2 runs.
+set HAVELLM=
+for /f "delims=" %%V in ('docker images aicyberauditbox-llm --format "{{.Tag}}" 2^>nul') do if not "%%V"=="<none>" if not "%%V"=="entrypoint-check" set HAVELLM=1
+if defined HAVELLM (
+    echo ---^> Checking the AI startup script it carries on a real LLM image
+    python scripts\llm_image_check.py --rebase-on newest
+    if errorlevel 1 (
+        echo.
+        echo   [X] The startup script failed its check. Nothing has been packaged.
+        goto :fail
+    )
+) else (
+    echo   NOTE: No aicyberauditbox-llm image on this PC, so the AI startup script
+    echo         this update carries was not started on a real engine. The tests
+    echo         still pin it. Load the LLM image customers run to check it here.
 )
 echo.
 echo ---^> Packaging
@@ -285,6 +305,12 @@ echo   It works out which component this is, verifies the download, backs up
 echo   their audits, loads the image, repoints their installation, restarts
 echo   only what changed, and confirms the new version is running.
 echo.
+if "!CHOICE!"=="1" (
+    echo   An application update also brings the AI startup settings. When they
+    echo   changed, apply_update rebuilds their model server on them in seconds,
+    echo   no download, and shows how many audits their machine can hold.
+    echo.
+)
 echo   A site that pulls from Artifact Registry is not updated with a tar:
 echo   tag and push the image there, then they run setup_registry.sh.
 echo.

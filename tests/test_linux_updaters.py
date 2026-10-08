@@ -49,15 +49,37 @@ echo "$*" >> "$S/calls"
 mark() { touch "$S/img_$(printf '%s' "$1" | tr ':' '@')"; }
 has()  { [ -f "$S/img_$(printf '%s' "$1" | tr ':' '@')" ]; }
 case "$1" in
-  info) exit 0 ;;
+  info) [ "$2" = "--format" ] && echo "2026-10-07T08:00:00.000000000Z"; exit 0 ;;
+  events) [ "$FAKE_LLM_OOM" = true ] && echo oom; exit 0 ;;
   compose)
     [ "$2" = ls ] && { printf '[{"Name":"aicb","Status":"running(5)","ConfigFiles":"%s"}]\n' "$FAKE_COMPOSE"; exit 0; }
+    case " $* " in *" up -d app "*) [ -n "$FAKE_APP_UP_FAIL" ] && exit 1 ;; esac
     exit 0 ;;
   inspect)
     if [ "$2" = "-f" ] || [ "$2" = "--format" ]; then
       case "$3" in
-        *State.Running*) [ "$4" = shakthidb_service ] && { echo "${FAKE_DB_RUNNING:-true}"; exit 0; }; exit 1 ;;
+        *State.Running*)
+          [ "$4" = shakthidb_service ] && { echo "${FAKE_DB_RUNNING:-true}"; exit 0; }
+          [ "$4" = aicyberauditbox_llm ] && { echo "${FAKE_LLM_RUNNING:-true}"; exit 0; }
+          exit 1 ;;
+        *RestartCount*)
+          [ "$4" = aicyberauditbox_llm ] || exit 1
+          # FAKE_LLM_RESTARTS_AFTER=n: up for the first n looks, then restarted.
+          n=$(cat "$S/restart_looks" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$S/restart_looks"
+          if [ -n "$FAKE_LLM_RESTARTS_AFTER" ] && [ "$n" -gt "$FAKE_LLM_RESTARTS_AFTER" ]; then echo 1
+          else echo "${FAKE_LLM_RESTARTS:-0}"; fi
+          exit 0 ;;
+        # Cleared by "restart: always", as in real Docker; the kill stays in the
+        # event log (FAKE_LLM_OOM, the events verb below).
+        *OOMKilled*) [ "$4" = aicyberauditbox_llm ] && { echo "${FAKE_LLM_OOMKILLED:-false}"; exit 0; }; exit 1 ;;
+        *Health.Status*) [ "$4" = aicyberauditbox_llm ] && { echo "${FAKE_LLM_HEALTH:-healthy}"; exit 0; }; exit 1 ;;
+        *State.Health*)
+          [ "$4" = aicyberauditbox_llm ] || exit 1
+          if [ -n "$FAKE_LLM_NO_HEALTH" ]; then echo "<nil>"; else echo "{${FAKE_LLM_HEALTH:-healthy} 0 []}"; fi
+          exit 0 ;;
         *Config.Image*)
+          # FAKE_LLM_STUCK: the model server never moves off 1.2, put back or not.
+          [ "$4" = aicyberauditbox_llm ] && [ -n "$FAKE_LLM_STUCK" ] && { echo "aicyberauditbox-llm:1.2"; exit 0; }
           case "$4" in
             aicyberauditbox_app) img=aicyberauditbox-app ;;
             aicyberauditbox_llm) img=aicyberauditbox-llm ;;
@@ -73,16 +95,36 @@ case "$1" in
     echo "-- pg_dumpall: shakthidb_master"
     i=0; while [ $i -lt 60 ]; do echo "INSERT INTO findings VALUES ($i, 'row of the customer audit');"; i=$((i+1)); done
     exit 0 ;;
-  cp) mkdir -p "$3" && echo evidence > "$3/evidence.txt"; exit 0 ;;
+  cp)
+    # Windows callers (apply_update.ps1 through docker.cmd) pass back-slashed paths.
+    d=$(printf '%s' "$3" | tr '\\' '/')
+    case "$2" in
+      cid_aicyberauditbox-app@*:/app/llm-config/.)
+        [ -n "$FAKE_CP_ERROR" ] && { echo "Error response from daemon: $FAKE_CP_ERROR" >&2; exit 1; }
+        if [ -z "$FAKE_LLMCFG" ] || [ ! -d "$FAKE_LLMCFG" ]; then
+          echo "Error response from daemon: Could not find the file /app/llm-config/. in container $2" >&2
+          exit 1
+        fi
+        mkdir -p "$d" && cp -r "$FAKE_LLMCFG"/. "$d"/; exit $? ;;
+      cid_aicyberauditbox-llm@*:/llm-entrypoint.sh)
+        [ -n "$FAKE_LLM_CURRENT" ] || exit 1
+        cp "$FAKE_LLM_CURRENT" "$d"; exit $? ;;
+    esac
+    mkdir -p "$d" && echo evidence > "$d/evidence.txt"; exit 0 ;;
+  create) printf 'cid_%s\n' "$(printf '%s' "$2" | tr ':' '@')"; exit 0 ;;
+  rm) exit 0 ;;
+  logs) [ -n "$FAKE_LLM_LOG" ] && cat "$FAKE_LLM_LOG"; exit 0 ;;
   load)
-    n=$(basename "$3" .tar)
+    n=$(basename "$(printf '%s' "$3" | tr '\\' '/')" .tar)
     comp=$(printf '%s' "$n" | sed -E 's/^aicyberauditbox-([a-z]+)-([0-9.]+)$/\1/')
     ver=$(printf '%s' "$n" | sed -E 's/^aicyberauditbox-([a-z]+)-([0-9.]+)$/\2/')
     mark "aicyberauditbox-$comp:$ver"
     [ "$comp" = llm ] && mark "aicyberauditbox-llm-embed:$ver"
     exit 0 ;;
   image) has "$3" && exit 0; exit 1 ;;
-  build) while [ $# -gt 0 ]; do [ "$1" = -t ] && mark "$2"; shift; done; exit 0 ;;
+  build)
+    [ -n "$FAKE_BUILD_FAIL" ] && exit 1
+    while [ $# -gt 0 ]; do [ "$1" = -t ] && mark "$2"; shift; done; exit 0 ;;
   tag) mark "$3"; exit 0 ;;
 esac
 exit 1

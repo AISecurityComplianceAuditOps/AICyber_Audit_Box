@@ -324,6 +324,271 @@ if (-not $needsChange) {
     Good ("Updated to $newVersion. Untouched: " + ($untouched -join ", "))
 }
 
+# ------------------------------------------- the model server's startup script
+# An application update also carries the model server's startup script
+# (/app/llm-config in the app image), because that script decides how many
+# audits this machine can hold: the slots the model server opens, and the
+# memory it leaves for everything else. It used to reach a site only as a
+# separate settings package, so a site that took application updates kept the
+# script its LLM image shipped with -- llm 1.1's opened 3 slots on a 23.5GB
+# machine that holds one, with nothing kept back for the app and database.
+#
+# When the script in this update differs from the one the LLM image here
+# carries, it is built onto that image (seconds; the weights are inherited) and
+# the model servers restart on it. Nothing here stops the update -- no Die: a
+# failure leaves the model server exactly as it was and says so, and the
+# application update goes on.
+#
+# BEFORE the application restarts, not after: the application reads the model
+# server's slot count once (port_pool) and keeps it. Restarted first, it could
+# read the old server's 3 slots in the seconds before the switch, then send 3
+# requests at a time to a server with 1 -- the two it queues sit silent and
+# time out.
+#
+# Results go into script variables, not the function's output: anything a
+# native command prints inside a PowerShell function becomes its return value.
+$script:LlmSummary = $null
+$script:LlmSwitchedBackup = $null
+$script:LlmBase = $null
+$script:LlmBackup = $null
+$script:LlmPutBack = $false
+$script:LlmReady = $false
+
+function Skip-LlmUpdate ($m) {
+    Warn $m
+    Warn "The AI model server keeps the settings it had. The application update"
+    Warn "is complete either way."
+    $script:LlmSummary = "AI model server: unchanged ($m)"
+}
+
+function Restore-Llm ($m) {
+    $composeDir = Split-Path -Parent $script:ComposePath
+    Copy-Item $script:LlmBackup $script:ComposePath -Force
+    Push-Location $composeDir
+    try { cmd /c "docker compose up -d llm llm-embed >nul 2>&1" } finally { Pop-Location }
+    $script:LlmPutBack = $true
+    Skip-LlmUpdate "$m Put back to aicyberauditbox-llm:$($script:LlmBase)."
+    # Proved, not assumed: if the old server did not come back either, say so
+    # plainly rather than report a put-back that did not happen.
+    $back = "$(cmd /c "docker inspect --format {{.Config.Image}} aicyberauditbox_llm 2>nul")".Trim()
+    if ($back -ne "aicyberauditbox-llm:$($script:LlmBase)") {
+        Write-Host "  The AI model server did not come back by itself. In $composeDir run:" -ForegroundColor Red
+        Write-Host "      docker compose up -d llm llm-embed" -ForegroundColor Red
+        $script:LlmSummary = "AI model server: NOT RUNNING -- see the red lines above"
+    }
+}
+
+function Get-FileFromImage ($image, $path, $dest) {
+    # create + cp rather than run: needs nothing inside the image, starts nothing.
+    # "ok", "missing" (the image has no such path), or the error Docker gave.
+    $cid = (cmd /c "docker create $image 2>nul")
+    if ($LASTEXITCODE -ne 0 -or -not $cid) { return "could not open $image" }
+    $cid = ($cid | Select-Object -Last 1).Trim()
+    # Built in a plain string first. Inside "$( ... )" Windows PowerShell 5.1
+    # drops escaped quotes, which splits a path with a space in it (a user
+    # folder such as C:\Users\John Smith) into two arguments.
+    $cpLine = "docker cp `"${cid}:$path`" `"$dest`" 2>&1"
+    $cpOut = cmd /c $cpLine
+    $cpCode = $LASTEXITCODE
+    $err = ("$cpOut").Trim()
+    $result = if ($cpCode -eq 0) { "ok" } elseif ($err -like "*Could not find the file*") { "missing" } else { $err }
+    cmd /c "docker rm $cid >nul 2>&1"
+    return $result
+}
+
+function Update-LlmSettings {
+    $content = [IO.File]::ReadAllText($script:ComposePath)
+    $m = [regex]::Match($content, 'image:\s*aicyberauditbox-llm:([0-9][0-9.]*)')
+    if (-not $m.Success) { Say "No aicyberauditbox-llm line in the compose file -- left as it is."; return }
+    $base = $m.Groups[1].Value
+    $script:LlmBase = $base
+    if ((Invoke-DockerQuiet "image inspect aicyberauditbox-llm:$base") -ne 0) {
+        Skip-LlmUpdate "aicyberauditbox-llm:$base is not on this machine."; return
+    }
+
+    $work = Join-Path ([IO.Path]::GetTempPath()) ("aicb-llm-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
+    New-Item -ItemType Directory -Force -Path $work | Out-Null
+    try {
+        $new = Join-Path $work "new"
+        $got = Get-FileFromImage "$($comp.ImageNames[0]):$newVersion" "/app/llm-config/." $new
+        $newScript = Join-Path $new "docker\llm-entrypoint.sh"
+        if ($got -eq "missing") {
+            # An application image built before the settings travelled with it.
+            Say "This update carries no model server settings -- left as it is."; return
+        }
+        if ($got -ne "ok" -or -not (Test-Path $newScript) -or -not (Test-Path (Join-Path $new "Dockerfile.llm.rebase"))) {
+            Skip-LlmUpdate "could not read the settings from the new application image: $got"; return
+        }
+        $current = Join-Path $work "current.sh"
+        $gotCurrent = Get-FileFromImage "aicyberauditbox-llm:$base" "/llm-entrypoint.sh" $current
+        if ($gotCurrent -ne "ok") {
+            Skip-LlmUpdate "could not read the startup script in aicyberauditbox-llm:${base}: $gotCurrent"; return
+        }
+        if ((Get-FileHash $newScript).Hash -eq (Get-FileHash $current).Hash) {
+            Say "Already current in aicyberauditbox-llm:$base -- not restarted."; return
+        }
+
+        # The new tag: the last number of the base, plus one, as apply_llm_config.
+        $parts = $base.Split(".")
+        $parts[-1] = [string]([int]$parts[-1] + 1)
+        $newV = ($parts -join ".")
+        Say "New settings found. Building aicyberauditbox-llm:$newV on $base (seconds; weights inherited)"
+        Push-Location $new
+        try {
+            cmd /c "docker build -q -f Dockerfile.llm.rebase --build-arg LLM_BASE_IMAGE=aicyberauditbox-llm:$base -t aicyberauditbox-llm:$newV . >nul"
+            $built = ($LASTEXITCODE -eq 0)
+        } finally { Pop-Location }
+        if (-not $built) { Skip-LlmUpdate "the rebuild failed."; return }
+        # The embedding server is the same image under a second tag.
+        if ((Invoke-DockerQuiet "tag aicyberauditbox-llm:$newV aicyberauditbox-llm-embed:$newV") -ne 0) {
+            Skip-LlmUpdate "could not tag the embedding image."; return
+        }
+
+        $backup = "$($script:ComposePath).before-llm-$newV.bak"
+        Copy-Item $script:ComposePath $backup -Force
+        $script:LlmBackup = $backup
+        $updated = $content -replace "aicyberauditbox-llm:$([regex]::Escape($base))(?![0-9.])", "aicyberauditbox-llm:$newV"
+        $updated = $updated -replace "aicyberauditbox-llm-embed:[0-9][0-9.]*", "aicyberauditbox-llm-embed:$newV"
+        [IO.File]::WriteAllText($script:ComposePath, $updated, (New-Object Text.UTF8Encoding $false))
+        $check = [IO.File]::ReadAllText($script:ComposePath)
+        $same = $true
+        foreach ($img in @("aicyberauditbox-app", "aicyberauditbox-shakthidb")) {
+            if ((Get-VersionsOf $content $img) -ne (Get-VersionsOf $check $img)) { $same = $false }
+        }
+        if (-not $same -or $check -notmatch "image:\s*aicyberauditbox-llm:$([regex]::Escape($newV))(?![0-9.])" `
+                -or $check -notmatch "image:\s*aicyberauditbox-llm-embed:$([regex]::Escape($newV))(?![0-9.])") {
+            Copy-Item $backup $script:ComposePath -Force
+            Skip-LlmUpdate "the compose file did not update as expected; restored from the backup."; return
+        }
+
+        # Docker's own clock, for reading its event log afterwards: the Docker
+        # Desktop VM's clock is not the host's, and can drift from it.
+        $llmSince = "$(cmd /c "docker info --format {{.SystemTime}} 2>nul")".Trim()
+        Push-Location (Split-Path -Parent $script:ComposePath)
+        try {
+            docker compose up -d llm llm-embed | Out-Host
+            $up = ($LASTEXITCODE -eq 0)
+        } finally { Pop-Location }
+        if (-not $up) { Restore-Llm "the model servers did not restart on the new settings."; return }
+
+        # The script states its decision within seconds of starting, long before
+        # the weights finish loading: the slots it chose and why, a warning when
+        # the machine is short, or a refusal when it cannot hold the model at
+        # all. A refusal is put back to what ran before -- the operator gets the
+        # reason, not a model server that no longer starts.
+        $lines = @()
+        for ($i = 0; $i -lt 30; $i++) {
+            $lines = @(cmd /c "docker logs aicyberauditbox_llm 2>&1" | Where-Object { $_ -like "*LLM ENTRYPOINT*" })
+            $text = $lines -join "`n"
+            if ($text -like "*Not enough memory*" -or $text -like "*slot(s)*" -or $text -like "*LLM_SLOTS_OVERRIDE set*") { break }
+            if ((cmd /c "docker inspect -f {{.State.Running}} aicyberauditbox_llm 2>nul") -ne "true") { break }
+            Start-Sleep -Seconds 2
+        }
+        $text = $lines -join "`n"
+        if ($text -like "*Not enough memory*") {
+            $lines | Where-Object { $_ -match "Not enough memory|can see|weights need|slot needs" } |
+                ForEach-Object { Write-Host "    $_" -ForegroundColor Yellow }
+            Restore-Llm "this machine cannot hold the model on the new settings."; return
+        }
+        if ((cmd /c "docker inspect -f {{.State.Running}} aicyberauditbox_llm 2>nul") -ne "true") {
+            Restore-Llm "the model server stopped on the new settings."; return
+        }
+        $running = (cmd /c "docker inspect --format {{.Config.Image}} aicyberauditbox_llm 2>nul")
+        if ("$running".Trim() -ne "aicyberauditbox-llm:$newV") {
+            Restore-Llm "the model server is running $running, not aicyberauditbox-llm:$newV."; return
+        }
+        # Up now, but "restart: always" brings a crashed server straight back:
+        # a restart already counted means it fell over at least once.
+        if ("$(cmd /c "docker inspect -f {{.RestartCount}} aicyberauditbox_llm 2>nul")".Trim() -ne "0") {
+            Restore-Llm "the model server restarted on the new settings."; return
+        }
+
+        Good "Running aicyberauditbox-llm:$newV. It sized itself to this machine:"
+        $lines | Where-Object { $_ -match "Detected|WARNING|LLM_SLOTS_OVERRIDE" } |
+            ForEach-Object { Write-Host "    $_" }
+
+        # The decision takes seconds; loading the weights takes minutes, and a
+        # machine that cannot hold them shows it only then -- the model server
+        # is killed part way and restarts. So wait for its health check to say
+        # it is serving, and put that case back too. Still loading at the limit
+        # is not a failure: it is left running and the operator told so.
+        $limit = 600
+        if ($env:AICB_LLM_READY_SECONDS -match '^[0-9]+$') { $limit = [int]$env:AICB_LLM_READY_SECONDS }
+        $state = "loading"
+        if ("$(cmd /c "docker inspect -f {{.State.Health}} aicyberauditbox_llm 2>nul")".Trim() -in @("", "<nil>")) {
+            # No health check to wait on: give it a few seconds and make sure it
+            # has not fallen over, which is all that can be known without one.
+            $state = "unchecked"
+            Start-Sleep -Seconds ([Math]::Min(10, $limit))
+            $restarts = "$(cmd /c "docker inspect -f {{.RestartCount}} aicyberauditbox_llm 2>nul")".Trim()
+            $alive = "$(cmd /c "docker inspect -f {{.State.Running}} aicyberauditbox_llm 2>nul")".Trim()
+            if ($restarts -ne "0" -or $alive -ne "true") { $state = "stopped" }
+        } else {
+            Say "Waiting for the model to load (up to $([int]($limit / 60)) minutes)..."
+            $waited = 0
+            while ($true) {
+                $restarts = "$(cmd /c "docker inspect -f {{.RestartCount}} aicyberauditbox_llm 2>nul")".Trim()
+                $alive = "$(cmd /c "docker inspect -f {{.State.Running}} aicyberauditbox_llm 2>nul")".Trim()
+                if ($restarts -ne "0" -or $alive -ne "true") { $state = "stopped"; break }
+                if ("$(cmd /c "docker inspect -f {{.State.Health.Status}} aicyberauditbox_llm 2>nul")".Trim() -eq "healthy") {
+                    $state = "ready"; break
+                }
+                if ($waited -ge $limit) { break }
+                Start-Sleep -Seconds 5
+                $waited += 5
+                if ($waited % 60 -eq 0) { Say "  still loading ($($waited / 60) min)" }
+            }
+        }
+        if ($state -eq "stopped") {
+            # Out of memory? The container's OOMKilled flag is cleared when
+            # "restart: always" brings it back, so ask Docker's event log, which
+            # keeps the kill.
+            $oom = ("$(cmd /c "docker inspect -f {{.State.OOMKilled}} aicyberauditbox_llm 2>nul")".Trim() -eq "true")
+            $llmUntil = "$(cmd /c "docker info --format {{.SystemTime}} 2>nul")".Trim()
+            if (-not $oom -and $llmSince -and $llmUntil) {
+                $events = "$(cmd /c "docker events --since $llmSince --until $llmUntil --filter container=aicyberauditbox_llm --filter event=oom --format {{.Action}} 2>nul")"
+                $oom = ($events -match "oom")
+            }
+            Restore-Llm ("the model server stopped while loading on the new settings" +
+                $(if ($oom) { " -- it ran out of memory." } else { "." })); return
+        }
+        if ($state -eq "ready") {
+            Good "The model has loaded and is serving."
+        } elseif ($state -eq "loading") {
+            Warn "Still loading after $([int]($limit / 60)) minutes -- left running. It is ready when"
+            Warn "    docker compose ps    shows aicyberauditbox_llm as healthy."
+        }
+        $script:LlmReady = ($state -eq "ready")
+
+        $slots = [regex]::Match($text, "-> ([0-9]+) slot\(s\)")
+        $script:LlmSummary = "AI model server: aicyberauditbox-llm:$newV" +
+            $(if ($slots.Success) { ", $($slots.Groups[1].Value) slot(s) on this machine" } else { "" })
+        $script:LlmSwitchedBackup = $backup
+        # So a failure further on reports this change too and names a backup
+        # that undoes it. The application's own backup, when there is one, was
+        # taken earlier and undoes both.
+        if (-not $script:ComposeChanged) {
+            $script:ComposeChanged = $true
+            $script:ComposeBackup = $backup
+        }
+    } finally {
+        Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
+    }
+}
+
+if ($key -eq "app") {
+    Write-Host ""
+    Write-Host "[+] Model server startup settings (how many audits this machine can hold)"
+    Update-LlmSettings
+    if ($script:LlmSwitchedBackup -and $script:LlmReady) {
+        $comp.Note = "The AI model is loaded on its new settings and ready."
+    } elseif ($script:LlmSwitchedBackup) {
+        $comp.Note = "The AI model reloads on its new settings -- allow 3-5 minutes before auditing."
+    } elseif ($script:LlmPutBack) {
+        $comp.Note = "The AI model restarted on its previous settings -- allow 3-5 minutes before auditing."
+    }
+}
+
 # ------------------------------------------------------------------ restart
 Write-Host ""
 Write-Host "[6/6] Restarting $($comp.Label)"
@@ -350,6 +615,7 @@ if ($running -ne $expectImage) {
 Write-Host ""
 Write-Host "==========================================================="
 Good "Update complete. $($comp.Label) is running $running"
+if ($script:LlmSummary) { Say $script:LlmSummary }
 Write-Host "==========================================================="
 Write-Host ""
 Say $comp.Note
