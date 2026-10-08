@@ -79,6 +79,8 @@ document.addEventListener("DOMContentLoaded", () => {
     // Default render tabs & framework controls on page load so they are never blank
     setupTabs(selectedRole || "auditor");
     loadFrameworkControls();
+    // The dropdown may arrive already set by the browser's form restore.
+    _ensureFrameworkGating();
 
     // Sync role selection UI and auto-fill credentials for the default role
     selectRole(selectedRole || "auditor");
@@ -1271,7 +1273,13 @@ function applySessionFramework(framework) {
         o => _frameworkFamily(o.value) === family);
     // Assigning a value no <option> carries silently blanks a <select>, which
     // is worse than leaving a stale one, so an unmatched framework is ignored.
-    if (!match || sel.value === match.value) return false;
+    if (!match) return false;
+    if (sel.value === match.value) {
+        // Already showing it -- but not necessarily gated for it: a browser that
+        // restores the dropdown on reload sets the value with no change event.
+        _ensureFrameworkGating();
+        return false;
+    }
     sel.value = match.value;
     // The framework gates which analysis modes are selectable, so the gating has
     // to be re-run -- the browser fires no change event for a scripted assignment.
@@ -2652,6 +2660,21 @@ function _frameworkIsTechnical() {
     const sel = document.getElementById("framework-select");
     const fw = sel ? String(sel.value || "").toUpperCase() : "";
     return fw.includes("VAPT") || fw.includes("PQC");
+}
+
+// The scope buttons and the analysis modes follow the framework only when
+// onFrameworkChangeSuggestMode() runs, and it runs on a change event or from
+// applySessionFramework() when the framework CHANGES. A browser restoring the
+// dropdown on reload (Chrome and Firefox both do) sets VAPT with no event; the
+// session then applied was VAPT too, so nothing changed and nothing gated: a
+// VAPT session under the ISO buttons (Checklist, Control, Selective) with Deep
+// Audit selected. Re-gate whenever the buttons disagree with the framework --
+// only then, so an auditor's own choice of Quick on an ISO session survives.
+function _ensureFrameworkGating() {
+    const aiBtn = document.getElementById("btn-ai-scoping");
+    if (!aiBtn || typeof onFrameworkChangeSuggestMode !== "function") return;
+    const aiShown = aiBtn.style.display !== "none";
+    if (_frameworkIsTechnical() !== aiShown) onFrameworkChangeSuggestMode();
 }
 
 function _effectiveScopingMode(requested, technical) {
