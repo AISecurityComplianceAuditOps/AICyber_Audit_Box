@@ -235,39 +235,57 @@ def _pdf_text(resp):
     return " ".join(" ".join((p.extract_text() or "") for p in PdfReader(io.BytesIO(resp.content)).pages).split())
 
 
-def test_the_pdf_has_a_retest_summary(retested):
+# The report gives the outcome, not a comparison: one line of open and closed,
+# and each finding's own status Open or Closed. Reviewers found the versions
+# table and the per-version grid hard to read and asked for the final status.
+# Of the 7 findings: 2 fixed (closed); still open 2, new 2 and not retested 1
+# are open -- not retested because nobody has confirmed a fix.
+_COMPARISON_WORDS = ("Retest Summary", "Still open", "Not retested", "compared with version", "v2 retest")
+
+
+def test_the_pdf_gives_the_final_open_and_closed(retested):
     text = _pdf_text(retested["client"].get("/api/audit/export/pdf?session_id=retest-flow"))
-    assert "2.3.5 Retest Summary" in text
-    assert "This report is version 2 of the assessment" in text
-    assert "1 was not retested -- its host was not part of the retest -- and remains open" in text
-    # Version, date, found 5, still open 2, fixed 2, new 2, not retested 1.
-    assert re.search(r"v2 retest \d{2} \w{3} \d{4} 5 2 2 2 1", text), "the version row's counts"
-    assert re.search(r"SMB Signing not required 10\.0\.0\.6:445/tcp \(cifs\) Open Not retested Not retested", text)
-    assert re.search(r"Missing HSTS header https://portal\.test/ Open Fixed Fixed", text)
+    assert "2.3.5 Retest Status" in text
+    assert re.search(r"Status after the retest of \d{2} \w{3} \d{4}: 5 open, 2 closed\.", text)
+    statuses = re.findall(r"Status / Scanner (Open|Closed) \| Tool", text)
+    assert sorted(statuses) == ["Closed"] * 2 + ["Open"] * 5, statuses
+    # The summary table says it too, one status per row.
+    summary = text[text.index("2.3.4 Vulnerabilities Summary"):text.index("OVERALL SCORE")]
+    assert "CVSS Score Severity Status" in summary
+    rows = re.findall(r"(?:HIGH|MEDIUM|LOW|CRITICAL|INFO\w*) (Open|Closed)\b", summary)
+    assert sorted(rows) == ["Closed"] * 2 + ["Open"] * 5, rows
+    for word in _COMPARISON_WORDS:
+        assert word not in text, word
 
 
 def test_the_first_version_exports_as_it_was(retested):
     text = _pdf_text(retested["client"].get("/api/audit/export/pdf?session_id=retest-flow&version=1"))
-    assert "Retest Summary" not in text
+    assert "Retest Status" not in text
+    assert "CVSS Score Severity Status" not in text, "a version scanned once keeps its table"
     assert "Terrapin" not in text and "Stored cross-site scripting" not in text
     assert "SWEET32" in text
 
 
-def test_the_summary_can_be_left_out(retested):
+def test_the_status_line_can_be_left_out(retested):
     text = _pdf_text(retested["client"].get("/api/audit/export/pdf?session_id=retest-flow&retest_summary=false"))
-    assert "Retest Summary" not in text and "Terrapin" in text
+    assert "Retest Status" not in text and "Terrapin" in text
 
 
-def test_the_word_report_has_the_same_summary(retested):
+def test_the_word_report_gives_each_finding_open_or_closed(retested):
     r = retested["client"].get("/api/audit/export/docx?session_id=retest-flow")
     assert r.status_code == 200, r.text[:300]
     d = Document(io.BytesIO(r.content))
-    assert any("2.3.5 Retest Summary" in p.text for p in d.paragraphs)
-    rows = [[c.text for c in row.cells] for t in d.tables for row in t.rows]
-    v2_row = next(r for r in rows if r and r[0] == "v2 retest")
-    assert v2_row[2:] == ["5", "2", "2", "2", "1"]
-    now = {r[0]: r[-1] for r in rows if r and r[0] in (SWEET32, SMB, XSS)}
-    assert now == {SWEET32: "Fixed", SMB: "Not retested", XSS: "New"}
+    paras = [p.text for p in d.paragraphs]
+    assert "2.3.5 Retest Status" in paras
+    assert any(re.search(r"Status after the retest of .*: 5 open, 2 closed\.", p) for p in paras)
+    statuses = [m.group(1) for p in paras for m in [re.search(r"\|\s+Status: (Open|Closed)\b", p)] if m]
+    assert sorted(statuses) == ["Closed"] * 2 + ["Open"] * 5, statuses
+    summary = next(t for t in d.tables if [c.text for c in t.rows[0].cells][:2] == ["Sr. No.", "Vulnerabilities"])
+    assert [c.text for c in summary.rows[0].cells] == ["Sr. No.", "Vulnerabilities", "CVSS Score", "Severity", "Status"]
+    assert sorted(r.cells[4].text for r in summary.rows[1:-1]) == ["Closed"] * 2 + ["Open"] * 5
+    everything = " ".join(paras + [c.text for t in d.tables for row in t.rows for c in row.cells])
+    for word in _COMPARISON_WORDS:
+        assert word not in everything, word
 
 
 # ── what must not change ─────────────────────────────────────────────────────

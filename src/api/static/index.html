@@ -7,7 +7,7 @@
     <title>AICyberAuditBox - Local Compliance Intelligence</title>
     <link rel="icon"
         href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🛡️</text></svg>">
-    <link rel="stylesheet" href="/static/style.css?v=20260930_v360003">
+    <link rel="stylesheet" href="/static/style.css?v=20261008_v360006">
     <!-- Webfonts are served from this box: the product runs air-gapped, so
          nothing may be fetched from a CDN at page load. -->
     <link rel="stylesheet" href="/static/fonts/fonts.css">
@@ -898,15 +898,11 @@
                                 <span>EXECUTIVE REPORT ARTIFACTS</span>
                             </div>
                             <div style="display: flex; flex-direction: column; gap: 10px;">
-                                <!-- VAPT retest: which scan version to export (shown when the
-                                     session has more than one; see renderVaptRetestBar). -->
-                                <div id="vapt-export-version" style="display:none; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 10px;">
+                                <!-- VAPT retest: which scan version to download (shown when the
+                                     session has more than one; filled by renderVaptRetestBar). -->
+                                <div id="vapt-export-version" style="display:none; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 10px;">
                                     <label for="vapt-export-round" style="font-weight: 700; font-size: 0.8rem;">Report version</label>
-                                    <select id="vapt-export-round"></select>
-                                    <label for="vapt-export-summary" style="display: flex; gap: 8px; align-items: flex-start; font-size: 0.8rem;">
-                                        <input type="checkbox" id="vapt-export-summary" checked style="margin-top: 3px;">
-                                        <span>Include the retest summary<br><span style="color: var(--text-muted);">The versions table and each vulnerability's status in each version.</span></span>
-                                    </label>
+                                    <select id="vapt-export-round" class="vapt-version-select"></select>
                                 </div>
                                 <button type="button" class="btn-primary" id="btn-export-pdf"
                                     onclick="exportFindingsPDF()"
@@ -2204,7 +2200,7 @@
     <script src="/static/js/config.js?v=20260807_v410055"></script>
     <script src="/static/js/sidebar.js?v=20260807_v410055"></script>
     <script src="/static/js/admin.js?v=20260807_v410055"></script>
-    <script src="/static/app.js?v=20261008_v410079"></script>
+    <script src="/static/app.js?v=20261008_v410083"></script>
 </body>
 
 </html>

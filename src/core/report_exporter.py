@@ -1,6 +1,5 @@
 import os
 import html
-import json
 import re
 from datetime import datetime, timedelta
 
@@ -272,66 +271,21 @@ def _retest_date(iso):
         return str(iso or "-")
 
 
-def _vapt_retest_intro(rounds):
-    latest = rounds[-1]
-    c = latest.get("counts") or {}
-    n = int(latest["round"])
-
-    def _n(k, one, many):
-        v = int(c.get(k, 0) or 0)
-        return f"{v} {one if v == 1 else many}"
-
-    text = (f"This report is version {n} of the assessment: the retest of {_retest_date(latest.get('date'))}, "
-            f"compared with version {n - 1}. {_n('still_open', 'vulnerability is', 'vulnerabilities are')} "
-            f"still open, {_n('fixed', 'has', 'have')} been fixed and {_n('new', 'is', 'are')} new.")
-    if c.get("not_retested"):
-        text += (f" {_n('not_retested', 'was', 'were')} not retested -- "
-                 f"{'its host was' if int(c['not_retested']) == 1 else 'their hosts were'} not part of the "
-                 f"retest -- and {'remains' if int(c['not_retested']) == 1 else 'remain'} open.")
-    if c.get("reopened"):
-        text += f" {_n('reopened', 'that had been fixed was', 'that had been fixed were')} found again."
-    return text + (" A vulnerability is recorded as fixed only when the retest scanned its host again "
-                   "and did not find it, or the retest report marks it closed.")
+def _vapt_retest_status_line(findings, rounds):
+    """A retested session's result in one line: open and closed after the
+    latest version. The report gives each finding's final status -- Open or
+    Closed -- and no version-by-version comparison, which reviewers found hard
+    to read and asked to drop."""
+    closed = sum(1 for f in findings if _vapt_is_closed(f))
+    return (f"Status after the retest of {_retest_date(rounds[-1].get('date'))}: "
+            f"{len(findings) - closed} open, {closed} closed. A vulnerability is closed when the retest "
+            f"scanned its host again and did not find it, or the retest report marks it closed; one whose "
+            f"host was not part of the retest remains open.")
 
 
-def _vapt_retest_rows(findings, rounds):
-    """[(title, host / URL, label per version, standing now)] for the Retest
-    summary's table, most urgent first. Labels come from each finding's own
-    history, so an earlier version exported reads as that version stood."""
-    versions = [int(r["round"]) for r in rounds]
-    rows = []
-    for f in findings:
-        hist = f.get("retest_history") or []
-        if isinstance(hist, str):
-            try:
-                hist = json.loads(hist)
-            except ValueError:
-                hist = []
-        by_round = {int(h.get("round") or 0): h for h in hist if isinstance(h, dict)}
-        first = int(f.get("first_round") or 1)
-        labels = []
-        for v in versions:
-            h = by_round.get(v)
-            if v < first:
-                labels.append("-")
-            elif h is None:
-                labels.append("Open" if v == first else "-")
-            elif h.get("state") == "not_scanned":
-                labels.append("Not retested")
-            elif h.get("state") in ("not_found", "reported_closed") or str(h.get("status") or "").lower() == "closed":
-                labels.append("Closed" if v == first else "Fixed")
-            else:
-                labels.append("New" if v == first and v > versions[0] else "Open")
-        last = labels[-1] if labels else "Open"
-        if last == "Open" and first < versions[-1]:
-            now = "Reopened" if "Fixed" in labels[:-1] else "Still open"
-        else:
-            now = last
-        title = f.get("title") or f.get("control_name") or f.get("control") or ""
-        rows.append((title, str(f.get("target") or ""), labels, now))
-    order = {"New": 0, "Reopened": 1, "Still open": 2, "Open": 2, "Not retested": 3, "Fixed": 4, "Closed": 5, "-": 6}
-    rows.sort(key=lambda r: order.get(r[3], 6))
-    return rows
+def _vapt_final_status(f):
+    """Open or Closed: a retested session's status for one finding."""
+    return "Closed" if _vapt_is_closed(f) else "Open"
 
 
 def _vapt_is_closed(f):
@@ -1260,12 +1214,18 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
     pdf.cell(0, 5.5, "2.3.4 Vulnerabilities Summary", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     pdf.ln(2)
 
-    with pdf.table(col_widths=(20, 100, 30, 30), text_align="L") as table:
+    # A retested session: each row also says Open or Closed (and section 3
+    # gives each finding's status). A session scanned once keeps its table.
+    _retest_rounds = _vapt_retest_rounds(meta)
+    _sum_widths = (14, 88, 26, 26, 26) if _retest_rounds else (20, 100, 30, 30)
+    with pdf.table(col_widths=_sum_widths, text_align="L") as table:
         h = table.row()
         h.cell("Sr. No.", style=hdr_blue)
         h.cell("Vulnerabilities", style=hdr_blue)
         h.cell("CVSS Score", style=hdr_blue)
         h.cell("Severity", style=hdr_blue)
+        if _retest_rounds:
+            h.cell("Status", style=hdr_blue)
 
         list_to_show = active_findings
         if not list_to_show:
@@ -1274,6 +1234,8 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
             r.cell("No vulnerabilities were identified during this assessment.")
             r.cell("-")
             r.cell("-")
+            if _retest_rounds:
+                r.cell("-")
         for idx, f in enumerate(list_to_show, 1):
             title = f.get("title", "") or f.get("finding", "") or f.get("control", "") or f"Vulnerability {idx}"
             sev_str = str(f.get("severity", f.get("sev", "LOW"))).split()[-1].upper()
@@ -1285,6 +1247,8 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
             r.cell(clean_text(title), style=body_style)
             r.cell(score_str, style=body_style)
             r.cell(sev_str, style=body_style)
+            if _retest_rounds:
+                r.cell(_vapt_final_status(f), style=body_style)
 
         # The highest score a scanner reported, and the worst open severity.
         overall_score_val, overall_sev = _vapt_overall(_open_f)
@@ -1294,47 +1258,21 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
         r_over.cell("OVERALL SCORE", style=lbl_style)
         r_over.cell(f"{overall_score_val:.1f}" if overall_score_val is not None else "-", style=lbl_style)
         r_over.cell(overall_sev, style=lbl_style)
+        if _retest_rounds:
+            r_over.cell("", style=lbl_style)
 
-    # ── 2.3.5 Retest summary: a session scanned more than once ──────────────
-    _retest_rounds = _vapt_retest_rounds(meta)
+    # ── 2.3.5 Retest status: a session scanned more than once ───────────────
+    # Final status only -- open and closed -- with each finding's own status
+    # in section 3. No version-by-version comparison.
     if _retest_rounds:
         pdf.ln(5)
         pdf.set_font("Helvetica", "B", 10)
         pdf.set_text_color(*DARK_TEXT)
-        pdf.cell(0, 5.5, "2.3.5 Retest Summary", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.cell(0, 5.5, "2.3.5 Retest Status", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         pdf.set_font("Helvetica", "", 8.5)
         pdf.set_text_color(*BODY_TEXT)
-        pdf.multi_cell(0, 4.5, clean_text(_vapt_retest_intro(_retest_rounds)), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-        pdf.ln(2)
-        with pdf.table(col_widths=(30, 26, 18, 22, 18, 18, 26), text_align="L") as table:
-            h = table.row()
-            for _col in ("Version", "Date", "Found", "Still open", "Fixed", "New", "Not retested"):
-                h.cell(_col, style=hdr_blue)
-            for _i, _r in enumerate(_retest_rounds):
-                _c = _r.get("counts") or {}
-                row = table.row()
-                row.cell(f"v{_r['round']} " + ("first scan" if _i == 0 else "retest"), style=body_style)
-                row.cell(_retest_date(_r.get("date")), style=body_style)
-                row.cell(str(_r.get("found", "-")), style=body_style)
-                for _k in ("still_open", "fixed", "new", "not_retested"):
-                    row.cell("-" if _i == 0 else str(_c.get(_k, 0)), style=body_style)
-        pdf.ln(3)
-        _shown = _retest_rounds[-4:]      # the latest four versions fit the page
-        _vw = max(14, 56 // len(_shown))
-        with pdf.table(col_widths=tuple([52, 46] + [_vw] * len(_shown) + [24]), text_align="L") as table:
-            h = table.row()
-            h.cell("Vulnerability", style=hdr_blue)
-            h.cell("Host / URL", style=hdr_blue)
-            for _r in _shown:
-                h.cell(f"v{_r['round']} ({_retest_date(_r.get('date'))[:6]})", style=hdr_blue)
-            h.cell("Now", style=hdr_blue)
-            for _t, _w, _labels, _now in _vapt_retest_rows(active_findings, _retest_rounds):
-                row = table.row()
-                row.cell(clean_text(_t), style=body_style)
-                row.cell(clean_text(_w or "-"), style=body_style)
-                for _lab in _labels[-len(_shown):]:
-                    row.cell(_lab, style=body_style)
-                row.cell(_now, style=body_style)
+        pdf.multi_cell(0, 4.5, clean_text(_vapt_retest_status_line(active_findings, _retest_rounds)),
+                       new_x=XPos.LMARGIN, new_y=YPos.NEXT)
 
     pdf.ln(5)
     pdf.set_font("Helvetica", "B", 10)
@@ -1411,6 +1349,8 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
         status_str = f"Detected ({conf_val.capitalize()})" if conf_val and conf_val.lower() in ("certain", "firm", "tentative") else "Detected"
         if _vapt_is_closed(f):
             status_str = "Closed (recorded as remediated in the report)"
+        if _retest_rounds:
+            status_str = _vapt_final_status(f)
 
         score_val = _vapt_score(f)
         sev_val = _vapt_severity(f)
@@ -3299,15 +3239,17 @@ def _export_vapt_docx(session_title, findings, resolved_list, status, comments="
     p = doc.add_paragraph()
     p.add_run("2.3.4 Vulnerabilities Summary").bold = True
     
-    tbl_vulns = doc.add_table(rows=1 + len(active_findings) + 1, cols=4)
+    # A retested session: each row also says Open or Closed (as the PDF).
+    _retest_rounds = _vapt_retest_rounds(meta)
+    vuln_hdrs = ["Sr. No.", "Vulnerabilities", "CVSS Score", "Severity"] + (["Status"] if _retest_rounds else [])
+    tbl_vulns = doc.add_table(rows=1 + len(active_findings) + 1, cols=len(vuln_hdrs))
     tbl_vulns.style = 'Table Grid'
-    vuln_hdrs = ["Sr. No.", "Vulnerabilities", "CVSS Score", "Severity"]
     for col_idx, text in enumerate(vuln_hdrs):
         cell = tbl_vulns.rows[0].cells[col_idx]
         _set_cell_bg(cell, "0F172A")
         cell.paragraphs[0].add_run(text).font.color.rgb = _rgb(255, 255, 255)
         cell.paragraphs[0].runs[0].bold = True
-        
+
     for idx, f in enumerate(active_findings, 1):
         _sc = _vapt_score(f)
         sev = str(f.get("severity", "Low")).split()[-1].upper()
@@ -3317,7 +3259,9 @@ def _export_vapt_docx(session_title, findings, resolved_list, status, comments="
         row_cells[1].paragraphs[0].add_run(f.get("control", "") or f.get("finding", ""))
         row_cells[2].paragraphs[0].add_run(f"{_sc:.1f}" if _sc is not None else "-")
         row_cells[3].paragraphs[0].add_run(sev)
-        
+        if _retest_rounds:
+            row_cells[4].paragraphs[0].add_run(_vapt_final_status(f))
+
     # The same row as the PDF's: highest reported score, worst open severity.
     max_score, overall_sev = _vapt_overall(_open_f)
 
@@ -3329,44 +3273,13 @@ def _export_vapt_docx(session_title, findings, resolved_list, status, comments="
     over_cells[2].paragraphs[0].add_run(f"{max_score:.1f}" if max_score is not None else "-").bold = True
     over_cells[3].paragraphs[0].add_run(overall_sev).bold = True
 
-    # 2.3.5 Retest summary: a session scanned more than once (as the PDF).
-    _retest_rounds = _vapt_retest_rounds(meta)
+    # 2.3.5 Retest status: a session scanned more than once (as the PDF) --
+    # final open and closed only, with each finding's own status in section 3.
     if _retest_rounds:
         doc.add_paragraph()
         p = doc.add_paragraph()
-        p.add_run("2.3.5 Retest Summary").bold = True
-        doc.add_paragraph(_vapt_retest_intro(_retest_rounds))
-
-        def _hdr_row(table, labels):
-            for _ci, _text in enumerate(labels):
-                _cell = table.rows[0].cells[_ci]
-                _set_cell_bg(_cell, "0F172A")
-                _run = _cell.paragraphs[0].add_run(_text)
-                _run.font.color.rgb = _rgb(255, 255, 255)
-                _run.bold = True
-
-        _t = doc.add_table(rows=1 + len(_retest_rounds), cols=7)
-        _t.style = 'Table Grid'
-        _hdr_row(_t, ["Version", "Date", "Found", "Still open", "Fixed", "New", "Not retested"])
-        for _i, _r in enumerate(_retest_rounds, 1):
-            _c = _r.get("counts") or {}
-            _vals = [f"v{_r['round']} " + ("first scan" if _i == 1 else "retest"), _retest_date(_r.get("date")),
-                     str(_r.get("found", "-"))]
-            _vals += ["-" if _i == 1 else str(_c.get(_k, 0)) for _k in ("still_open", "fixed", "new", "not_retested")]
-            for _ci, _v in enumerate(_vals):
-                _t.rows[_i].cells[_ci].paragraphs[0].add_run(_v)
-
-        doc.add_paragraph()
-        _shown = _retest_rounds[-4:]
-        _rows = _vapt_retest_rows(active_findings, _retest_rounds)
-        _t = doc.add_table(rows=1 + len(_rows), cols=3 + len(_shown))
-        _t.style = 'Table Grid'
-        _hdr_row(_t, ["Vulnerability", "Host / URL"]
-                 + [f"v{_r['round']} ({_retest_date(_r.get('date'))[:6]})" for _r in _shown] + ["Now"])
-        for _i, (_title, _where, _labels, _now) in enumerate(_rows, 1):
-            _vals = [_title, _where or "-"] + _labels[-len(_shown):] + [_now]
-            for _ci, _v in enumerate(_vals):
-                _t.rows[_i].cells[_ci].paragraphs[0].add_run(str(_v))
+        p.add_run("2.3.5 Retest Status").bold = True
+        doc.add_paragraph(_vapt_retest_status_line(active_findings, _retest_rounds))
 
     doc.add_paragraph()
     p = doc.add_paragraph()
@@ -3454,7 +3367,10 @@ def _export_vapt_docx(session_title, findings, resolved_list, status, comments="
         _conf = str(f.get("confidence") or "").strip()
         if _conf:
             pm.add_run(f"   |   Confidence: {_conf.capitalize()}")
-        if _vapt_is_closed(f):
+        if _retest_rounds:
+            _r_closed = pm.add_run(f"   |   Status: {_vapt_final_status(f)}")
+            _r_closed.bold = True
+        elif _vapt_is_closed(f):
             _r_closed = pm.add_run("   |   Status: Closed (recorded as remediated in the report)")
             _r_closed.bold = True
         r_m3 = pm.add_run(f"   |   Location / Target: {target_val}")

@@ -5148,13 +5148,24 @@ let vaptViewRound = null;
 let vaptRetestFilter = "";
 let vaptAllFindings = [];
 
-const VAPT_RETEST_LABELS = {
-    still_open:   { text: "Still open",   fg: "#c2410c", bg: "rgba(249,115,22,0.14)", hint: "found again in the retest" },
-    fixed:        { text: "Fixed",        fg: "#15803d", bg: "rgba(34,197,94,0.15)",  hint: "host rescanned, not found" },
-    new:          { text: "New",          fg: "#dc2626", bg: "rgba(239,68,68,0.14)",  hint: "not in the earlier scan" },
-    not_retested: { text: "Not retested", fg: "#64748b", bg: "rgba(100,116,139,0.18)", hint: "host left out of the retest" },
-    reopened:     { text: "Reopened",     fg: "#9333ea", bg: "rgba(168,85,247,0.15)", hint: "fixed earlier, found again" },
+// A retested session shows each finding's final status only: Open or Closed.
+// Still open, new, reopened and not retested are all Open -- nobody has
+// confirmed a fix; fixed (host rescanned, not found) and reported closed are
+// Closed. Five categories side by side read as a comparison, and reviewers
+// asked for the outcome. Closed is isFindingClosed(), as the report counts it.
+const VAPT_FINAL_STATUS = {
+    open:   { text: "Open",   fg: "#dc2626", bg: "rgba(239,68,68,0.12)", hint: "still to be fixed" },
+    closed: { text: "Closed", fg: "#15803d", bg: "rgba(34,197,94,0.15)", hint: "fixed, or reported closed" },
 };
+
+function vaptFinalStatusKey(f) { return isFindingClosed(f) ? "closed" : "open"; }
+
+// The findings a report lists: not rejected, dismissed or out of scope
+// (report_exporter._excluded_from_report), so the two counts match the report.
+function vaptInReport(f) {
+    const st = String((f && f.status) || "").toUpperCase().trim().replace(/[-\s]/g, "_");
+    return _WORKFLOW_ONLY_STATUSES.indexOf(st) === -1;
+}
 
 function vaptRetestActive() { return isVaptOnlySession() && vaptRounds.length >= 2; }
 function vaptLatestRound() {
@@ -5185,35 +5196,20 @@ function vaptFindingsAsOf(list, k) {
 }
 
 function vaptRetestCounts() {
-    const c = { still_open: 0, fixed: 0, new: 0, not_retested: 0, reopened: 0 };
-    vaptAllFindings.forEach(f => { if (c[f.retest_status] !== undefined) c[f.retest_status] += 1; });
+    const c = { open: 0, closed: 0 };
+    vaptAllFindings.filter(vaptInReport).forEach(f => { c[vaptFinalStatusKey(f)] += 1; });
     return c;
-}
-
-// The version in which a finding reached its current retest status.
-function vaptRetestRoundOf(f) {
-    if (f.retest_status === "new") return Number(f.first_round) || vaptLatestRound();
-    const hist = (Array.isArray(f.retest_history) ? f.retest_history : []).slice()
-        .sort((a, b) => (Number(a.round) || 0) - (Number(b.round) || 0));
-    let at = null;
-    for (let i = hist.length - 1; i >= 1; i--) {
-        const closedNow = String(hist[i].status || "").toLowerCase() === "closed";
-        const closedBefore = String(hist[i - 1].status || "").toLowerCase() === "closed";
-        if (closedNow !== closedBefore) { at = Number(hist[i].round); break; }
-    }
-    return at || vaptLatestRound();
 }
 
 function renderVaptRetestBar() {
     const bar = document.getElementById("vapt-retest-bar");
-    const exp = document.getElementById("vapt-export-version");
     const container = document.getElementById("findings-container");
     if (container) container.classList.toggle("vapt-history-view", vaptViewingOlder());
+    renderVaptExportVersion();
     if (!bar) return;
     if (!vaptRetestActive()) {
         bar.style.display = "none";
         bar.innerHTML = "";
-        if (exp) exp.style.display = "none";
         return;
     }
     const latest = vaptLatestRound();
@@ -5221,46 +5217,60 @@ function renderVaptRetestBar() {
     const byRound = {};
     vaptRounds.forEach(r => { byRound[Number(r.round)] = r; });
     const cur = byRound[viewing] || {};
-    const prev = byRound[viewing - 1];
-    const buttons = vaptRounds.map(r => {
+    // One dropdown, latest first: a row of buttons ran off the panel after a
+    // few retests.
+    const options = vaptRounds.slice().reverse().map(r => {
         const n = Number(r.round);
-        const what = n === 1 ? "first scan" : "retest";
-        return `<button type="button" id="vapt-version-${n}" class="vapt-version-btn" aria-pressed="${n === viewing}" onclick="setVaptViewRound(${n})">`
-            + `v${n} · ${what}${n === latest ? " (latest)" : ""}<small>${escapeHtml(vaptRetestDate(r.date))} · ${Number(r.found) || 0} found</small></button>`;
+        return `<option value="${n}"${n === viewing ? " selected" : ""}>v${n} · ${n === 1 ? "first scan" : "retest"}${n === latest ? " (latest)" : ""}`
+            + ` · ${escapeHtml(vaptRetestDate(r.date))} · ${Number(r.found) || 0} found</option>`;
     }).join("");
-    const compare = prev
-        ? `v${viewing} compared with v${viewing - 1} · ${escapeHtml(vaptRetestDate(cur.date))} vs ${escapeHtml(vaptRetestDate(prev.date))}`
-        : `First scan · ${escapeHtml(vaptRetestDate(cur.date))}`;
     let body;
     if (viewing < latest) {
         body = `<div class="vapt-retest-note">Showing <b>v${viewing}</b> as it stood on ${escapeHtml(vaptRetestDate(cur.date))}, read only. `
             + `Switch to <b>v${latest}</b> to review and change findings.</div>`;
     } else {
         const c = vaptRetestCounts();
-        const keys = ["still_open", "fixed", "new", "not_retested"].concat(c.reopened ? ["reopened"] : []);
-        body = `<div class="vapt-retest-counts" role="group" aria-label="Filter by retest status">` + keys.map(k => {
-            const L = VAPT_RETEST_LABELS[k];
+        body = `<div class="vapt-retest-counts" role="group" aria-label="Filter by status">` + ["open", "closed"].map(k => {
+            const L = VAPT_FINAL_STATUS[k];
             return `<button type="button" id="vapt-retest-${k}" class="vapt-retest-count" aria-pressed="${vaptRetestFilter === k}" `
                 + `onclick="toggleVaptRetestFilter('${k}')" style="color:${L.fg}; background:${L.bg};">`
                 + `<span class="n">${Number(c[k]) || 0}</span><span class="l">${escapeHtml(L.text)}</span><span class="d">${escapeHtml(L.hint)}</span></button>`;
         }).join("") + `</div>`;
     }
-    bar.innerHTML = `<div class="vapt-retest-head"><span class="vapt-retest-label">SCAN VERSION</span>`
-        + `<div class="vapt-version-seg" role="group" aria-label="Scan version">${buttons}</div>`
-        + `<span class="vapt-retest-compare">${compare}</span></div>${body}`;
+    bar.innerHTML = `<div class="vapt-retest-head"><label class="vapt-retest-label" for="vapt-version-select">SCAN VERSION</label>`
+        + `<select id="vapt-version-select" class="vapt-version-select" onchange="setVaptViewRound(this.value)">${options}</select></div>${body}`;
     bar.style.display = "block";
+}
 
-    // Report Exporter: the version to export, latest first.
+// Report Exporter: which version to download, latest first (the default).
+// Each version exports as it stood -- what it had found, with its status then.
+function renderVaptExportVersion() {
+    const box = document.getElementById("vapt-export-version");
     const sel = document.getElementById("vapt-export-round");
-    if (exp && sel) {
-        const keep = sel.value;
-        sel.innerHTML = vaptRounds.slice().reverse().map(r => {
-            const n = Number(r.round);
-            return `<option value="${n}">v${n} · ${n === 1 ? "first scan" : "retest"} · ${escapeHtml(vaptRetestDate(r.date))}${n === latest ? " (latest)" : ""}</option>`;
-        }).join("");
-        if (keep && sel.querySelector(`option[value="${keep}"]`)) sel.value = keep;
-        exp.style.display = "flex";
+    if (!box || !sel) return;
+    if (!vaptRetestActive()) {
+        box.style.display = "none";
+        sel.innerHTML = "";
+        return;
     }
+    const keep = sel.value;
+    const latest = vaptLatestRound();
+    sel.innerHTML = vaptRounds.slice().reverse().map(r => {
+        const n = Number(r.round);
+        return `<option value="${n}">v${n} · ${n === 1 ? "first scan" : "retest"}${n === latest ? " (latest)" : ""}`
+            + ` · ${escapeHtml(vaptRetestDate(r.date))} · ${Number(r.found) || 0} found</option>`;
+    }).join("");
+    if (keep && sel.querySelector(`option[value="${keep}"]`)) sel.value = keep;
+    box.style.display = "flex";
+}
+
+// The chosen version for the export URLs: nothing for the latest.
+function vaptExportParams() {
+    const box = document.getElementById("vapt-export-version");
+    const sel = document.getElementById("vapt-export-round");
+    if (!box || box.style.display === "none" || !sel || !vaptRetestActive()) return "";
+    const n = Number(sel.value);
+    return (n && n < vaptLatestRound()) ? `&version=${encodeURIComponent(n)}` : "";
 }
 
 function setVaptViewRound(n) {
@@ -5278,16 +5288,6 @@ function toggleVaptRetestFilter(k) {
     renderFindingsList();
 }
 
-function vaptRetestBadgeHtml(f) {
-    if (!vaptRetestActive() || vaptViewingOlder()) return "";
-    const L = VAPT_RETEST_LABELS[f.retest_status];
-    if (!L) return "";
-    const when = (f.retest_status === "fixed" || f.retest_status === "new" || f.retest_status === "reopened")
-        ? ` IN v${vaptRetestRoundOf(f)}` : "";
-    return `<span class="badge vapt-retest-badge" title="${escapeHtml(L.hint)}" style="background:${L.bg}; color:${L.fg}; border:1px solid ${L.fg};">`
-        + `${escapeHtml(L.text.toUpperCase())}${when}</span>`;
-}
-
 const VAPT_HISTORY_WORDS = {
     found: "Found", not_found: "Not found (host rescanned)",
     not_scanned: "Host not scanned", reported_closed: "Reported closed",
@@ -5296,7 +5296,7 @@ const VAPT_HISTORY_NOTES = {
     fixed: "Closed by the retest. Reopen it with Modify if the scanner only missed it.",
     not_retested: "Its host was not part of the latest retest, so it stays open until a later scan covers it.",
     new: "Found in the retest; it was not in the earlier scan.",
-    reopened: "It had been fixed and was found again.",
+    reopened: "It had been closed and was found again.",
 };
 
 function vaptRetestHistoryHtml(f) {
@@ -5349,7 +5349,7 @@ async function refreshVaptRetestChoice() {
             box.innerHTML = `<div class="vapt-retest-choice-box vapt-retest-hint">`
                 + `<b>v${lastN} scanned: ${found}${when}.</b>`
                 + `<span>To retest, upload the <b>new</b> scan report of the same targets (a different file from v${lastN}'s). `
-                + `It is compared with v${lastN}: still open, fixed, new, not retested.</span>`
+                + `Each finding is then marked Open or Closed.</span>`
                 + `<span class="vapt-retest-hint-warn">Run Audit Scan without a new file scans v${lastN}'s files again from the start and replaces unsaved findings.</span>`
                 + `<button type="button" class="btn-secondary" id="vapt-retest-upload-btn" `
                 + `onclick="document.getElementById('evidence-file-input-panel').click()">Upload retest file</button>`
@@ -5364,8 +5364,8 @@ async function refreshVaptRetestChoice() {
             + `<b>This session already has v${lastN}: ${Number(last.found) || 0} finding(s), scanned ${escapeHtml(vaptRetestDate(last.date))}.</b>`
             + `<span>Not scanned yet: ${newFiles.map(n => escapeHtml(n)).join(", ")}</span>`
             + `<label for="vapt-run-retest"><input type="radio" name="vapt-run-kind" id="vapt-run-retest" value="retest"${choice === "retest" ? " checked" : ""}>`
-            + `<span><b>Retest (v${next})</b>: scan only the new file(s) and compare with v${lastN}. Found again: still open. `
-            + `Host rescanned but not found: fixed. Host not in the retest: not retested. Not in v${lastN}: new. v${lastN} is kept.</span></label>`
+            + `<span><b>Retest (v${next})</b>: scan only the new file(s) against v${lastN}. Host rescanned and the vulnerability not found: Closed. `
+            + `Found again, new, or its host not in the retest: Open. v${lastN} is kept.</span></label>`
             + `<label for="vapt-run-full"><input type="radio" name="vapt-run-kind" id="vapt-run-full" value="full"${choice === "full" ? " checked" : ""}>`
             + `<span><b>Scan everything again as one scan</b>: every file, as before. Unsaved findings are replaced and the versions start over.</span></label>`
             + `</div>`;
@@ -5393,18 +5393,6 @@ function syncRunButtonForRetest() {
     const box = document.getElementById("vapt-retest-choice");
     const label = vaptRetestSelected() ? `Run Retest Scan (v${Number(box.dataset.next) || 2})` : "Run Audit Scan";
     btn.innerHTML = `<span>▶</span> <span>${escapeHtml(label)}</span>`;
-}
-
-// Report Exporter: the version and summary choices, when there is a choice.
-function vaptExportParams() {
-    const exp = document.getElementById("vapt-export-version");
-    if (!exp || exp.style.display === "none" || !vaptRetestActive()) return "";
-    const sel = document.getElementById("vapt-export-round");
-    const sum = document.getElementById("vapt-export-summary");
-    let q = "";
-    if (sel && sel.value && Number(sel.value) < vaptLatestRound()) q += `&version=${encodeURIComponent(sel.value)}`;
-    if (sum && !sum.checked) q += "&retest_summary=false";
-    return q;
 }
 
 // The framework of the session on the Audit Records page, as /audit/findings
@@ -6933,7 +6921,7 @@ function renderFindingsList() {
 
     // VAPT retest: the Still open / Fixed / New / Not retested counts.
     if (vaptRetestFilter && vaptRetestActive() && !vaptViewingOlder()) {
-        list = list.filter(f => (f.retest_status || "") === vaptRetestFilter);
+        list = list.filter(f => vaptFinalStatusKey(f) === vaptRetestFilter);
     }
 
     if (activeSeverityFilter && activeSeverityFilter !== "all") {
@@ -7338,7 +7326,6 @@ function renderFindingsList() {
                         ${buildQuestionSubtitleHtml(f)}
                     </div>
                     <div class="badge-group" style="display:flex; gap:6px; align-items:center;">
-                        ${vaptRetestBadgeHtml(f)}
                         ${mainBadgeHtml}
                         ${sevBadgeHtml}
                     </div>
@@ -9783,8 +9770,10 @@ async function exportFindingsPDF() {
         return;
     }
     const brandingParams = getBrandingQueryParams();
-    const exportUrl = `${API_BASE}/audit/export/pdf?session_id=${encodeURIComponent(activeSessionId)}${brandingParams}${vaptExportParams()}`;
-    const fname = `Audit_Report_${activeSessionId.slice(0, 6).toUpperCase()}.pdf`;
+    const versionParam = vaptExportParams();
+    const exportUrl = `${API_BASE}/audit/export/pdf?session_id=${encodeURIComponent(activeSessionId)}${brandingParams}${versionParam}`;
+    const vTag = versionParam ? `_v${versionParam.split("=")[1]}` : "";
+    const fname = `Audit_Report_${activeSessionId.slice(0, 6).toUpperCase()}${vTag}.pdf`;
     await downloadFileWithLoader("btn-export-pdf", "txt-export-pdf", "Export Formal PDF Report", exportUrl, fname, "PDF");
 }
 
@@ -9794,8 +9783,10 @@ async function exportFindingsDOCX() {
         return;
     }
     const brandingParams = getBrandingQueryParams();
-    const exportUrl = `${API_BASE}/audit/export/docx?session_id=${encodeURIComponent(activeSessionId)}${brandingParams}${vaptExportParams()}`;
-    const fname = `Audit_Report_${activeSessionId.slice(0, 6).toUpperCase()}.docx`;
+    const versionParam = vaptExportParams();
+    const exportUrl = `${API_BASE}/audit/export/docx?session_id=${encodeURIComponent(activeSessionId)}${brandingParams}${versionParam}`;
+    const vTag = versionParam ? `_v${versionParam.split("=")[1]}` : "";
+    const fname = `Audit_Report_${activeSessionId.slice(0, 6).toUpperCase()}${vTag}.docx`;
     await downloadFileWithLoader("btn-export-docx", "txt-export-docx", "Export Editable Word Report", exportUrl, fname, "Word");
 }
 
