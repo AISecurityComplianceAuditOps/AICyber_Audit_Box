@@ -142,3 +142,29 @@ def test_the_word_report_names_the_targets_and_what_was_tested():
     assert "https://shop.test/api/user" in scope and "[Referer" not in scope
     assert "3 TECHNICAL DETAIL REPORT: NETWORK AND WEB APPLICATION VULNERABILITY ASSESSMENT" in paras
     assert not [p for p in paras if p.startswith("CVE(s):") and "CWE-" in p]
+
+
+def test_the_word_contents_is_a_field_word_fills_with_the_pages():
+    """The Word contents had typed-in pages ("4 APPENDIX ... 12") whatever the
+    report's length. It is a TOC field over the section headings' outline
+    levels, and Word updates it when the file is opened."""
+    from docx import Document
+    from docx.oxml.ns import qn
+    d = Document(io.BytesIO(rx.export_docx_report("VAPT", _findings(), [], "FINAL", audit_type="vapt")))
+    body = d.element.body
+    instr = [e.text for e in body.iter(qn("w:instrText"))]
+    assert any(t.strip().startswith(r'TOC \o "1-2"') and r"\u" in t for t in instr), instr
+    kinds = [e.get(qn("w:fldCharType")) for e in body.iter(qn("w:fldChar"))]
+    assert kinds[:2] == ["begin", "separate"] and "end" in kinds
+    paras = [p.text for p in d.paragraphs]
+    assert not [t for t in paras if re.search(r"\.{10,} \d+$", t)]          # no typed-in pages
+
+    def level(text):
+        p = next(p for p in d.paragraphs if p.text == text and p.runs and p.runs[0].bold)
+        el = p._p.pPr.find(qn("w:outlineLvl")) if p._p.pPr is not None else None
+        return None if el is None else el.get(qn("w:val"))
+    assert level("2 EXECUTIVE SUMMARY") == "0" and level("5 DISCLAIMER") == "0"
+    assert level("2.1 Scope of the Engagement") == "1" and level("4.2 Tools Used") == "1"
+    assert level("2.3.2 Tabular Summary") is None                             # third level: not listed
+    upd = d.settings.element.find(qn("w:updateFields"))
+    assert upd is not None and upd.get(qn("w:val")) == "true"
