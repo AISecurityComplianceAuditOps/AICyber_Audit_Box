@@ -253,6 +253,14 @@ ENV HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 DOCTR_CACHE_DIR=/home/appuser/.cache
 # Verify model loading in pure offline mode during build
 RUN python -c "from doctr.models import ocr_predictor; ocr_predictor(pretrained=True); from sentence_transformers import CrossEncoder; CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2'); CrossEncoder('BAAI/bge-reranker-base')"
 
+# The model server's startup script, carried so an application update brings
+# it: apply_update reads it out of this image and, when it differs from the one
+# the site's LLM image runs, builds it onto that image. The app never runs it.
+# Laid out as Dockerfile.llm.rebase expects its build context. Last, so a
+# change here rebuilds one small layer and nothing above it.
+COPY Dockerfile.llm.rebase /app/llm-config/Dockerfile.llm.rebase
+COPY docker/llm-entrypoint.sh /app/llm-config/docker/llm-entrypoint.sh
+
 EXPOSE 8000
 
 # 1. Generate/reuse a persisted JWT_SECRET (docker/generate_secrets.sh).

@@ -197,6 +197,21 @@ def _iso_report():
     return "%d pages" % len(PdfReader(io.BytesIO(pdf)).pages)
 
 
+@check("the model server's startup script is carried for apply_update")
+def _llm_config():
+    # apply_update reads these two out of the app image and builds the script
+    # onto the site's LLM image; without them an app update leaves the model
+    # server on whatever slot sizing it shipped with.
+    base = os.path.join(APP, "llm-config")
+    recipe = open(os.path.join(base, "Dockerfile.llm.rebase"), "rb").read()
+    script = open(os.path.join(base, "docker", "llm-entrypoint.sh"), "rb").read()
+    assert b"COPY docker/llm-entrypoint.sh /llm-entrypoint.sh" in recipe, "the recipe does not copy the script"
+    assert script.startswith(b"#!/bin/sh") or script.startswith(b"#!/bin/bash"), "the script has no shebang"
+    assert b"\r" not in script, "the script has Windows line endings and would not run"
+    assert b"STACK_RESERVE_GB" in script, "the script keeps no memory back for the app"
+    return "%d KB" % (len(script) // 1024)
+
+
 print("")
 print("  Image check  (Python %s)" % sys.version.split()[0])
 for ok, name, detail in RESULTS:
