@@ -733,7 +733,7 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
             # "3 TECHNICAL DETAIL REPORT: NETWORK AND WEB APPLICATION ..." is
             # wider than the page: one cell cut it off at the edge. Wrapped,
             # with the indent the single line has.
-            pdf.multi_cell(0, 6.5, _txt.strip(), fill=True, padding=(0.5, 2, 0.5, 3.2),
+            pdf.multi_cell(0, 6.5, _txt.strip(), fill=True, align="L", padding=(0.5, 2, 0.5, 3.2),
                            new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         else:
             pdf.cell(0, 7.5, _txt, fill=True, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
@@ -989,6 +989,9 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
         _toc_pages.setdefault(key, pdf.page_no())
 
     def _render_toc(_pdf, _outline):
+        # fpdf2 puts back this page and line but not the column: x is where the
+        # last page's drawing left it.
+        _pdf.set_x(_pdf.l_margin)
         _pdf.set_font("Helvetica", "", 9)
         _pdf.set_text_color(*BODY_TEXT)
         for key, title in toc_items:
