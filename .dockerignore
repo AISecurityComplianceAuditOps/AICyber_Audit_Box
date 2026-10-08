@@ -49,9 +49,8 @@ build/
 temp_clean_repo_export/
 .pytest_cache/
 
-# Unlike everything above, this one DOES change the app image: COPY src/ would
-# carry it. It is the embedding cache of whatever documents were scanned on the
-# machine that builds -- file names included, some of them client documents --
-# and it shipped inside app 1.1. The app starts without it and rebuilds it from
-# the customer's own documents.
+# Kept in step with Dockerfile.app.dockerignore, which is the file the app build
+# actually reads (BuildKit prefers "<dockerfile>.dockerignore") and where this
+# line keeps the build machine's embedding cache -- client document names
+# included -- out of the app image.
 src/core/.embeddings_cache.pkl
