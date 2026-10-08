@@ -87,8 +87,10 @@ def _findings():
     ]
 
 
-HEADER = ["Critical", "High", "Medium", "Low", "Informational", "Closed", "Total Findings"]
-COUNTS = ["0", "1", "1", "0", "1", "2", "5"]
+# Open (everything not closed: the severities and Informational) sits before
+# Closed, so Open + Closed = Total Findings.
+HEADER = ["Critical", "High", "Medium", "Low", "Informational", "Open", "Closed", "Total Findings"]
+COUNTS = ["0", "1", "1", "0", "1", "3", "2", "5"]
 SENTENCE = ("Based on the assessment, 2 open vulnerabilities have been found in the target scope which are "
             "categorized as follows, with 1 further informational observation(s) and 2 finding(s) the report "
             "records as closed:")

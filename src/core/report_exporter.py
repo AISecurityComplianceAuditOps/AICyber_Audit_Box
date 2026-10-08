@@ -418,6 +418,125 @@ def _vapt_remediation_parts(f):
     return "Recommendation:", remed, (steps if steps and steps != remed.strip() else "")
 
 
+# ── Recommendations as points ────────────────────────────────────────────────
+# The card shows a recommendation as points (app.js formatRemediationSteps,
+# formatVaptRecommendation): numbered steps as a numbered list, the AI's "- "
+# lines as bullets, prose one bullet per sentence. The reports printed it as one
+# block -- and advice read out of a scanner's PDF kept that PDF's line wrapping,
+# so a report's lines stopped mid-sentence ("... leaving placeholders for each /
+# item of user input; second, ..."). Both reports now show what the card shows.
+_REF_MARK = "\n\nOriginal recommendation (for reference): "
+_POINT_ABBREV = {"e.g", "i.e", "etc", "vs", "approx", "incl", "Mr", "Mrs", "Dr", "No", "Fig", "Ref"}
+
+
+def _vapt_closed_parts(text):
+    """(the closed note, the report's own advice) for a closed finding's text
+    from _vapt_remediation_parts, or (None, None) for an open one. The note
+    stays one paragraph; only the advice under it becomes points."""
+    t = str(text or "")
+    if not t.startswith(_VAPT_CLOSED_NOTE):
+        return None, None
+    ref = t[len(_VAPT_CLOSED_NOTE):]
+    return _VAPT_CLOSED_NOTE, (ref[len(_REF_MARK):] if ref.startswith(_REF_MARK) else ref.strip())
+
+
+def _vapt_sentences(text):
+    """One item per sentence (app.js splitSentences). A sentence ends at . ! or ?
+    followed by a space and a capital, a digit or an opening quote or bracket --
+    not inside "2.4.49" or a URL, and not after "e.g.", "etc." and the like. The
+    text's own line breaks are joined first."""
+    t = re.sub(r"\s+", " ", str(text or "")).strip()
+    out, start = [], 0
+    for m in re.finditer(r"[.!?]\s+(?=[A-Z0-9\"'(\[])", t):
+        word = re.search(r"([A-Za-z][A-Za-z.]*)$", t[start:m.start()])
+        if word and word.group(1) in _POINT_ABBREV:
+            continue
+        out.append(t[start:m.start() + 1].strip())
+        start = m.end()
+    if t[start:].strip():
+        out.append(t[start:].strip())
+    # A step number on its own ("1." of "1. Replace ...") is not a sentence.
+    merged = []
+    for s in out:
+        if merged and re.fullmatch(r"\d{1,2}\.", merged[-1]):
+            merged[-1] = f"{merged[-1]} {s}"
+        else:
+            merged.append(s)
+    return merged
+
+
+def _vapt_points(text):
+    """(preamble, items, numbered) for a recommendation, split as the card does.
+    One item means a plain paragraph."""
+    raw = str(text or "").strip()
+    if not raw:
+        return "", [], False
+    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+    if len(lines) >= 2 and all(ln.startswith("- ") for ln in lines):            # the AI's points
+        return "", [ln[2:].strip() for ln in lines], False
+    if len(lines) >= 2 and all(re.match(r"\d{1,2}[.)]\s+", ln) for ln in lines):  # the AI's steps
+        return "", [re.sub(r"^\d{1,2}[.)]\s+", "", ln) for ln in lines], True
+    flat = re.sub(r"\s+", " ", raw)
+    if re.search(r"(?:^|[.!?]\s+|:\s*)\d{1,2}\.\s+[A-Z]", raw, re.M) or re.search(r"^\d{1,2}\.\s+", raw, re.M):
+        mark = "\x00"
+        s = re.sub(r"([.!?])\s+(\d{1,2})\.\s+", lambda x: f"{x.group(1)} {mark}{x.group(2)}. ", flat)
+        s = re.sub(r":\s+(\d{1,2})\.\s+(?=[A-Z])", lambda x: f": {mark}{x.group(1)}. ", s)
+        s = re.sub(r"^(\d{1,2})\.\s+", lambda x: f"{mark}{x.group(1)}. ", s)
+        parts = [p.strip() for p in s.split(mark) if p.strip()]
+        if len(parts) > 1:
+            pre = "" if re.match(r"\d", parts[0]) else parts[0]
+            steps = parts[1:] if pre else parts
+            return pre, [re.sub(r"^\d{1,2}\.\s*", "", p).strip() for p in steps], True
+    return "", _vapt_sentences(flat), False
+
+
+def _pdf_points(pdf, text, clean, color=(51, 65, 85)):
+    """A recommendation in the PDF: a numbered list, bullets, or one paragraph."""
+    from fpdf.enums import XPos, YPos
+    pre, items, numbered = _vapt_points(text)
+    if pre:
+        pdf.multi_cell(0, 4.5, clean(pre), align="L", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    if len(items) <= 1:
+        if items or not pre:
+            pdf.multi_cell(0, 4.5, clean(items[0] if items else text), align="L",
+                           new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        return
+    for i, item in enumerate(items, 1):
+        if pdf.will_page_break(4.5):           # the marker never sits alone at a page foot
+            pdf.add_page()
+        x, y = pdf.l_margin, pdf.get_y()
+        if numbered:
+            pdf.set_x(x)
+            pdf.cell(6, 4.5, f"{i}.")
+        else:
+            with pdf.local_context(fill_color=color):
+                pdf.ellipse(x + 1.4, y + 1.6, 1.3, 1.3, style="F")
+            pdf.set_x(x + 5)
+        pdf.multi_cell(0, 4.5, clean(item), align="L", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.ln(0.6)
+
+
+def _docx_points(doc, text):
+    """A recommendation in the Word report, as _pdf_points. Bullets and numbers
+    are written out with a hanging indent rather than Word's list styles: every
+    "List Number" paragraph shares one numbering, so the second finding's steps
+    would start at 4."""
+    from docx.shared import Cm
+    pre, items, numbered = _vapt_points(text)
+    if pre:
+        doc.add_paragraph(pre)
+    if len(items) <= 1:
+        if items or not pre:
+            doc.add_paragraph(items[0] if items else str(text or ""))
+        return
+    for i, item in enumerate(items, 1):
+        p = doc.add_paragraph(f"{i}.\t{item}" if numbered else f"•\t{item}")
+        pf = p.paragraph_format
+        pf.left_indent = Cm(0.6)
+        pf.first_line_indent = Cm(-0.5)
+        pf.tab_stops.add_tab_stop(Cm(0.6))
+
+
 def _vapt_severity(f):
     return str(f.get("severity", f.get("sev", "LOW")) or "LOW").split()[-1].upper()
 
@@ -967,6 +1086,9 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
     medium_cnt   = sum(1 for f in _open_f if f.get("severity") == "MEDIUM")
     low_cnt      = sum(1 for f in _open_f if f.get("severity") == "LOW")
     info_cnt     = sum(1 for f in _open_f if f.get("severity") == "INFO")
+    # Everything not closed -- the severity columns and Informational together,
+    # so Open + Closed = Total Findings.
+    open_all_cnt = len(_open_f)
 
     total_cnt = len(active_findings) if active_findings else 2
 
@@ -989,14 +1111,16 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
     hdr_info = FontFace(emphasis="B", color=(255, 255, 255), fill_color=(0, 112, 192))
     hdr_tot  = FontFace(emphasis="B", color=(255, 255, 255), fill_color=(127, 127, 127))
     hdr_closed = FontFace(emphasis="B", color=(255, 255, 255), fill_color=(71, 85, 105))
+    hdr_open = FontFace(emphasis="B", color=(255, 255, 255), fill_color=(185, 28, 28))
 
-    with pdf.table(col_widths=(26, 26, 26, 26, 30, 26, 30), text_align="C") as table:
+    with pdf.table(col_widths=(22, 22, 22, 22, 28, 22, 22, 30), text_align="C") as table:
         h = table.row()
         h.cell("Critical", style=hdr_crit)
         h.cell("High", style=hdr_high)
         h.cell("Medium", style=hdr_med)
         h.cell("Low", style=hdr_low)
         h.cell("Informational", style=hdr_info)
+        h.cell("Open", style=hdr_open)
         h.cell("Closed", style=hdr_closed)
         h.cell("Total Findings", style=hdr_tot)
 
@@ -1006,6 +1130,7 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
         r.cell(str(medium_cnt), style=body_style)
         r.cell(str(low_cnt), style=body_style)
         r.cell(str(info_cnt), style=body_style)
+        r.cell(str(open_all_cnt), style=body_style)
         r.cell(str(closed_cnt), style=body_style)
         r.cell(str(total_cnt), style=lbl_style)
 
@@ -1017,7 +1142,7 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
 
     # Native High-Precision Horizontal Bar Chart (Guaranteed rendering in all environments)
     start_chart_y = pdf.get_y()
-    max_val = max([critical_cnt, high_cnt, medium_cnt, low_cnt, info_cnt, closed_cnt, 1])
+    max_val = max([critical_cnt, high_cnt, medium_cnt, low_cnt, info_cnt, open_all_cnt, closed_cnt, 1])
     max_bar_w = 115.0
     categories_data = [
         ("Critical", critical_cnt, (192, 0, 0)),
@@ -1025,6 +1150,7 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
         ("Medium",   medium_cnt,   (255, 192, 0)),
         ("Low",      low_cnt,      (0, 176, 80)),
         ("Info",     info_cnt,     (0, 112, 192)),
+        ("Open",     open_all_cnt, (185, 28, 28)),
         ("Closed",   closed_cnt,   (71, 85, 105)),
     ]
     for c_idx, (c_label, c_val, c_col) in enumerate(categories_data):
@@ -1390,7 +1516,18 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
         pdf.cell(0, 5, _rem_head, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         pdf.set_font("Helvetica", "", 8.5)
         pdf.set_text_color(51, 65, 85)
-        pdf.multi_cell(0, 4.5, clean_text(remed), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        _note, _ref = _vapt_closed_parts(remed)
+        if _note:
+            # A closed finding: the note, then the report's own advice as points.
+            pdf.multi_cell(0, 4.5, clean_text(_note), align="L", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            if _ref:
+                pdf.ln(1)
+                pdf.set_font("Helvetica", "I", 8.5)
+                pdf.cell(0, 4.5, "Original recommendation (for reference):", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+                pdf.set_font("Helvetica", "", 8.5)
+                _pdf_points(pdf, _ref, clean_text)
+        else:
+            _pdf_points(pdf, remed, clean_text)
         pdf.ln(2)
 
         # Developer-Actionable Mitigation Steps Section (none for a closed finding)
@@ -1400,7 +1537,7 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
             pdf.cell(0, 5, "Developer Actionable Mitigation Steps:", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
             pdf.set_font("Helvetica", "", 8.5)
             pdf.set_text_color(30, 41, 59)
-            pdf.multi_cell(0, 4.5, clean_text(remed_actionable), new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            _pdf_points(pdf, remed_actionable, clean_text, color=(30, 41, 59))
             pdf.ln(2)
 
         pdf.ln(2)
@@ -3020,9 +3157,10 @@ def _export_vapt_docx(session_title, findings, resolved_list, status, comments="
     p = doc.add_paragraph()
     p.add_run("2.3.2 Tabular Summary").bold = True
     
-    tbl_sum = doc.add_table(rows=2, cols=7)
+    # Open: everything not closed, so Open + Closed = Total Findings (as the PDF).
+    sum_hdrs = ["Critical", "High", "Medium", "Low", "Informational", "Open", "Closed", "Total Findings"]
+    tbl_sum = doc.add_table(rows=2, cols=len(sum_hdrs))
     tbl_sum.style = 'Table Grid'
-    sum_hdrs = ["Critical", "High", "Medium", "Low", "Informational", "Closed", "Total Findings"]
     for col_idx, text in enumerate(sum_hdrs):
         cell = tbl_sum.rows[0].cells[col_idx]
         _set_cell_bg(cell, "0F172A")
@@ -3030,10 +3168,10 @@ def _export_vapt_docx(session_title, findings, resolved_list, status, comments="
         cell.paragraphs[0].runs[0].bold = True
 
     counts = [str(critical_cnt), str(high_cnt), str(medium_cnt), str(low_cnt), str(info_cnt),
-              str(closed_cnt), str(all_cnt)]
+              str(len(_open_f)), str(closed_cnt), str(all_cnt)]
     for col_idx, val in enumerate(counts):
         cell = tbl_sum.rows[1].cells[col_idx]
-        if col_idx == 6:
+        if col_idx == len(counts) - 1:
             _set_cell_bg(cell, "F1F5F9")
             cell.paragraphs[0].add_run(val).bold = True
         else:
@@ -3236,7 +3374,15 @@ def _export_vapt_docx(session_title, findings, resolved_list, status, comments="
         r_rh = p_rec_hdr.add_run(_rem_head)
         r_rh.bold = True
         r_rh.font.color.rgb = _rgb(217, 119, 6)
-        doc.add_paragraph(remed_val)
+        _note, _ref = _vapt_closed_parts(remed_val)
+        if _note:
+            # A closed finding: the note, then the report's own advice as points.
+            doc.add_paragraph(_note)
+            if _ref:
+                doc.add_paragraph().add_run("Original recommendation (for reference):").italic = True
+                _docx_points(doc, _ref)
+        else:
+            _docx_points(doc, remed_val)
 
         # Developer Actionable Mitigation Steps (none for a closed finding)
         if remed_actionable:
@@ -3245,7 +3391,7 @@ def _export_vapt_docx(session_title, findings, resolved_list, status, comments="
             r_ah = p_act_hdr.add_run("Developer Actionable Mitigation Steps:")
             r_ah.bold = True
             r_ah.font.color.rgb = _rgb(15, 23, 42)
-            doc.add_paragraph(remed_actionable)
+            _docx_points(doc, remed_actionable)
 
         # ── VAPT POC Screenshots (ALL matching evidence images) ─────────────
         # Embed ALL uploaded vulnerability screenshots under Proof of Concept.
