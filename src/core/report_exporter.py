@@ -206,6 +206,59 @@ def _vapt_tools(findings):
     return tools
 
 
+# A scanner's note on where in a target it found the issue: Burp's
+# "[Referer HTTP header]" / "[term parameter]", Nessus's service "(www)",
+# Burp's path "(/api/user)" -- or one cut short with no closing bracket. Only
+# after a space, so an IPv6 address in brackets ("https://[2001:db8::1]/")
+# stays part of its URL.
+_TARGET_NOTE_RE = re.compile(r"\s+(?:\[[^\]]*\]|\([^)]*\)|[\[(][^\])]*$)")
+
+
+def _vapt_scope_targets(findings):
+    """The hosts and URLs a VAPT report covers, each once, sorted.
+
+    Each finding's target used to be split at every space, so Burp's
+    "https://shop.test/catalog [Referer HTTP header]" became three scope
+    entries -- "[Referer", "HTTP", "header]" -- sorted in among the real ones,
+    with "parameter]" left alone in the last row.
+    """
+    out = set()
+    for f in findings or []:
+        f = f.to_dict() if hasattr(f, "to_dict") else (f if isinstance(f, dict) else {})
+        val = f.get("host") or f.get("target") or f.get("ip")
+        if not val:
+            continue
+        for t in re.split(r"[,;\s]+", _TARGET_NOTE_RE.sub(" ", str(val))):
+            t = t.strip()
+            # a note cut short, with no closing bracket, is not a target either
+            if (not t or t.lower() in ("n/a", "none", "unknown", "—", "-")
+                    or t[0] in "[(" or t[-1] in "])"):
+                continue
+            out.add(t)
+    return sorted(out)
+
+
+def _vapt_poc_ids(text):
+    """A proof block's "CVE(s):" line holds CVE ids only.
+
+    The worker listed every reference there, so a Burp finding's proof read
+    "CVE(s): CWE-89, CWE-94" under a heading stating "CVE References: None
+    assigned". CWE ids go to a "CWE(s):" line of their own. Blocks saved
+    before the worker wrote them apart are put right here.
+    """
+    def _split(m):
+        ids = [x.strip() for x in m.group(1).split(",") if x.strip()]
+        cwes = [x for x in ids if x.upper().startswith("CWE-")]
+        others = [x for x in ids if x not in cwes]
+        lines = []
+        if others:
+            lines.append("CVE(s):      " + ", ".join(others))
+        if cwes:
+            lines.append("CWE(s):      " + ", ".join(cwes))
+        return "\n".join(lines)
+    return re.sub(r"(?m)^CVE\(s\):[ \t]*(.+?)[ \t]*$", _split, str(text or ""))
+
+
 def _vapt_scanner(f):
     t = str(f.get("source_tool") or f.get("tool") or "").strip()
     if t and t.lower() not in ("vapt engine", "vapt", "unknown", "none"):
@@ -672,7 +725,15 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
         pdf.set_fill_color(*TUV_BLUE)
         pdf.set_text_color(255, 255, 255)
         pdf.set_font("Helvetica", "B", 11)
-        pdf.cell(0, 7.5, clean_text(f"  {title_text}"), fill=True, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        _txt = clean_text(f"  {title_text}")
+        if pdf.get_string_width(_txt) > pdf.epw - 2:
+            # "3 TECHNICAL DETAIL REPORT: NETWORK AND WEB APPLICATION ..." is
+            # wider than the page: one cell cut it off at the edge. Wrapped,
+            # with the indent the single line has.
+            pdf.multi_cell(0, 6.5, _txt.strip(), fill=True, padding=(0.5, 2, 0.5, 3.2),
+                           new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        else:
+            pdf.cell(0, 7.5, _txt, fill=True, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
         pdf.set_text_color(*DARK_TEXT)
         pdf.set_fill_color(255, 255, 255)
         pdf.ln(2.5)
@@ -890,52 +951,59 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
     detail_findings = list_to_show[:40]
     summary_findings = list_to_show[40:]
 
-    # Dynamic TOC page calculations
-    vapt_table_pages = max(1, math.ceil(total_cnt / 22))
-    p_sec_2_4 = 8 + vapt_table_pages
-    p_sec_3_0 = p_sec_2_4 + 1
-    detail_card_pages = math.ceil(len(detail_findings) * 0.65) if detail_findings else 1
-    summary_table_pages = math.ceil(len(summary_findings) / 30) if summary_findings else 0
-    p_sec_4_0 = p_sec_3_0 + detail_card_pages + summary_table_pages
-    p_sec_5_0 = p_sec_4_0 + 1
-
+    # The page each section starts on, written down as it is drawn (_toc_mark)
+    # and printed on this page once the whole report is laid out. These were
+    # estimates -- 0.65 of a page per finding -- and a Burp report, whose
+    # findings carry whole HTTP exchanges, printed "4 Appendix ... 37" for an
+    # appendix on page 86.
     toc_items = [
-        ("1 Penetration Test Methodology", "4"),
-        ("   1.2 Standards-Based Testing and Reporting", "4"),
-        ("   1.3 CVSS: Scoring Vulnerabilities", "4"),
-        ("   1.4 How to Use This Document", "5"),
-        ("2 Executive Summary", "6"),
-        ("   2.2 Analysis Overview", "6"),
-        ("   2.3 Summary of Findings", "7"),
-        ("      2.3.1 Findings Overview", "7"),
-        ("      2.3.2 Tabular Summary", "7"),
-        ("      2.3.3 Graphical Summary", "7"),
-        ("      2.3.4 Vulnerabilities Summary", "8"),
-        ("   2.4 Tactical Recommendations", str(p_sec_2_4)),
-        (f"3 Technical Detail Report: {scope_type} Vulnerability Assessment and Penetration Testing", str(p_sec_3_0)),
-        ("   3.2 Testing Environment", str(p_sec_3_0)),
-        ("   3.3 Findings", str(p_sec_3_0)),
-        ("4 Appendix", str(p_sec_4_0)),
-        ("   4.1 Testing Environment: Production", str(p_sec_4_0)),
-        ("      4.1.1 Testing Environment Conditions", str(p_sec_4_0)),
-        ("      4.1.2 Tools Used", str(p_sec_4_0)),
-        ("      4.1.3 Provided Documentation", str(p_sec_4_0)),
-        ("5 Disclaimer", str(p_sec_5_0))
+        ("1", "1 Penetration Test Methodology"),
+        ("1.2", "   1.2 Standards-Based Testing and Reporting"),
+        ("1.3", "   1.3 CVSS: Scoring Vulnerabilities"),
+        ("1.4", "   1.4 How to Use This Document"),
+        ("2", "2 Executive Summary"),
+        ("2.2", "   2.2 Analysis Overview"),
+        ("2.3", "   2.3 Summary of Findings"),
+        ("2.3.1", "      2.3.1 Findings Overview"),
+        ("2.3.2", "      2.3.2 Tabular Summary"),
+        ("2.3.3", "      2.3.3 Graphical Summary"),
+        ("2.3.4", "      2.3.4 Vulnerabilities Summary"),
+        ("2.4", "   2.4 Tactical Recommendations"),
+        ("3", f"3 Technical Detail Report: {scope_type} Vulnerability Assessment and Penetration Testing"),
+        ("3.2", "   3.2 Testing Environment"),
+        ("3.3", "   3.3 Findings"),
+        ("4", "4 Appendix"),
+        ("4.1", "   4.1 Testing Environment: Production"),
+        ("4.1.1", "      4.1.1 Testing Environment Conditions"),
+        ("4.1.2", "      4.1.2 Tools Used"),
+        ("4.1.3", "      4.1.3 Provided Documentation"),
+        ("5", "5 Disclaimer"),
     ]
+    _toc_pages = {}
 
-    pdf.set_font("Helvetica", "", 9)
-    pdf.set_text_color(*BODY_TEXT)
-    for title, p_num in toc_items:
-        pdf.cell(160, 5, clean_text(title))
-        pdf.cell(20, 5, clean_text(p_num), align="R", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    def _toc_mark(key):
+        """Called right after a section's heading is drawn: the page it is on."""
+        _toc_pages.setdefault(key, pdf.page_no())
+
+    def _render_toc(_pdf, _outline):
+        _pdf.set_font("Helvetica", "", 9)
+        _pdf.set_text_color(*BODY_TEXT)
+        for key, title in toc_items:
+            _pdf.cell(160, 5, clean_text(title))
+            _pdf.cell(20, 5, str(_toc_pages.get(key, "")), align="R", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+
+    # Keeps the rest of this page for the contents, drawn when the report is
+    # finished, and starts the next page.
+    pdf.insert_toc_placeholder(_render_toc, pages=1)
 
     # ── PAGE 4: METHODOLOGY & CVSS V4.0 METRICS ─────────────────────────────
-    pdf.add_page()
     draw_banner("1 PENETRATION TEST METHODOLOGY")
+    _toc_mark("1")
 
     pdf.set_font("Helvetica", "B", 10)
     pdf.set_text_color(*DARK_TEXT)
     pdf.cell(0, 5.5, "1.2 Standards-Based Testing and Reporting", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    _toc_mark("1.2")
     pdf.set_font("Helvetica", "", 8.5)
     pdf.set_text_color(*BODY_TEXT)
     pdf.multi_cell(0, 4, clean_text(
@@ -948,6 +1016,7 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
     pdf.set_font("Helvetica", "B", 10)
     pdf.set_text_color(*DARK_TEXT)
     pdf.cell(0, 5.5, "1.3 CVSS: Scoring Vulnerabilities", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    _toc_mark("1.3")
     pdf.set_font("Helvetica", "", 8.5)
     pdf.set_text_color(*BODY_TEXT)
     pdf.multi_cell(0, 4, clean_text(
@@ -1015,6 +1084,7 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
     pdf.set_font("Helvetica", "B", 10)
     pdf.set_text_color(*DARK_TEXT)
     pdf.cell(0, 5.5, "1.4 How to Use This Document", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    _toc_mark("1.4")
     pdf.set_font("Helvetica", "", 8.5)
     pdf.set_text_color(*BODY_TEXT)
     pdf.multi_cell(0, 4, clean_text(
@@ -1045,10 +1115,12 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
     # ── PAGE 6: EXECUTIVE SUMMARY & TARGET SCOPE ─────────────────────────────
     pdf.add_page()
     draw_banner("2 EXECUTIVE SUMMARY")
+    _toc_mark("2")
 
     pdf.set_font("Helvetica", "B", 10)
     pdf.set_text_color(*DARK_TEXT)
     pdf.cell(0, 5.5, "2.2 Analysis Overview", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    _toc_mark("2.2")
     pdf.set_font("Helvetica", "", 8.5)
     pdf.set_text_color(*BODY_TEXT)
     # The scan's own overview when one was generated, otherwise the standard wording.
@@ -1064,19 +1136,8 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
     pdf.ln(3)
 
     # Scope IPs Table (3 columns - dynamic)
-    dynamic_ips = None
     try:
-        if findings:
-            extracted_hosts = set()
-            for f in findings:
-                host_val = f.get("host") or f.get("target") or f.get("ip")
-                if host_val:
-                    for h in str(host_val).replace(",", " ").split():
-                        h_clean = h.strip()
-                        if h_clean and h_clean.lower() not in ("n/a", "none", "unknown", "—"):
-                            extracted_hosts.add(h_clean)
-            if extracted_hosts:
-                dynamic_ips = sorted(list(extracted_hosts))
+        dynamic_ips = _vapt_scope_targets(findings)
     except Exception:
         dynamic_ips = None
 
@@ -1099,6 +1160,7 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
     pdf.set_font("Helvetica", "B", 10)
     pdf.set_text_color(*DARK_TEXT)
     pdf.cell(0, 5.5, "2.3 Summary of Findings", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    _toc_mark("2.3")
     
     if findings:
         dict_findings = [f.to_dict() if hasattr(f, "to_dict") else (f if isinstance(f, dict) else getattr(f, "__dict__", {})) for f in findings]
@@ -1126,6 +1188,7 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
     pdf.set_font("Helvetica", "", 8.5)
     pdf.set_text_color(*BODY_TEXT)
     open_cnt = critical_cnt + high_cnt + medium_cnt + low_cnt
+    _toc_mark("2.3.1")
     pdf.multi_cell(0, 4.5, clean_text("2.3.1 Findings Overview: " + _vapt_overview_sentence(open_cnt, info_cnt, closed_cnt)),
                    new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     pdf.ln(2.5)
@@ -1133,6 +1196,7 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
     pdf.set_font("Helvetica", "B", 9.5)
     pdf.set_text_color(*DARK_TEXT)
     pdf.cell(0, 4.5, "2.3.2 Tabular Summary", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    _toc_mark("2.3.2")
     pdf.ln(1.5)
 
     hdr_crit = FontFace(emphasis="B", color=(255, 255, 255), fill_color=(192, 0, 0))
@@ -1168,6 +1232,7 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
     pdf.ln(4)
     pdf.set_font("Helvetica", "B", 9.5)
     pdf.cell(0, 4.5, "2.3.3 Graphical Summary", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    _toc_mark("2.3.3")
     pdf.ln(3)
 
 
@@ -1212,6 +1277,7 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
     pdf.set_font("Helvetica", "B", 10)
     pdf.set_text_color(*DARK_TEXT)
     pdf.cell(0, 5.5, "2.3.4 Vulnerabilities Summary", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    _toc_mark("2.3.4")
     pdf.ln(2)
 
     # A retested session: each row also says Open or Closed (and section 3
@@ -1278,6 +1344,7 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
     pdf.set_font("Helvetica", "B", 10)
     pdf.set_text_color(*DARK_TEXT)
     pdf.cell(0, 5.5, "2.4 Tactical Recommendations", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    _toc_mark("2.4")
     pdf.set_font("Helvetica", "", 8.5)
     pdf.set_text_color(*BODY_TEXT)
     # Prioritised actions for THIS scan when available. The fallback below was the
@@ -1291,10 +1358,12 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
     # ── PAGE 9+, TECHNICAL DETAIL REPORT: DYNAMIC FINDINGS ──────────────────
     pdf.add_page()
     draw_banner(f"3 TECHNICAL DETAIL REPORT: {scope_type.upper()} VULNERABILITY ASSESSMENT AND PENETRATION TESTING")
+    _toc_mark("3")
 
     pdf.set_font("Helvetica", "B", 10)
     pdf.set_text_color(*DARK_TEXT)
     pdf.cell(0, 5.5, "3.2 Testing Environment", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    _toc_mark("3.2")
     pdf.set_font("Helvetica", "", 8.5)
     pdf.set_text_color(*BODY_TEXT)
     pdf.cell(0, 4.5, "For details concerning the testing environment, please refer to Appendix 4.1.", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
@@ -1303,6 +1372,7 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
     pdf.set_font("Helvetica", "B", 10)
     pdf.set_text_color(*DARK_TEXT)
     pdf.cell(0, 5.5, "3.3 Findings", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    _toc_mark("3.3")
     pdf.ln(1.5)
 
     # ── ALL findings: Burp Suite (web pentest) first, then Nessus network findings ──
@@ -1365,13 +1435,13 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
         # ── Proof of Concept text: structured PoC block built in bg_worker takes priority ──
         # evidence_snippet = "Target Host: X.X.X.X\nPlugin ID: ...\nCVE(s): ...\nPlugin Output:\n..."
         # This is already the rich, structured block we want to show in the report.
-        poc_text = html.unescape(redact_pii(str(
+        poc_text = _vapt_poc_ids(html.unescape(redact_pii(str(
             f.get("evidence_snippet") or   # Structured PoC block (built in bg_worker)
             f.get("evidence") or           # Raw plugin output
             f.get("evidence_quote") or     # LLM evidence quote
             f.get("poc") or
             "Console / Log Audit Verification"
-        ), redact_ip=False))
+        ), redact_ip=False)))
 
         _rem_head, remed, remed_actionable = _vapt_remediation_parts(f)
         remed = html.unescape(redact_pii(remed, redact_ip=False))
@@ -1717,14 +1787,17 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
     # ── APPENDIX ─────────────────────────────────────────────────
     pdf.add_page()
     draw_banner("4 APPENDIX")
+    _toc_mark("4")
 
     pdf.set_font("Helvetica", "B", 10)
     pdf.set_text_color(*DARK_TEXT)
     pdf.cell(0, 5.5, "4.1 Testing Environment: Production", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    _toc_mark("4.1")
     pdf.ln(1)
 
     pdf.set_font("Helvetica", "B", 9)
     pdf.cell(0, 4.5, "4.1.1 Testing Environment Conditions", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    _toc_mark("4.1.1")
     pdf.set_font("Helvetica", "", 8.5)
     pdf.set_text_color(*BODY_TEXT)
     # This compared scope_type with "Internal", a value it never held, so every
@@ -1747,6 +1820,7 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
     pdf.set_font("Helvetica", "B", 9)
     pdf.set_text_color(*DARK_TEXT)
     pdf.cell(0, 4.5, "4.1.2 Tools Used", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    _toc_mark("4.1.2")
     pdf.set_font("Helvetica", "", 8.5)
     pdf.set_text_color(*BODY_TEXT)
     # The tools whose output this report was built from -- this was a fixed
@@ -1757,6 +1831,7 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
     pdf.set_font("Helvetica", "B", 9)
     pdf.set_text_color(*DARK_TEXT)
     pdf.cell(0, 4.5, "4.1.3 Provided Documentation", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    _toc_mark("4.1.3")
     pdf.set_font("Helvetica", "", 8.5)
     pdf.set_text_color(*BODY_TEXT)
     if scope_type.startswith("Internal"):
@@ -1770,6 +1845,7 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
     # ── PAGE 13: DISCLAIMER ───────────────────────────────────────────────
     pdf.add_page()
     draw_banner("5 DISCLAIMER")
+    _toc_mark("5")
 
     pdf.set_font("Helvetica", "", 8.5)
     pdf.set_text_color(*BODY_TEXT)
@@ -3179,9 +3255,16 @@ def _export_vapt_docx(session_title, findings, resolved_list, status, comments="
     
     p = doc.add_paragraph()
     p.add_run("2.1 Scope of the Engagement").bold = True
+    # The hosts and URLs the findings name, as the PDF's 2.2 lists them. This
+    # printed the session's name ("Target assets: VAPT - 08 Oct 2026").
+    try:
+        _scope_targets = _vapt_scope_targets(findings)
+    except Exception:
+        _scope_targets = []
     doc.add_paragraph(
         f"{auditor_firm} was engaged to perform network and application security validation testing. The target audit scope consists of "
-        f"critical service interfaces, web applications, and network routing configurations. Target assets: {session_title}."
+        f"critical service interfaces, web applications, and network routing configurations. Target assets: "
+        f"{', '.join(_scope_targets) if _scope_targets else session_title}."
     )
     
     p = doc.add_paragraph()
@@ -3294,7 +3377,8 @@ def _export_vapt_docx(session_title, findings, resolved_list, status, comments="
 
     # 6. TECHNICAL DETAIL REPORT (Page 9+)
     p = doc.add_paragraph()
-    p.add_run("3 TECHNICAL DETAIL REPORT: NETWORK VULNERABILITY ASSESSMENT").bold = True
+    # What was tested, as the PDF says: this read NETWORK on a Burp-only report.
+    p.add_run(f"3 TECHNICAL DETAIL REPORT: {scope_type.upper()} VULNERABILITY ASSESSMENT").bold = True
     p.paragraph_format.space_before = Pt(12)
     
     p = doc.add_paragraph()
@@ -3315,7 +3399,7 @@ def _export_vapt_docx(session_title, findings, resolved_list, status, comments="
         # VAPT reports: redact email/phone (incidental PII) but keep IPs -- the
         # vulnerable host's IP address is the report's actual content, not PII.
         desc_val = html.unescape(redact_pii(str(f.get("description") or f.get("gap_description") or f.get("finding") or "-"), redact_ip=False))
-        poc_val = html.unescape(redact_pii(full_poc(str(f.get("evidence_snippet") or f.get("evidence") or f.get("evidence_quote") or f.get("poc") or "Console / Log Audit Verification")), redact_ip=False))
+        poc_val = _vapt_poc_ids(html.unescape(redact_pii(full_poc(str(f.get("evidence_snippet") or f.get("evidence") or f.get("evidence_quote") or f.get("poc") or "Console / Log Audit Verification")), redact_ip=False)))
         _rem_head, remed_val, remed_actionable = _vapt_remediation_parts(f)
         remed_val = html.unescape(redact_pii(remed_val, redact_ip=False))
 

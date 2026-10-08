@@ -126,8 +126,10 @@ def _vapt_scanner_fields(f):
     block = f.evidence_snippet or ""
     refs = [r.strip() for r in (getattr(f, "cve_refs", None) or "").split(",") if r.strip()]
     if not refs:
+        # The worker now writes CWE ids on a "CWE(s):" line of their own.
         refs = list(dict.fromkeys(r.upper() for r in _re.findall(
-            r"CVE-\d{4}-\d{4,7}|CWE-\d+", _poc_line(block, "CVE(s)"), _re.IGNORECASE)))
+            r"CVE-\d{4}-\d{4,7}|CWE-\d+", _poc_line(block, "CVE(s)") + " " + _poc_line(block, "CWE(s)"),
+            _re.IGNORECASE)))
     try:
         score = float(f.severity_score or 0.0)
     except (TypeError, ValueError):
