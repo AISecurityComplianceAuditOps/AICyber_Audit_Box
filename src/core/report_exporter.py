@@ -3001,6 +3001,76 @@ def _export_pqc_docx(session_title, findings, resolved_list, status, comments=""
     return buf.read()
 
 
+# A section heading in the VAPT Word report: "2 EXECUTIVE SUMMARY",
+# "4.1 Testing Environment: Production" -- one or two levels, bold throughout.
+_DOCX_SECTION_RE = re.compile(r"^(\d)(\.\d)?\s+\S")
+
+
+def _docx_toc_field(doc, entries):
+    """A Word contents field: TOC over outline levels 1-2, page numbers and
+    links. `entries` is what it shows until Word updates it (the sections,
+    without pages); two leading spaces mark a second-level entry."""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.shared import Pt
+
+    def _fld(run, kind):
+        el = OxmlElement("w:fldChar")
+        el.set(qn("w:fldCharType"), kind)
+        run._r.append(el)
+
+    paras = []
+    for k, text in enumerate(entries):
+        p = doc.add_paragraph()
+        if k == 0:
+            _fld(p.add_run(), "begin")
+            instr = OxmlElement("w:instrText")
+            instr.set(qn("xml:space"), "preserve")
+            instr.text = ' TOC \\o "1-2" \\h \\z \\u '
+            p.add_run()._r.append(instr)
+            _fld(p.add_run(), "separate")
+        p.add_run(text).font.size = Pt(10)
+        paras.append(p)
+    _fld(paras[-1].add_run(), "end")
+
+
+def _docx_mark_section_headings(doc):
+    """Gives each section heading its outline level, which is what the contents
+    field (\\u) lists. The headings are bold body text, not Word heading
+    styles, so they look exactly as they did."""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    for p in doc.paragraphs:
+        text = p.text.strip()
+        m = _DOCX_SECTION_RE.match(text)
+        runs = [r for r in p.runs if r.text.strip()]
+        if not m or len(text) > 120 or not runs or not all(r.bold for r in runs):
+            continue
+        ppr = p._p.get_or_add_pPr()
+        if ppr.find(qn("w:outlineLvl")) is not None:
+            continue
+        lvl = OxmlElement("w:outlineLvl")
+        lvl.set(qn("w:val"), "1" if m.group(2) else "0")
+        # its place in the schema: before rPr / sectPr / pPrChange
+        later = [c for c in ppr if c.tag in (qn("w:rPr"), qn("w:sectPr"), qn("w:pPrChange"))]
+        if later:
+            later[0].addprevious(lvl)
+        else:
+            ppr.append(lvl)
+
+
+def _docx_update_fields_on_open(doc):
+    """Word refreshes the fields -- the contents' page numbers -- when the
+    file is opened (it asks first)."""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    settings = doc.settings.element
+    if settings.find(qn("w:updateFields")) is None:
+        el = OxmlElement("w:updateFields")
+        el.set(qn("w:val"), "true")
+        settings.append(el)
+
+
 def _export_vapt_docx(session_title, findings, resolved_list, status, comments="", custom_logo=None, metadata=None):
     from docx import Document
     from docx.shared import Pt, RGBColor, Cm
@@ -3176,31 +3246,30 @@ def _export_vapt_docx(session_title, findings, resolved_list, status, comments="
     p.add_run("TABLE OF CONTENTS").bold = True
     p.paragraph_format.space_after = Pt(12)
     
-    toc_items = [
-        (f"1 {auditor_firm.upper()} PENETRATION TEST METHODOLOGY", "4"),
-        ("  1.2 Standards-Based Testing and Reporting", "4"),
-        ("  1.3 CVSS: Scoring Vulnerabilities", "4"),
-        ("  1.4 Severity Rating Scale Table", "5"),
-        ("2 EXECUTIVE SUMMARY", "6"),
-        ("  2.1 Scope of the Engagement", "6"),
-        ("  2.2 Assessment Date", "6"),
-        ("  2.3 Summary of Findings", "7"),
-        ("  2.4 Tactical Recommendations", "8"),
-        ("3 TECHNICAL DETAIL REPORT", "9"),
-        ("  3.2 Testing Environment", "9"),
-        ("  3.3 Findings Detail", "9"),
-        ("4 APPENDIX", "12"),
-        ("  4.1 Testing Environment: Production", "12"),
-        ("  4.2 Tools Used", "12"),
-        ("  4.3 Provided Documentation", "12"),
-        ("5 DISCLAIMER", "13")
-    ]
-    for item, p_num in toc_items:
-        p_toc = doc.add_paragraph()
-        run_item = p_toc.add_run(item)
-        run_item.font.size = Pt(10)
-        p_toc.add_run(" " + "." * (80 - len(item)) + " " + p_num).font.size = Pt(10)
-        
+    # A Word contents field over the section headings (_docx_mark_section_
+    # headings), which Word fills in with their pages when the file is opened.
+    # The pages were typed in -- "4 APPENDIX ... 12" -- whatever the report's
+    # length. Until Word updates it, the field shows the sections without pages.
+    _docx_toc_field(doc, [
+        f"1 {auditor_firm.upper()} PENETRATION TEST METHODOLOGY",
+        "  1.2 Standards-Based Testing and Reporting",
+        "  1.3 CVSS: Scoring Vulnerabilities",
+        "  1.4 Severity Rating Scale",
+        "2 EXECUTIVE SUMMARY",
+        "  2.1 Scope of the Engagement",
+        "  2.2 Assessment Date",
+        "  2.3 Summary of Findings",
+        "  2.4 Tactical Recommendations",
+        "3 TECHNICAL DETAIL REPORT",
+        "  3.2 Testing Environment",
+        "  3.3 Findings Detail",
+        "4 APPENDIX",
+        "  4.1 Testing Environment: Production",
+        "  4.2 Tools Used",
+        "  4.3 Provided Documentation",
+        "5 DISCLAIMER",
+    ])
+
     doc.add_page_break()
 
     # 4. METHODOLOGY & SEVERITY SCALE (Page 4)
@@ -3696,7 +3765,11 @@ def _export_vapt_docx(session_title, findings, resolved_list, status, comments="
         "assume any responsibility for any inaccuracies or omissions. The assessment was limited to the scope defined and does not "
         "guarantee the absolute exclusion of other vulnerabilities."
     )
-    
+
+    # What the contents field lists, and Word filling in its pages on opening.
+    _docx_mark_section_headings(doc)
+    _docx_update_fields_on_open(doc)
+
     buf = _io.BytesIO()
     doc.save(buf)
     buf.seek(0)
