@@ -5361,13 +5361,12 @@ async function refreshVaptRetestChoice() {
         const choice = box.dataset.choice || "retest";
         box.dataset.next = String(next);
         box.innerHTML = `<div class="vapt-retest-choice-box">`
-            + `<b>This session already has v${lastN}: ${Number(last.found) || 0} finding(s), scanned ${escapeHtml(vaptRetestDate(last.date))}.</b>`
-            + `<span>Not scanned yet: ${newFiles.map(n => escapeHtml(n)).join(", ")}</span>`
+            + `<b>v${lastN}: ${Number(last.found) || 0} finding(s), ${escapeHtml(vaptRetestDate(last.date))}</b>`
+            + `<span>New file: ${newFiles.map(n => escapeHtml(n)).join(", ")}</span>`
             + `<label for="vapt-run-retest"><input type="radio" name="vapt-run-kind" id="vapt-run-retest" value="retest"${choice === "retest" ? " checked" : ""}>`
-            + `<span><b>Retest (v${next})</b>: scan only the new file(s) against v${lastN}. Host rescanned and the vulnerability not found: Closed. `
-            + `Found again, new, or its host not in the retest: Open. v${lastN} is kept.</span></label>`
+            + `<span><b>Retest as v${next}</b> &ndash; scan the new file only; each finding becomes Open or Closed.</span></label>`
             + `<label for="vapt-run-full"><input type="radio" name="vapt-run-kind" id="vapt-run-full" value="full"${choice === "full" ? " checked" : ""}>`
-            + `<span><b>Scan everything again as one scan</b>: every file, as before. Unsaved findings are replaced and the versions start over.</span></label>`
+            + `<span><b>Start over</b> &ndash; scan all files again; versions reset.</span></label>`
             + `</div>`;
         box.style.display = "block";
         box.querySelectorAll("input[name='vapt-run-kind']").forEach(r => r.addEventListener("change", () => {

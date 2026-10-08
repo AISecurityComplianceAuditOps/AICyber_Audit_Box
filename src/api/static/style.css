@@ -3014,6 +3014,12 @@ body[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
     gap: 8px;
     align-items: flex-start;
     cursor: pointer;
+    /* the page-wide label rule is small grey capitals: these are sentences */
+    font-size: inherit;
+    font-weight: 400;
+    letter-spacing: normal;
+    text-transform: none;
+    color: inherit;
 }
 
 .vapt-retest-choice-box input {
