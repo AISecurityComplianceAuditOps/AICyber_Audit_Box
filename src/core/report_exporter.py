@@ -414,17 +414,20 @@ def _poc_sections(text):
     return parts
 
 
-def _vapt_overview_sentence(open_cnt, info_cnt, closed_cnt):
+def _vapt_overview_sentence(open_cnt, info_cnt, closed_cnt, retest=False):
     """The VAPT findings overview: open vulnerabilities, then the rest.
 
     Informational results and closed findings are not vulnerabilities in
-    scope, so they are named apart rather than added to the count.
+    scope, so they are named apart rather than added to the count. After a
+    retest most closed findings were closed BY the retest, not recorded as
+    closed in the report, so they are only called closed.
     """
     rest = []
     if info_cnt:
         rest.append(f"{info_cnt} further informational observation(s)")
     if closed_cnt:
-        rest.append(f"{closed_cnt} finding(s) the report records as closed")
+        rest.append(f"{closed_cnt} closed finding(s)" if retest
+                    else f"{closed_cnt} finding(s) the report records as closed")
     return (f"Based on the assessment, {open_cnt} open vulnerabilities have been found in the target scope "
             f"which are categorized as follows" + (", with " + " and ".join(rest) if rest else "") + ":")
 
@@ -1189,7 +1192,8 @@ def _export_vapt_pdf(session_title, findings, resolved_list, status, comments=""
     pdf.set_text_color(*BODY_TEXT)
     open_cnt = critical_cnt + high_cnt + medium_cnt + low_cnt
     _toc_mark("2.3.1")
-    pdf.multi_cell(0, 4.5, clean_text("2.3.1 Findings Overview: " + _vapt_overview_sentence(open_cnt, info_cnt, closed_cnt)),
+    pdf.multi_cell(0, 4.5, clean_text("2.3.1 Findings Overview: " + _vapt_overview_sentence(open_cnt, info_cnt, closed_cnt,
+                                                                                      retest=bool(_vapt_retest_rounds(meta)))),
                    new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     pdf.ln(2.5)
 
@@ -3293,7 +3297,8 @@ def _export_vapt_docx(session_title, findings, resolved_list, status, comments="
     total_cnt = critical_cnt + high_cnt + medium_cnt + low_cnt       # open vulnerabilities
     all_cnt = len(active_findings)
 
-    doc.add_paragraph(_vapt_overview_sentence(total_cnt, info_cnt, closed_cnt))
+    doc.add_paragraph(_vapt_overview_sentence(total_cnt, info_cnt, closed_cnt,
+                                               retest=bool(_vapt_retest_rounds(meta))))
     
     p = doc.add_paragraph()
     p.add_run("2.3.2 Tabular Summary").bold = True
