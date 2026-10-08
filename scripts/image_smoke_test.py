@@ -37,6 +37,10 @@ os.chdir(APP)
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
+# Looked at before anything below imports the application, which may write one.
+BUILD_CACHE = os.path.join(APP, "src", "core", ".embeddings_cache.pkl")
+SHIPPED_BUILD_CACHE = os.path.exists(BUILD_CACHE)
+
 RESULTS = []
 
 
@@ -210,6 +214,14 @@ def _llm_config():
     assert b"\r" not in script, "the script has Windows line endings and would not run"
     assert b"STACK_RESERVE_GB" in script, "the script keeps no memory back for the app"
     return "%d KB" % (len(script) // 1024)
+
+
+@check("no embedding cache from the build machine")
+def _no_build_cache():
+    # It holds the names of every document scanned where the image was built --
+    # client documents among them -- and shipped inside app 1.1. .dockerignore
+    # keeps it out; this catches the day that line goes.
+    assert not SHIPPED_BUILD_CACHE, "src/core/.embeddings_cache.pkl is in the image"
 
 
 print("")
