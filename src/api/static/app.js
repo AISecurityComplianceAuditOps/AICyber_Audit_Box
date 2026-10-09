@@ -918,6 +918,12 @@ async function checkActiveSessionStatusOnSwitch() {
             progressInterval = setInterval(pollAuditProgress, 1000);
             pollAuditProgress();
 
+            // Lock upload and scope as a fresh run does, whatever kind of run it
+            // is. This was left to lockScopeDisplayToCheckpoint, which returns
+            // at once without a checkpoint -- and only an ISO run writes one, so
+            // coming back to a running VAPT / PQC scan left both editable.
+            if (typeof _setRunLockedInputs === "function") _setRunLockedInputs(true);
+
             // Correct the scope display from the server's own checkpoint truth,
             // not the client-side scoping cache -- that cache is only ever
             // populated at the moment a checklist is uploaded in THIS browser tab,
@@ -3521,6 +3527,15 @@ async function loadEvidenceFileList() {
                 });
             }
         });
+        // Drawn after a run locked the evidence card (the list is reloaded on
+        // coming back to a running session), the new remove buttons are locked
+        // as _setRunLockedInputs locks the ones it found.
+        if (window._scopeRunLocked) {
+            document.querySelectorAll(".modern-evidence-card button").forEach(b => {
+                b.disabled = true;
+                b.style.opacity = "0.5";
+            });
+        }
         // VAPT retest: offer it when files arrived that no version scanned.
         refreshVaptRetestChoice();
     } catch (err) {
