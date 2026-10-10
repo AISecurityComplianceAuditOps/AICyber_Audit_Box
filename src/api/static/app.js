@@ -850,6 +850,10 @@ async function switchRecentSession(sessionId, sessionTitle) {
     const stopBtn = document.getElementById("stop-analysis-btn");
     if (runBtn) { runBtn.disabled = false; runBtn.style.opacity = "1"; runBtn.innerText = "▶ Run Audit Scan"; if (typeof hidePipelineProgress === "function") hidePipelineProgress(); }
     if (stopBtn) stopBtn.style.display = "none";
+    // The previous session's run lock goes with its Run button, before this
+    // session's scope is restored below; checkActiveSessionStatusOnSwitch locks
+    // again if this session is the one running.
+    if (typeof _setRunLockedInputs === "function") _setRunLockedInputs(false);
 
     // ── Restore or Reset UI: Controls checkboxes & scoping mode ───────────────────
     try {
@@ -1225,6 +1229,7 @@ async function discardCheckpointAndReset() {
         const stopBtn = document.getElementById("stop-analysis-btn");
         if (runBtn) { runBtn.disabled = false; runBtn.style.opacity = "1"; runBtn.innerText = "▶ Run Audit Scan"; if (typeof hidePipelineProgress === "function") hidePipelineProgress(); }
         if (stopBtn) stopBtn.style.display = "none";
+        if (typeof _setRunLockedInputs === "function") _setRunLockedInputs(false);
     } catch (err) {
         showToast(`Discard failed: ${err.message}`, "error");
     }
@@ -1934,6 +1939,10 @@ async function startNewAuditSession(skipPrompt = false, customTitle = null) {
             runBtn.style.cursor = "pointer";
         }
         if (stopBtn) stopBtn.style.display = "none";
+        // A new session has no run: an old session's lock must not carry over
+        // (it did -- a fresh, empty session read "locked while the scan runs").
+        // Released before the scope is reset below, which writes its own note.
+        if (typeof _setRunLockedInputs === "function") _setRunLockedInputs(false);
 
         // ── Reset UI: Controls checkboxes, search & scoping mode ─────────────────────
         try {
@@ -3848,6 +3857,7 @@ async function pollAuditProgress() {
             alert("✅ Local audit RAG scan completed successfully! Review records below and click 'Save to Shakthi DB' to commit.");
         } else if (data.status === "idle" && data.checkpoint && data.checkpoint.status === "failed") {
             clearInterval(progressInterval);
+            if (typeof _setRunLockedInputs === "function") _setRunLockedInputs(false);
             btn.disabled = false;
             btn.innerText = "▶ Run Audit Scan"; if (typeof hidePipelineProgress === "function") hidePipelineProgress();
             if (stopBtn) stopBtn.style.display = "none";
@@ -3867,8 +3877,13 @@ async function pollAuditProgress() {
             if (progressStatus) progressStatus.innerText = `Scan failed`;
             showToastBanner(`❌ ${data.error || "The scan failed."}`, "error");
         } else {
-            // If scan is idle, stopped, or not running, reset state cleanly
+            // If scan is idle, stopped, or not running, reset state cleanly --
+            // the inputs included. This put the Run button back and left upload
+            // and scope locked: a scan that ended any other way than completed
+            // or failed (stopped, or gone with a server restart overnight) left
+            // the page saying "locked while the scan runs" beside a Run button.
             clearInterval(progressInterval);
+            if (typeof _setRunLockedInputs === "function") _setRunLockedInputs(false);
             btn.disabled = false;
             btn.innerText = "▶ Run Audit Scan"; if (typeof hidePipelineProgress === "function") hidePipelineProgress();
             if (stopBtn) {
