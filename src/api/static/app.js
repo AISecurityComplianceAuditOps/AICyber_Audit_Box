@@ -37,7 +37,25 @@ function getAuthHeaders(extra) {
 function authFetch(url, options) {
     options = options || {};
     options.headers = getAuthHeaders(options.headers || {});
-    return fetch(url, options);
+    return fetch(url, options).then(res => {
+        // Only a missing, invalid or expired login answers 401 here: sign-in,
+        // the code check and password reset -- the 401s for wrong credentials --
+        // use plain fetch.
+        if (res.status === 401 && currentUser && currentUser.token) handleLoginExpired();
+        return res;
+    });
+}
+
+// A sign-in lasts JWT_EXPIRY_HOURS (8 by default). When it ran out, every call
+// came back 401 and the page carried on regardless: Recent Sessions went to 0,
+// a running scan's progress stopped and the workspace stayed locked -- while the
+// scan itself finished and saved on the server. Say so, once, and return to the
+// sign-in screen. Nothing saved is lost; the same session reopens on signing in.
+function handleLoginExpired() {
+    if (window._loginExpiredHandled) return;
+    window._loginExpiredHandled = true;
+    try { logout(); } catch (e) { console.warn("[auth] logout after expiry:", e); }
+    showError("Your sign-in has expired. Please sign in again. Your audits are saved, and a scan that was running carries on on the server.");
 }
 
 // FastAPI's `detail` field on an error response is a plain string for a
@@ -311,6 +329,8 @@ async function handleOTPSubmit(e) {
         }
 
         currentUser.token = data.token;
+        // A later expiry is reported again.
+        window._loginExpiredHandled = false;
 
         // Login Successful
         document.getElementById("auth-overlay").classList.remove("active");
@@ -356,6 +376,9 @@ function logout() {
     uploadedFilesList = [];
     if (progressInterval) { clearInterval(progressInterval); progressInterval = null; }
     if (window._resultsInterval) { clearInterval(window._resultsInterval); window._resultsInterval = null; }
+    // Signed out, there is no run on this page; the next sign-in locks again if
+    // its session is still running (checkActiveSessionStatusOnSwitch).
+    if (typeof _setRunLockedInputs === "function") _setRunLockedInputs(false);
 
     try {
         localStorage.removeItem("last_active_session_id");
